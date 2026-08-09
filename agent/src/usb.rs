@@ -531,6 +531,22 @@ pub fn usb_default_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
     }
 }
 
+/// PUT /api/usb/powerbank — control the USB powerbank/OTG output
+/// (passthrough to `zwrt_bsp.powerbank set`)
+pub fn usb_powerbank_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
+    let parsed: Value = match serde_json::from_slice(body) {
+        Ok(v) => v,
+        Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
+    };
+    if let Err(e) = crate::validate::validate_ubus_input(&parsed) {
+        return (400, json!({"ok": false, "error": e}));
+    }
+    match ubus::call("zwrt_bsp.powerbank", "set", Some(&parsed.to_string())) {
+        Ok(data) => (200, json!({"ok": true, "data": data})),
+        Err(e) => (503, json!({"ok": false, "error": e})),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::parse_usb_default_mode;

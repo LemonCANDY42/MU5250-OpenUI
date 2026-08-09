@@ -13,6 +13,9 @@ const MAX_TOKENS: usize = 10;
 const HASH_ITERATIONS: u32 = 10_000;
 const MAX_LOGIN_ATTEMPTS: u32 = 5;
 const LOGIN_LOCKOUT_SECS: u64 = 30;
+/// Forget a client's failure history after this long without a failed attempt,
+/// so the map can't accumulate one row per IP that ever mistyped a password.
+const LOGIN_ATTEMPT_TTL_SECS: u64 = 3600;
 
 pub struct AuthState {
     password_hash: Mutex<Option<String>>,
@@ -30,6 +33,7 @@ struct Token {
 struct LoginAttempt {
     count: u32,
     locked_until: u64,
+    last_attempt: u64,
 }
 
 impl AuthState {
@@ -85,12 +89,16 @@ impl AuthState {
         {
             let mut attempts = self.failed_logins.safe_lock();
             if let Some(attempt) = attempts.get(client_ip) {
-                if attempt.count >= MAX_LOGIN_ATTEMPTS && now < attempt.locked_until {
-                    return LoginResult::Locked {
-                        retry_after_secs: attempt.locked_until - now,
-                    };
-                }
-                if now >= attempt.locked_until {
+                if attempt.count >= MAX_LOGIN_ATTEMPTS {
+                    if now < attempt.locked_until {
+                        return LoginResult::Locked {
+                            retry_after_secs: attempt.locked_until - now,
+                        };
+                    }
+                    // Lockout expired — clear the counter and let this attempt run.
+                    // Only clear here: clearing on every unlocked attempt (as this
+                    // used to) reset `count` to 1 each time, so the threshold was
+                    // never reached and the lockout never armed.
                     attempts.remove(client_ip);
                 }
             }
@@ -143,23 +151,36 @@ impl AuthState {
 
     fn record_failed_login(&self, client_ip: &str, now: u64) {
         let mut attempts = self.failed_logins.safe_lock();
+        attempts.retain(|_, a| {
+            now < a.locked_until || now.saturating_sub(a.last_attempt) < LOGIN_ATTEMPT_TTL_SECS
+        });
         let entry = attempts
             .entry(client_ip.to_string())
             .or_insert(LoginAttempt {
                 count: 0,
                 locked_until: 0,
+                last_attempt: now,
             });
         entry.count += 1;
+        entry.last_attempt = now;
         if entry.count >= MAX_LOGIN_ATTEMPTS {
             entry.locked_until = now + LOGIN_LOCKOUT_SECS;
         }
     }
 
+    /// Validate a bearer token, sliding its expiry forward on success. Without
+    /// the slide a dashboard left open is logged out mid-poll on the hour.
     pub fn validate(&self, token: &str) -> bool {
         let now = epoch_secs();
         let mut tokens = self.tokens.safe_lock();
         tokens.retain(|t| t.expires > now);
-        tokens.iter().any(|t| t.value == token)
+        match tokens.iter_mut().find(|t| t.value == token) {
+            Some(t) => {
+                t.expires = now + TOKEN_TTL_SECS;
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -248,4 +269,101 @@ fn epoch_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const IP: &str = "192.168.0.42";
+
+    fn authed() -> AuthState {
+        let auth = AuthState::new();
+        auth.set_password("correct-horse");
+        auth
+    }
+
+    fn token_of(result: LoginResult) -> String {
+        match result {
+            LoginResult::Ok { token } => token,
+            LoginResult::Invalid => panic!("expected success, got Invalid"),
+            LoginResult::Locked { .. } => panic!("expected success, got Locked"),
+        }
+    }
+
+    #[test]
+    fn lockout_arms_after_max_attempts() {
+        let auth = authed();
+        for i in 0..MAX_LOGIN_ATTEMPTS {
+            assert!(
+                matches!(auth.login_password("wrong", IP), LoginResult::Invalid),
+                "attempt {i} should be Invalid, not locked yet"
+            );
+        }
+        // Armed: even the correct password is refused while locked out.
+        assert!(matches!(
+            auth.login_password("correct-horse", IP),
+            LoginResult::Locked { .. }
+        ));
+    }
+
+    #[test]
+    fn lockout_is_scoped_to_the_client_ip() {
+        let auth = authed();
+        for _ in 0..MAX_LOGIN_ATTEMPTS {
+            let _ = auth.login_password("wrong", IP);
+        }
+        assert!(matches!(
+            auth.login_password("wrong", IP),
+            LoginResult::Locked { .. }
+        ));
+        // A different client is unaffected.
+        let _ = token_of(auth.login_password("correct-horse", "192.168.0.99"));
+    }
+
+    #[test]
+    fn successful_login_clears_failure_count() {
+        let auth = authed();
+        for _ in 0..MAX_LOGIN_ATTEMPTS - 1 {
+            let _ = auth.login_password("wrong", IP);
+        }
+        let _ = token_of(auth.login_password("correct-horse", IP));
+
+        // Counter reset, so we get a fresh full budget of attempts.
+        for i in 0..MAX_LOGIN_ATTEMPTS {
+            assert!(
+                matches!(auth.login_password("wrong", IP), LoginResult::Invalid),
+                "attempt {i} after reset should be Invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_slides_token_expiry() {
+        let auth = authed();
+        let token = token_of(auth.login_password("correct-horse", IP));
+
+        // Age the token to one second short of expiry.
+        {
+            let mut tokens = auth.tokens.safe_lock();
+            tokens[0].expires = epoch_secs() + 1;
+        }
+
+        assert!(auth.validate(&token));
+        let expires = auth.tokens.safe_lock()[0].expires;
+        assert!(
+            expires >= epoch_secs() + TOKEN_TTL_SECS - 2,
+            "validate() should push expiry back out to the full TTL"
+        );
+    }
+
+    #[test]
+    fn validate_rejects_expired_and_unknown_tokens() {
+        let auth = authed();
+        let token = token_of(auth.login_password("correct-horse", IP));
+        assert!(!auth.validate("not-a-real-token"));
+
+        auth.tokens.safe_lock()[0].expires = epoch_secs() - 1;
+        assert!(!auth.validate(&token));
+    }
 }

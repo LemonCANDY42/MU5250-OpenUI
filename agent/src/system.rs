@@ -5,11 +5,18 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::cache::Cached;
 use crate::util::MutexExt;
+
+/// Shortest window a CPU delta is computed over. Both `/api/cpu` and the
+/// dashboard batch call `sample()`; without this each would reset the other's
+/// baseline, so the percentages jittered according to who asked last.
+const CPU_MIN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Previous CPU sample for delta calculation.
 pub struct CpuTracker {
     prev: Mutex<Vec<CpuSample>>,
+    recent: Cached<CpuUsage>,
 }
 
 struct CpuSample {
@@ -32,7 +39,7 @@ impl CpuSample {
     }
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct CpuUsage {
     pub cores: Vec<f64>,
     pub overall: f64,
@@ -42,10 +49,22 @@ impl CpuTracker {
     pub fn new() -> Self {
         Self {
             prev: Mutex::new(Vec::new()),
+            recent: Cached::default(),
         }
     }
 
     pub fn sample(&self) -> CpuUsage {
+        self.recent
+            .get_or_refresh(CPU_MIN_INTERVAL, || self.sample_fresh())
+    }
+
+    /// Take a baseline reading without publishing it, so the first real
+    /// `sample()` measures a meaningful window rather than a few milliseconds.
+    pub fn seed(&self) {
+        let _ = self.sample_fresh();
+    }
+
+    fn sample_fresh(&self) -> CpuUsage {
         let current = read_cpu_samples();
         let mut prev = self.prev.safe_lock();
 
@@ -280,12 +299,17 @@ struct NetSample {
     time: Instant,
 }
 
+/// Live WAN throughput. Field names are part of the dashboard contract —
+/// `web-app/src/data/api.ts::mapSpeed` reads them verbatim.
 #[derive(Serialize, Clone)]
 pub struct SpeedSnapshot {
     pub rx_bytes: u64,
     pub tx_bytes: u64,
     pub rx_speed: f64,
     pub tx_speed: f64,
+    /// Highest rate observed since the agent started (smoothed over the ring window).
+    pub max_rx_speed: f64,
+    pub max_tx_speed: f64,
     pub elapsed_ms: u64,
 }
 
@@ -301,6 +325,8 @@ impl SpeedTracker {
             tx_bytes: 0,
             rx_speed: 0.0,
             tx_speed: 0.0,
+            max_rx_speed: 0.0,
+            max_tx_speed: 0.0,
             elapsed_ms: 0,
         }));
 
@@ -335,11 +361,18 @@ impl SpeedTracker {
                 let newest = buf.back().unwrap();
                 let secs = newest.time.duration_since(oldest.time).as_secs_f64();
                 if secs > 0.1 {
-                    *latest_c.safe_lock() = SpeedSnapshot {
+                    let rx_speed = newest.rx_bytes.saturating_sub(oldest.rx_bytes) as f64 / secs;
+                    let tx_speed = newest.tx_bytes.saturating_sub(oldest.tx_bytes) as f64 / secs;
+                    let mut latest = latest_c.safe_lock();
+                    let max_rx_speed = latest.max_rx_speed.max(rx_speed);
+                    let max_tx_speed = latest.max_tx_speed.max(tx_speed);
+                    *latest = SpeedSnapshot {
                         rx_bytes: newest.rx_bytes,
                         tx_bytes: newest.tx_bytes,
-                        rx_speed: newest.rx_bytes.saturating_sub(oldest.rx_bytes) as f64 / secs,
-                        tx_speed: newest.tx_bytes.saturating_sub(oldest.tx_bytes) as f64 / secs,
+                        rx_speed,
+                        tx_speed,
+                        max_rx_speed,
+                        max_tx_speed,
                         elapsed_ms: (secs * 1000.0) as u64,
                     };
                 }
@@ -709,4 +742,82 @@ fn read_proc_name_rss(pid: u32) -> Option<(String, u64)> {
         });
 
     Some((name, rss_pages * 4))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// These payloads are consumed directly by the dashboard, so their key sets
+    /// are a contract. Renaming a field here means updating
+    /// `web-app/src/data/api.ts` and `web-app/tools/mock_agent.py` in lockstep —
+    /// silent drift between the two is what broke Home throughput and the
+    /// process list before.
+    fn keys(v: &serde_json::Value) -> Vec<String> {
+        let mut k: Vec<String> = v.as_object().expect("object").keys().cloned().collect();
+        k.sort();
+        k
+    }
+
+    #[test]
+    fn speed_snapshot_shape_is_stable() {
+        let snap = SpeedSnapshot {
+            rx_bytes: 1,
+            tx_bytes: 2,
+            rx_speed: 3.0,
+            tx_speed: 4.0,
+            max_rx_speed: 5.0,
+            max_tx_speed: 6.0,
+            elapsed_ms: 7,
+        };
+        let v = serde_json::to_value(&snap).unwrap();
+        assert_eq!(
+            keys(&v).iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "elapsed_ms",
+                "max_rx_speed",
+                "max_tx_speed",
+                "rx_bytes",
+                "rx_speed",
+                "tx_bytes",
+                "tx_speed",
+            ]
+        );
+    }
+
+    #[test]
+    fn process_list_shape_is_stable() {
+        let result = ProcessListResult {
+            processes: vec![ProcessEntry {
+                pid: 1,
+                name: "init".to_string(),
+                cpu_pct: 0.5,
+                rss_kb: 1200,
+                state: "sleeping".to_string(),
+                is_bloat: false,
+            }],
+            total_count: 1,
+            bloat_count: 0,
+            bloat_cpu_pct: 0.0,
+            bloat_rss_kb: 0,
+        };
+        let v = serde_json::to_value(&result).unwrap();
+        assert_eq!(
+            keys(&v).iter().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "bloat_count",
+                "bloat_cpu_pct",
+                "bloat_rss_kb",
+                "processes",
+                "total_count",
+            ]
+        );
+        assert_eq!(
+            keys(&v["processes"][0])
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["cpu_pct", "is_bloat", "name", "pid", "rss_kb", "state"]
+        );
+    }
 }

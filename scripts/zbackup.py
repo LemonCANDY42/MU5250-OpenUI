@@ -12,7 +12,7 @@ Real on-device format (from backup_config.sh, shared by amenekowo):
 
 Password goes via env ZBACKUP_PW or --pw — never hardcode it here.
 The <suffix> is a fixed ZTE platform string; obtain it from the community
-(see COMMUNITY-UNLOCK.md).
+(see docs/DEPLOYMENT.md).
 
 Usage:
   export ZBACKUP_PW="<IMEI><suffix>"

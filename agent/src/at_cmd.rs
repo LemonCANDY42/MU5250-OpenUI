@@ -3,6 +3,9 @@ use std::io::{Read, Write};
 use std::os::unix::io::AsRawFd;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use crate::util::MutexExt;
 
 const PORTS: &[&str] = &[
     "/dev/at_mdm0",
@@ -12,24 +15,37 @@ const PORTS: &[&str] = &[
     "/dev/smd11",
 ];
 
+/// A full sweep costs one 2 s timeout per existing-but-silent port, so on a
+/// device with no responsive AT port it burns ~10 s. Throttle repeat sweeps.
+const PROBE_BACKOFF: Duration = Duration::from_secs(60);
+
+enum PortState {
+    Unknown,
+    Found(String),
+    /// Nothing answered; don't sweep again before this instant.
+    NotFound(Instant),
+}
+
 pub struct AtPort {
-    cached: Mutex<Option<String>>,
+    state: Mutex<PortState>,
     lock: Mutex<()>,
 }
 
 impl AtPort {
     pub fn new() -> Self {
         Self {
-            cached: Mutex::new(None),
+            state: Mutex::new(PortState::Unknown),
             lock: Mutex::new(()),
         }
     }
 
-    fn detect(&self) -> Option<String> {
+    pub fn detect(&self) -> Option<String> {
         {
-            let cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(ref port) = *cached {
-                return Some(port.clone());
+            let state = self.state.safe_lock();
+            match &*state {
+                PortState::Found(port) => return Some(port.clone()),
+                PortState::NotFound(until) if Instant::now() < *until => return None,
+                _ => {}
             }
         }
 
@@ -41,12 +57,31 @@ impl AtPort {
                 .ok()
                 .map_or(false, |r| r.contains("OK"))
             {
-                let mut cached = self.cached.lock().unwrap_or_else(|e| e.into_inner());
-                *cached = Some(port.to_string());
+                *self.state.safe_lock() = PortState::Found(port.to_string());
                 return Some(port.to_string());
             }
         }
+
+        *self.state.safe_lock() = PortState::NotFound(Instant::now() + PROBE_BACKOFF);
         None
+    }
+
+    /// Detect while holding the port lock, so a probe can't open the tty
+    /// underneath an in-flight `send()`.
+    pub fn detect_serialized(&self) -> Option<String> {
+        let _guard = self.lock.safe_lock();
+        self.detect()
+    }
+}
+
+/// Stops the reader thread when dropped. Without this, an early return between
+/// spawning the reader and the explicit stop (e.g. a failed write) leaked a
+/// thread that polled at 20 Hz forever, holding the tty fd open.
+struct StopGuard(Arc<AtomicBool>);
+
+impl Drop for StopGuard {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
     }
 }
 
@@ -63,6 +98,8 @@ fn raw_send(port_path: &str, command: &str, timeout_secs: u64) -> Result<String,
 
     let buffer: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
     let stop = Arc::new(AtomicBool::new(false));
+    // Safety net for every exit path below, including the `?` on the write.
+    let _stop_guard = StopGuard(Arc::clone(&stop));
 
     let buf_clone = buffer.clone();
     let stop_clone = stop.clone();
@@ -125,7 +162,7 @@ fn raw_send(port_path: &str, command: &str, timeout_secs: u64) -> Result<String,
 /// Send an AT command and return the raw response text.
 /// Serialized via mutex to prevent concurrent serial port access.
 pub fn send(at_port: &AtPort, command: &str, timeout_secs: u64) -> Result<String, String> {
-    let _guard = at_port.lock.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = at_port.lock.safe_lock();
     let port = at_port.detect().ok_or("no serial port found")?;
     raw_send(&port, command, timeout_secs)
 }

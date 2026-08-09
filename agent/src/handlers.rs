@@ -2,14 +2,37 @@ use std::sync::Arc;
 
 use serde_json::{json, Value};
 
+use std::time::Duration;
+
 use crate::at_cmd::AtPort;
 use crate::auth::{self, AuthState};
+use crate::cache::Cached;
+use crate::charge_policy::ChargeLimitEnforcer;
 use crate::connection_logger::ConnectionLogger;
-use crate::scheduler::Scheduler;
 use crate::signal_logger::SignalLogger;
-use crate::sms_forward::SmsForwarder;
 use crate::system::{self, CpuTracker, ProcessTracker, SpeedTracker};
 use crate::ubus;
+
+// Per-source freshness for the dashboard batch. Every entry below costs a
+// fork+exec, so the client's poll rate is deliberately decoupled from the rate
+// at which each source is actually re-read — and concurrent clients (phone plus
+// laptop) collapse onto one refresh instead of multiplying the load.
+const SIGNAL_TTL: Duration = Duration::from_millis(2500);
+const THERMAL_TTL: Duration = Duration::from_secs(10);
+const WAN_TTL: Duration = Duration::from_secs(30);
+const DATA_USAGE_TTL: Duration = Duration::from_secs(30);
+/// Billing-cycle dates move once a month.
+const CYCLE_DATE_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Default)]
+pub struct DashboardCache {
+    signal: Cached<Value>,
+    wan: Cached<Value>,
+    wan6: Cached<Value>,
+    thermal: Cached<Value>,
+    data_usage: Cached<Value>,
+    cycle_dates: Cached<(Option<String>, Option<String>)>,
+}
 
 pub struct AppState {
     pub auth: AuthState,
@@ -17,10 +40,8 @@ pub struct AppState {
     pub speed: SpeedTracker,
     pub proc_tracker: ProcessTracker,
     pub at_port: AtPort,
-    pub doh: std::sync::Arc<crate::doh::DohProxy>,
-    pub scheduler: Arc<Scheduler>,
-    pub speedtest: crate::speedtest::SpeedTest,
-    pub sms_forward: Arc<SmsForwarder>,
+    pub dash: DashboardCache,
+    pub charge_limit: Arc<ChargeLimitEnforcer>,
     pub signal_logger: Arc<SignalLogger>,
     pub connection_logger: Arc<ConnectionLogger>,
 }
@@ -33,10 +54,8 @@ impl AppState {
             speed: SpeedTracker::new(),
             proc_tracker: ProcessTracker::new(),
             at_port: AtPort::new(),
-            doh: std::sync::Arc::new(crate::doh::DohProxy::new()),
-            scheduler: Arc::new(Scheduler::new()),
-            speedtest: crate::speedtest::SpeedTest::new(),
-            sms_forward: Arc::new(SmsForwarder::new()),
+            dash: DashboardCache::default(),
+            charge_limit: Arc::new(ChargeLimitEnforcer::new()),
             signal_logger: Arc::new(SignalLogger::new()),
             connection_logger: Arc::new(ConnectionLogger::new()),
         }
@@ -117,17 +136,6 @@ pub fn device(_state: &AppState) -> (u16, Value) {
     )
 }
 
-/// GET /api/battery
-pub fn battery(_state: &AppState) -> (u16, Value) {
-    match system::read_battery() {
-        Some(b) => (200, json!({"ok": true, "data": b})),
-        None => (
-            503,
-            json!({"ok": false, "error": "battery info not available"}),
-        ),
-    }
-}
-
 /// GET /api/cpu
 pub fn cpu(state: &AppState) -> (u16, Value) {
     let usage = state.cpu.sample();
@@ -145,44 +153,8 @@ pub fn memory(_state: &AppState) -> (u16, Value) {
     }
 }
 
-/// GET /api/network/signal
-pub fn network_signal(_state: &AppState) -> (u16, Value) {
-    match ubus::call("zte_nwinfo_api", "nwinfo_get_netinfo", Some("{}")) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
-    }
-}
-
-/// GET /api/network/traffic
-pub fn network_traffic(_state: &AppState) -> (u16, Value) {
-    let ifaces = system::read_network_traffic();
-    (200, json!({"ok": true, "data": ifaces}))
-}
-
-/// GET /api/network/speed — server-computed speed with precise timing
-pub fn network_speed(state: &AppState) -> (u16, Value) {
-    let snap = state.speed.sample();
-    (200, json!({"ok": true, "data": snap}))
-}
-
-/// GET /api/modem/status
-pub fn modem_status(_state: &AppState) -> (u16, Value) {
-    match ubus::uci_get("zte_nwinfo.sys_info.operate_mode") {
-        Ok(mode) => (200, json!({"ok": true, "data": {"operate_mode": mode}})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
-    }
-}
-
-/// GET /api/data-usage
-pub fn data_usage(_state: &AppState) -> (u16, Value) {
-    match read_data_usage_live() {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
-    }
-}
-
 /// PUT /api/data-usage/reset-day
-pub fn data_usage_reset_day_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
+pub fn data_usage_reset_day_set(state: &AppState, body: &[u8]) -> (u16, Value) {
     let parsed: Value = match serde_json::from_slice(body) {
         Ok(v) => v,
         Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
@@ -211,15 +183,20 @@ pub fn data_usage_reset_day_set(_state: &AppState, body: &[u8]) -> (u16, Value) 
         "set_wwandst_clearday",
         Some(&params.to_string()),
     ) {
-        Ok(_) => match read_data_usage_live() {
-            Ok(data) => (200, json!({"ok": true, "data": data})),
-            Err(e) => (503, json!({"ok": false, "error": e})),
-        },
+        // We just changed the cycle, so the cached copies are wrong by definition.
+        Ok(_) => {
+            state.dash.data_usage.invalidate();
+            state.dash.cycle_dates.invalidate();
+            match read_data_usage_live(&state.dash) {
+                Ok(data) => (200, json!({"ok": true, "data": data})),
+                Err(e) => (503, json!({"ok": false, "error": e})),
+            }
+        }
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }
 
-fn read_data_usage_live() -> Result<Value, String> {
+fn read_data_usage_live(cache: &DashboardCache) -> Result<Value, String> {
     let stats = ubus::call(
         "zwrt_data",
         "get_wwandst",
@@ -263,6 +240,16 @@ fn read_data_usage_live() -> Result<Value, String> {
             .unwrap_or(Value::from(0))
     });
 
+    // These two are billing-cycle dates: they change once a month, but used to
+    // cost two `uci get` forks on every dashboard poll.
+    let (clear_date_record, next_clear_date) =
+        cache.cycle_dates.get_or_refresh(CYCLE_DATE_TTL, || {
+            (
+                ubus::uci_get(&format!("{section}.clear_date_record")).ok(),
+                ubus::uci_get(&format!("{section}.clearday_date")).ok(),
+            )
+        });
+
     Ok(json!({
         "day": read_stat_period("day"),
         "month": read_stat_period("month"),
@@ -271,8 +258,8 @@ fn read_data_usage_live() -> Result<Value, String> {
         "total": read_stat_period("total"),
         "reset_day": reset_day,
         "reset_enabled": reset_enabled,
-        "clear_date_record": ubus::uci_get(&format!("{section}.clear_date_record")).ok(),
-        "next_clear_date": ubus::uci_get(&format!("{section}.clearday_date")).ok(),
+        "clear_date_record": clear_date_record,
+        "next_clear_date": next_clear_date,
     }))
 }
 
@@ -281,19 +268,6 @@ fn number_value(value: Option<&Value>) -> Option<Value> {
         Value::Number(n) => Some(Value::Number(n.clone())),
         Value::String(s) => s.parse::<u64>().ok().map(Value::from),
         _ => None,
-    }
-}
-
-/// POST /api/modem/online
-pub fn modem_online(state: &AppState) -> (u16, Value) {
-    use crate::at_cmd;
-    match at_cmd::send(&state.at_port, "AT+CFUN=1", 8) {
-        Ok(resp) if resp.contains("OK") => (200, json!({"ok": true, "data": {"status": "ok"}})),
-        Ok(resp) => (
-            500,
-            json!({"ok": false, "error": "AT+CFUN=1 failed", "raw": resp}),
-        ),
-        Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }
 
@@ -332,15 +306,37 @@ pub fn system_kill_bloat(_state: &AppState, body: &[u8]) -> (u16, Value) {
     (200, json!({"ok": true, "data": result}))
 }
 
-/// GET /api/dashboard — batch endpoint aggregating all dashboard data
+/// GET /api/dashboard — batch endpoint aggregating all dashboard data.
+///
+/// This is the app's heartbeat: Home, Signal and Modem/Data all read it rather
+/// than polling their own endpoints. Free sources (procfs/sysfs) are read every
+/// time; each ubus/uci source sits behind its own TTL.
 pub fn dashboard(state: &AppState) -> (u16, Value) {
+    let cache = &state.dash;
+
+    // procfs / sysfs — no subprocess, read fresh every time.
     let device_info = system::read_device_info();
     let battery = system::read_battery();
     let cpu_usage = state.cpu.sample();
     let meminfo = system::read_meminfo();
     let speed = state.speed.sample();
-    let traffic = system::read_network_traffic();
-    let data_usage = read_data_usage();
+
+    // Raw ubus passthroughs — the dashboard client maps these itself.
+    let signal = cache.signal.get_or_refresh(SIGNAL_TTL, || {
+        ubus::call("zte_nwinfo_api", "nwinfo_get_netinfo", Some("{}")).unwrap_or(Value::Null)
+    });
+    let wan = cache.wan.get_or_refresh(WAN_TTL, || {
+        ubus::call("network.interface.zte_wan", "status", Some("{}")).unwrap_or(Value::Null)
+    });
+    let wan6 = cache.wan6.get_or_refresh(WAN_TTL, || {
+        ubus::call("network.interface.zte_wan6", "status", Some("{}")).unwrap_or(Value::Null)
+    });
+    let thermal = cache.thermal.get_or_refresh(THERMAL_TTL, || {
+        ubus::call("zwrt_bsp.thermal", "get_cpu_temp", Some("{}")).unwrap_or(Value::Null)
+    });
+    let data_usage = cache
+        .data_usage
+        .get_or_refresh(DATA_USAGE_TTL, || read_data_usage(cache));
 
     let mut result = serde_json::Map::new();
     result.insert(
@@ -356,11 +352,14 @@ pub fn dashboard(state: &AppState) -> (u16, Value) {
     result.insert("cpu".into(), json!(cpu_usage));
     result.insert("memory".into(), json!(meminfo));
     result.insert("speed".into(), json!(speed));
-    result.insert("traffic".into(), json!(traffic));
-    result.insert("data_usage".into(), json!(data_usage));
+    result.insert("data_usage".into(), data_usage);
+    result.insert("signal".into(), signal);
+    result.insert("wan".into(), wan);
+    result.insert("wan6".into(), wan6);
+    result.insert("thermal".into(), thermal);
     (200, json!({"ok": true, "data": result}))
 }
 
-fn read_data_usage() -> Value {
-    read_data_usage_live().unwrap_or_else(|e| json!({"error": e}))
+fn read_data_usage(cache: &DashboardCache) -> Value {
+    read_data_usage_live(cache).unwrap_or_else(|e| json!({"error": e}))
 }

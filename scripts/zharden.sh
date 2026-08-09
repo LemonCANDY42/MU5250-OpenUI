@@ -4,7 +4,7 @@
 # Run AFTER scripts/zunlock.py (adb up) and setup.sh (agent installed).
 # Idempotent: safe to re-run anytime; each step no-ops when already done.
 #
-# What it does (details in COMMUNITY-UNLOCK.md):
+# What it does (details in docs/DEPLOYMENT.md):
 #   1. installs dropbear SSH (port 2222, key auth) into /data
 #   2. cleans rc.local: keeps stock + agent/dropbear lines, removes usb_op
 #      write lines (so every boot = stock ECM tethering; adb on demand)
@@ -17,7 +17,7 @@
 # services (no firewall includes/hooks). A boot-time hook that stalls or
 # fails can wedge the device before any recovery interface exists. rc.local
 # is not FOTA-preserved, so after a firmware update simply re-run:
-# zunlock.py -> setup.sh -> zharden.sh (~15 min, see COMMUNITY-UNLOCK.md).
+# zunlock.py -> setup.sh -> zharden.sh (~15 min, see docs/DEPLOYMENT.md).
 #
 # Usage: bash scripts/zharden.sh [--gw 192.168.0.1]
 set -euo pipefail

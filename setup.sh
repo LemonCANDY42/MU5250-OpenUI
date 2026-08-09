@@ -33,17 +33,23 @@ BINARY=target/$TARGET/release/zte-agent
 REMOTE_BIN=/data/zte-agent
 STARTUP_SCRIPT=/data/local/tmp/start_zte_agent.sh
 BINARY_CHANGED=false
-DOWNLOAD_URL="https://github.com/jesther-ai/open-u60-pro/releases/latest/download/zte-agent"
+DOWNLOAD_URL="https://github.com/dklasens/MU5250-OpenUI/releases/latest/download/zte-agent"
 
 # ── Binary source menu ──────────────────────────────────────────────
+# Build-from-source (2) is the default: this fork's agent has diverged from
+# upstream (batched /api/dashboard, charge control, powerbank, …) and the
+# dashboard in this repo expects those. Option 1 downloads the UPSTREAM
+# agent, which will leave parts of the new dashboard empty.
 echo ""
 echo -e "${CYAN}How would you like to get the zte-agent binary?${NC}"
-echo "  1) Download pre-built from GitHub (recommended — no dev tools needed)"
-echo "  2) Build from source (requires Rust toolchain)"
+echo "  1) Download pre-built upstream from GitHub (no dev tools needed, but"
+echo "     may lack this fork's endpoints and leave parts of the dashboard empty)"
+echo "  2) Build from source (recommended — matches this fork's dashboard;"
+echo "     requires Rust toolchain)"
 echo ""
-echo -n "Choice [1]: "
+echo -n "Choice [2]: "
 read -r BUILD_CHOICE
-BUILD_CHOICE="${BUILD_CHOICE:-1}"
+BUILD_CHOICE="${BUILD_CHOICE:-2}"
 
 if [ "$BUILD_CHOICE" != "1" ] && [ "$BUILD_CHOICE" != "2" ]; then
     fail "Invalid choice. Enter 1 or 2."
@@ -72,12 +78,14 @@ if [ "$BUILD_CHOICE" = "1" ]; then
         "curl|curl|curl|"
         "python3|python3|python3|"
         "adb|android-platform-tools|android-tools-adb|"
+        "openssl|openssl|openssl|"
     )
 else
     DEPS=(
         "curl|curl|curl|"
         "python3|python3|python3|"
         "adb|android-platform-tools|android-tools-adb|"
+        "openssl|openssl|openssl|"
         "cargo|||curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"
         "$CROSS_CC|filosottile/musl-cross/musl-cross|gcc-aarch64-linux-gnu musl-tools|"
     )
@@ -203,31 +211,10 @@ if [ "$BUILD_CHOICE" = "2" ]; then
 fi
 ok "All prerequisites found."
 
-# ── Helper: SHA-256 ──────────────────────────────────────────────────
-sha256() {
-    echo -n "$1" | shasum -a 256 2>/dev/null | awk '{print $1}' \
-        || echo -n "$1" | sha256sum | awk '{print $1}'
-}
-
+# ── Helper: SHA-256 (file) ───────────────────────────────────────────
 sha256_file() {
     shasum -a 256 "$1" 2>/dev/null | awk '{print $1}' \
         || sha256sum "$1" | awk '{print $1}'
-}
-
-upper() {
-    echo "$1" | tr '[:lower:]' '[:upper:]'
-}
-
-# ── Helper: ubus JSON-RPC call ───────────────────────────────────────
-ubus_call() {
-    local session="$1" object="$2" method="$3" params="$4"
-    local ts
-    ts=$(date +%s)
-    curl -sf "http://$GATEWAY/ubus/?t=$ts" \
-        -H 'Content-Type: application/json' \
-        -H "Origin: http://$GATEWAY" \
-        -H "Referer: http://$GATEWAY/" \
-        -d "[{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"call\",\"params\":[\"$session\",\"$object\",\"$method\",$params]}]"
 }
 
 # ── Helper: timeout (macOS-compatible) ───────────────────────────────
@@ -266,56 +253,55 @@ else
 
 # ── Steps 1-2: Enable ADB + connect ──────────────────────────────────
 if adb devices 2>/dev/null | grep -qw device; then
-    ok "ADB already connected, skipping web auth."
+    ok "ADB already connected, skipping unlock."
 else
-    info "Authenticating with router web interface..."
+    # ── Unlock: config backup/restore (B04+ locked firmware) ─────────
+    # The old `zwrt_bsp.usb set {mode:debug}` primitive was removed in
+    # HK B04 / CN B28, so ADB can no longer be switched on over the web.
+    # The way back in is the device's own config backup/restore path:
+    # zunlock.py downloads a fresh encrypted backup, injects a boot-time
+    # usb_op payload into its rc.local, repacks it md5-valid, re-encrypts
+    # and restores it. The device reboots and comes back with adbd up.
+    # Backup password = <IMEI><suffix>; the IMEI is read from the device,
+    # only the platform suffix (passphrase) is supplied by you. No secrets
+    # are hardcoded here — see docs/DEPLOYMENT.md.
+    info "No ADB and no SSH — device looks locked (B04+)."
+    info "Unlock method: config backup/restore via scripts/zunlock.py."
+    echo ""
+    warn "This restores a patched config backup: current settings are"
+    warn "overwritten and the device reboots (~90 s). On a fresh device"
+    warn "there is nothing to lose."
+    echo ""
 
-    ANON_SESSION="00000000000000000000000000000000"
-
-    # Get salt (with safe JSON extraction)
-    SALT_RESP=$(ubus_call "$ANON_SESSION" "zwrt_web" "web_login_info" '{}')
-    SALT=$(echo "$SALT_RESP" | python3 -c '
-import sys, json
-try:
-    print(json.load(sys.stdin)[0]["result"][1]["zte_web_sault"])
-except Exception:
-    pass
-' 2>/dev/null)
-
-    if [ -z "$SALT" ]; then
-        fail "Failed to extract salt. Is the router reachable at $GATEWAY?"
+    SUFFIX="${ZTE_BACKUP_SUFFIX:-}"
+    if [ -z "$SUFFIX" ]; then
+        echo -e "${CYAN}Backup-key suffix / passphrase:${NC} "
+        read -rs SUFFIX; echo
+        [ -z "$SUFFIX" ] && fail "Backup-key suffix cannot be empty."
     fi
 
-    # Hash password
-    PASS_HASH=$(upper "$(sha256 "$ROUTER_PASSWORD")")
-    LOGIN_HASH=$(upper "$(sha256 "${PASS_HASH}${SALT}")")
-
-    # Login (with safe JSON extraction)
-    LOGIN_RESP=$(ubus_call "$ANON_SESSION" "zwrt_web" "web_login" "{\"password\":\"$LOGIN_HASH\"}")
-    SESSION=$(echo "$LOGIN_RESP" | python3 -c '
-import sys, json
-try:
-    print(json.load(sys.stdin)[0]["result"][1]["ubus_rpc_session"])
-except Exception:
-    pass
-' 2>/dev/null)
-
-    if [ -z "$SESSION" ] || [ "$SESSION" = "null" ]; then
-        fail "Login failed. Check your router password."
+    # Stage 1 — dry run: login, fetch backup, decrypt, patch, repack, all
+    # WITHOUT uploading. Catches a wrong suffix before touching the device.
+    info "Stage 1/2 — dry run (makes no changes to the device)..."
+    if ! ROUTER_PW="$ROUTER_PASSWORD" ZTE_BACKUP_SUFFIX="$SUFFIX" \
+        python3 scripts/zunlock.py --gw "$GATEWAY" --dry-run; then
+        fail "Unlock dry-run failed — check the output above (wrong suffix?)."
     fi
-    ok "Logged in to router (session: ${SESSION:0:8}...)."
+    ok "Dry-run passed — backup decrypts and patches cleanly."
 
-    # Set USB mode to debug
-    info "Enabling ADB (USB debug mode)..."
-    ubus_call "$SESSION" "zwrt_bsp.usb" "set" '{"mode":"debug"}' >/dev/null
-    ok "USB debug mode enabled."
-
-    # Wait for ADB device
-    info "Waiting for ADB device (plug USB cable if not connected)..."
-    if ! wait_with_timeout 30 adb wait-for-device 2>/dev/null; then
-        fail "ADB device not found after 30s. Check USB connection."
+    # Stage 2 — real unlock. zunlock.py keeps its own "Proceed? [y/N]"
+    # consent gate immediately before the upload + restore + reboot.
+    info "Stage 2/2 — unlock (upload + restore + reboot)..."
+    if ! ROUTER_PW="$ROUTER_PASSWORD" ZTE_BACKUP_SUFFIX="$SUFFIX" \
+        python3 scripts/zunlock.py --gw "$GATEWAY"; then
+        fail "Unlock failed — check the output above."
     fi
-    ok "ADB device connected."
+
+    info "Waiting for the device to reboot and ADB to come up (~90 s)..."
+    if ! wait_with_timeout 180 adb wait-for-device 2>/dev/null; then
+        fail "ADB device not found after unlock. Check the USB cable, then re-run."
+    fi
+    ok "ADB device connected — unlock complete."
 fi
 fi
 
@@ -388,14 +374,19 @@ fi
 SAFE_PASSWORD=$(printf '%s' "$AGENT_PASSWORD" | sed "s/'/'\\\\''/g")
 
 rcmd "mkdir -p $(dirname $STARTUP_SCRIPT)"
-if rcmd_check "grep -qF '${SAFE_PASSWORD}' $STARTUP_SCRIPT 2>/dev/null"; then
+# Also require the syslog line, so a script written by an older setup.sh (which
+# redirected into /tmp and grew in RAM forever) gets rewritten rather than kept.
+if rcmd_check "grep -qF '${SAFE_PASSWORD}' $STARTUP_SCRIPT 2>/dev/null && grep -qF 'logger -t zte-agent' $STARTUP_SCRIPT 2>/dev/null"; then
     ok "Startup script already up to date."
 else
     info "Creating startup script..."
     cat > /tmp/start_zte_agent.sh <<BOOT
 #!/bin/sh
 export ZTE_AGENT_PASSWORD='${SAFE_PASSWORD}'
-nohup /data/zte-agent >/tmp/zte-agent.log 2>&1 </dev/null &
+# Log via syslog (logd's fixed-size ring buffer) rather than a file on /tmp:
+# /tmp is tmpfs, so a plain redirect grows in RAM forever with no rotation.
+# Read it back with: logread -e zte-agent
+nohup sh -c '/data/zte-agent 2>&1 | logger -t zte-agent' >/dev/null 2>&1 </dev/null &
 BOOT
     rpush /tmp/start_zte_agent.sh "$STARTUP_SCRIPT"
     rm /tmp/start_zte_agent.sh
@@ -429,7 +420,7 @@ if [ "$BINARY_CHANGED" = true ] || [ "$AGENT_RUNNING" = false ]; then
         rcmd "sh $STARTUP_SCRIPT"
     else
         adb shell "sh $STARTUP_SCRIPT; sleep 1; pidof zte-agent" | grep -q '[0-9]' \
-            || fail "Agent process did not start. Check /tmp/zte-agent.log on device."
+            || fail "Agent process did not start. Check 'logread -e zte-agent' on device."
     fi
     ok "Agent (re)started."
 else
@@ -461,102 +452,19 @@ if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
 fi
 ok "Agent is running and authenticated."
 
-# ── Step 9: Optional SSH setup ──────────────────────────────────────
+# ── Step 9: SSH for wireless deploys ────────────────────────────────
+# Dropbear install deliberately lives in scripts/zharden.sh, not here:
+# opkg is unusable on this firmware and the old in-setup install pinned a
+# stale package URL and a wrong dropbear path. zharden.sh extracts dropbear
+# to /data, generates host keys and wires up rc.local correctly (and also
+# adds the dashboard uhttpd instance + turns FOTA auto-update off).
 if [ "$USE_SSH" = true ]; then
-    ok "SSH already configured, skipping SSH setup."
+    ok "SSH already configured."
 else
-echo ""
-echo -e "${CYAN}Set up SSH for wireless deploys? (y/N)${NC}"
-read -r SETUP_SSH
-
-if [ "$SETUP_SSH" = "y" ] || [ "$SETUP_SSH" = "Y" ]; then
-    SSH_KEY="$HOME/.ssh/id_ed25519"
-    SSH_PUB="$SSH_KEY.pub"
-
-    # Generate SSH key if needed
-    if [ ! -f "$SSH_KEY" ]; then
-        info "Generating SSH key..."
-        ssh-keygen -t ed25519 -f "$SSH_KEY" -N ""
-        ok "SSH key generated at $SSH_KEY."
-    else
-        ok "SSH key already exists at $SSH_KEY."
-    fi
-
-    # Install dropbear on device
-    info "Setting up dropbear SSH server..."
-
-    # Check if dropbear is already present
-    if adb shell "test -x /usr/sbin/dropbear" 2>/dev/null; then
-        ok "Dropbear already installed."
-    else
-        info "Downloading dropbear for aarch64..."
-        DROPBEAR_URL="https://downloads.openwrt.org/releases/23.05.4/targets/armsr/armv8/packages/dropbear_2022.83-1_aarch64_generic.ipk"
-        TMPDIR=$(mktemp -d)
-        curl -sfL "$DROPBEAR_URL" -o "$TMPDIR/dropbear.ipk" || fail "Failed to download dropbear."
-        adb push "$TMPDIR/dropbear.ipk" /tmp/dropbear.ipk
-        adb shell "opkg install /tmp/dropbear.ipk 2>/dev/null || true"
-        adb shell "rm -f /tmp/dropbear.ipk"
-        rm -rf "$TMPDIR"
-        ok "Dropbear installed."
-    fi
-
-    # Set up authorized_keys
-    info "Configuring SSH keys..."
-    adb shell "mkdir -p /etc/dropbear && chmod 700 /etc/dropbear"
-    PUBKEY=$(cat "$SSH_PUB")
-    if adb shell "grep -qF '$PUBKEY' /etc/dropbear/authorized_keys 2>/dev/null"; then
-        ok "SSH key already authorized."
-    else
-        adb shell "echo '$PUBKEY' >> /etc/dropbear/authorized_keys"
-        ok "SSH key added to authorized_keys."
-    fi
-    adb shell "chmod 600 /etc/dropbear/authorized_keys"
-
-    # Create dropbear startup script
-    DROPBEAR_STARTUP=/data/local/tmp/start_dropbear.sh
-    if adb shell "test -x $DROPBEAR_STARTUP" 2>/dev/null; then
-        ok "Dropbear startup script already exists."
-    else
-        adb shell "cat > $DROPBEAR_STARTUP" <<'DBBOOT'
-#!/bin/sh
-/usr/sbin/dropbear -p 2222 -R
-DBBOOT
-        adb shell "chmod +x $DROPBEAR_STARTUP"
-        ok "Dropbear startup script created."
-    fi
-
-    # Add to rc.local if not already there
-    DB_RC_LINE="sh $DROPBEAR_STARTUP"
-    if adb shell "grep -qF '$DB_RC_LINE' /etc/rc.local 2>/dev/null"; then
-        ok "Dropbear rc.local entry already configured."
-    else
-        adb shell "grep -q '^exit 0' /etc/rc.local \
-            && sed -i '/^exit 0/i $DB_RC_LINE' /etc/rc.local \
-            || echo '$DB_RC_LINE' >> /etc/rc.local"
-        ok "Added dropbear to /etc/rc.local."
-    fi
-
-    # Start dropbear now
-    if adb shell "pidof dropbear" >/dev/null 2>&1; then
-        ok "Dropbear already running on port $SSH_PORT."
-    else
-        info "Starting dropbear..."
-        adb shell "sh $DROPBEAR_STARTUP"
-        ok "Dropbear started on port $SSH_PORT."
-    fi
-
-    # Verify SSH
-    info "Verifying SSH connection..."
-    if ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=$HOME/.ssh/known_hosts.d/zte -o ConnectTimeout=5 "root@$GATEWAY" "echo ok" >/dev/null 2>&1; then
-        ok "SSH connection verified."
-    else
-        warn "SSH connection could not be verified. You may need to reboot the router."
-    fi
-
     echo ""
-    ok "SSH is configured. You can now use ./deploy.sh for wireless deploys:"
-    echo "    ssh -p $SSH_PORT root@$GATEWAY"
-fi
+    info "Next: run 'bash scripts/zharden.sh' to install dropbear SSH,"
+    info "clean up rc.local, serve the dashboard on :8080 and disable"
+    info "FOTA auto-update. Then 'bash deploy-dashboard.sh' to deploy the UI."
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────
@@ -564,7 +472,11 @@ echo ""
 echo -e "${GREEN}Setup complete!${NC}"
 echo ""
 echo "  Agent API:  http://$GATEWAY:$AGENT_PORT"
-echo "  Agent API:  http://$GATEWAY:$AGENT_PORT"
-echo "  Deploy:     ZTE_AGENT_PASSWORD=<your-password> ZTE_AGENT_PIN=<six-digit-pin> ./deploy.sh"
+echo "  Re-deploy:  ZTE_AGENT_PASSWORD=<your-password> ZTE_AGENT_PIN=<six-digit-pin> ./deploy.sh"
+echo ""
+echo "  Next steps:"
+echo "    1) bash scripts/zharden.sh      # dropbear SSH, rc.local cleanup,"
+echo "                                    # dashboard on :8080, FOTA auto-update off"
+echo "    2) bash deploy-dashboard.sh     # build + push the web UI to /data/www"
 echo ""
 echo "  Point the iOS/Android companion app at http://$GATEWAY:$AGENT_PORT"

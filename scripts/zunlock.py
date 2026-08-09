@@ -26,7 +26,7 @@ Inputs (prompted if not given):
   ROUTER_PW env / --pw        router admin password
   --suffix / ZTE_BACKUP_SUFFIX  backup-key suffix for this device family
                                 (obtain from the community or a rooted unit;
-                                 see COMMUNITY-UNLOCK.md)
+                                 see docs/DEPLOYMENT.md)
 
 --dry-run performs everything except the upload/restore (safe).
 """
@@ -257,7 +257,7 @@ def main():
     print("\n[+] Restore triggered. The device is rebooting.")
     print("    In ~60–90s, run:  adb devices")
     print("    You should see a device (serial 0123456789ABCDEF).")
-    print("    Then deploy your agent / dropbear as usual — see COMMUNITY-UNLOCK.md.")
+    print("    Then deploy your agent / dropbear as usual — see docs/DEPLOYMENT.md.")
 
 
 if __name__ == "__main__":

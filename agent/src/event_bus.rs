@@ -1,16 +1,23 @@
 use std::io::BufRead;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Mutex;
 
 use serde_json::Value;
 
+use crate::util::MutexExt;
+
 const RESTART_DELAY_SECS: u64 = 5;
 const IGNORED_EVENTS: &[&str] = &["zwrt_deviceui_event.touchstatus"];
+/// Bounded so a subscriber that stops draining cannot grow its queue without
+/// limit on a device that runs for months. Excess events are dropped.
+const CHANNEL_CAPACITY: usize = 64;
 
 struct Subscriber {
     event: String,
-    tx: mpsc::Sender<Value>,
+    tx: mpsc::SyncSender<Value>,
+    dropped: AtomicU64,
 }
 
 pub struct EventBus {
@@ -27,11 +34,12 @@ impl EventBus {
     /// Register interest in a specific ubus event. Returns a receiver
     /// that will get the event payload each time it fires.
     pub fn subscribe(&self, event_name: &str) -> mpsc::Receiver<Value> {
-        let (tx, rx) = mpsc::channel();
-        let mut subs = self.subscribers.lock().unwrap();
+        let (tx, rx) = mpsc::sync_channel(CHANNEL_CAPACITY);
+        let mut subs = self.subscribers.safe_lock();
         subs.push(Subscriber {
             event: event_name.to_string(),
             tx,
+            dropped: AtomicU64::new(0),
         });
         rx
     }
@@ -100,11 +108,17 @@ impl EventBus {
     }
 
     fn dispatch(&self, event_name: &str, payload: &Value) {
-        let subs = self.subscribers.lock().unwrap();
+        let subs = self.subscribers.safe_lock();
         for sub in subs.iter() {
             if sub.event == event_name {
-                // Non-blocking send — drop event if receiver is full/disconnected
-                let _ = sub.tx.send(payload.clone());
+                // Non-blocking: drop the event if the receiver is backed up or
+                // gone, so a stalled consumer can never block this listener
+                // thread or grow its queue without bound.
+                if sub.tx.try_send(payload.clone()).is_err()
+                    && sub.dropped.fetch_add(1, Ordering::Relaxed) == 0
+                {
+                    eprintln!("[event_bus] {event_name}: subscriber not draining, dropping events");
+                }
             }
         }
     }

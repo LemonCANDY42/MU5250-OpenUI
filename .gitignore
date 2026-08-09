@@ -6,22 +6,8 @@ logs/
 .DS_Store
 device_report.json
 ubus_probe_report.json
-dashboard/dist/
 node_modules/
 *.local.json
-
-# Mobile build artifacts
-mobile/android/OpenU60/.gradle/
-mobile/android/OpenU60/.idea/
-mobile/android/OpenU60/build/
-mobile/android/OpenU60/app/build/
-mobile/android/OpenU60/local.properties
-mobile/android/OpenU60/*.iml
-mobile/ios/Pods/
-mobile/ios/build/
-mobile/ios/*.xcworkspace
-mobile/ios/*.xcuserdata
-mobile/ios/DerivedData/
 
 # Local-only secrets / investigation artifacts (never push)
 /adb-lock-investigation.md

@@ -3,13 +3,14 @@
   "short_name": "U60 Pro",
   "start_url": "./",
   "display": "standalone",
-  "theme_color": "#F8FAFC",
-  "background_color": "#F3F3F3",
+  "theme_color": "#f9f9fa",
+  "background_color": "#f9f9fa",
   "icons": [
     {
       "src": "favicon.svg",
       "sizes": "any",
-      "type": "image/svg+xml"
+      "type": "image/svg+xml",
+      "purpose": "any"
     }
   ]
 }
