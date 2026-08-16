@@ -10,17 +10,32 @@ permissions:
 jobs:
   agent:
     runs-on: ubuntu-latest
-    container: messense/rust-musl-cross:aarch64-musl
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - name: Install zig
+        run: |
+          pipx install ziglang
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-zigbuild
+
       - name: Build zte-agent
-        run: cargo build --release --target aarch64-unknown-linux-musl -p zte-agent --locked
+        run: cargo zigbuild --release --target aarch64-unknown-linux-musl -p zte-agent --locked
 
       - name: Sanity-check binary
         run: |
           BIN=target/aarch64-unknown-linux-musl/release/zte-agent
-          aarch64-linux-musl-readelf -h "$BIN" | grep -E 'Class|Machine|Type'
+          file "$BIN"
+          readelf -h "$BIN" | grep -E 'Class|Machine|Type'
+          readelf -d "$BIN" || true
           ls -l "$BIN"
 
       - uses: actions/upload-artifact@v4
