@@ -1,95 +1,126 @@
-// HTTP client for the agent: token handling, envelope unwrapping, timeouts.
+const V1_PATH = /^\/v1\/[a-z0-9/_-]+$/
+const REQUEST_TIMEOUT_MS = 15_000
 
-export const API_BASE = `http://${window.location.hostname}:9090`
-export const AUTH_EXPIRED_EVENT = 'zte-auth-expired'
+let sessionToken: string | null = null
 
-let _token: string | null = sessionStorage.getItem('zte_token')
+export class AgentError extends Error {
+  readonly status?: number
+  readonly code?: string
+  readonly retryAfterSeconds?: number
 
-export function setToken(t: string) {
-  _token = t
-  sessionStorage.setItem('zte_token', t)
-}
-
-export function clearToken() {
-  _token = null
-  sessionStorage.removeItem('zte_token')
-}
-
-export function hasToken() {
-  return !!_token
-}
-
-export class ApiError extends Error {
-  status?: number
-
-  constructor(message: string, status?: number) {
+  constructor(message: string, status?: number, code?: string, retryAfterSeconds?: number) {
     super(message)
-    this.name = 'ApiError'
+    this.name = 'AgentError'
     this.status = status
+    this.code = code
+    this.retryAfterSeconds = retryAfterSeconds
   }
 }
 
-function emitAuthExpired() {
-  clearToken()
-  window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT))
+export function setSessionToken(token: string): void {
+  if (!/^[A-Za-z0-9_-]{43}$/.test(token)) {
+    throw new AgentError('The agent returned an invalid session token')
+  }
+  sessionToken = token
 }
 
-export async function req(
-  method: string,
+export function clearSessionToken(): void {
+  sessionToken = null
+}
+
+export function hasSessionToken(): boolean {
+  return sessionToken !== null
+}
+
+export async function getJson(path: string): Promise<unknown> {
+  return requestJson('GET', path)
+}
+
+export async function postJson(path: string, body: unknown): Promise<unknown> {
+  return requestJson('POST', path, body)
+}
+
+export async function putJson(path: string, body: unknown): Promise<unknown> {
+  return requestJson('PUT', path, body)
+}
+
+async function requestJson(
+  method: 'GET' | 'POST' | 'PUT',
   path: string,
   body?: unknown,
-  extraHeaders?: Record<string, string>,
-  timeoutMs = 15_000,
-): Promise<Record<string, unknown>> {
+): Promise<unknown> {
+  if (!V1_PATH.test(path)) {
+    throw new AgentError('Refused a request outside the versioned agent API')
+  }
+
+  const headers = new Headers({ Accept: 'application/json' })
+  if (sessionToken !== null) {
+    headers.set('Authorization', `Bearer ${sessionToken}`)
+  }
+  if (body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+  }
+
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  const headers: Record<string, string> = { ...(extraHeaders ?? {}) }
-  if (_token) headers['Authorization'] = `Bearer ${_token}`
-  if (body !== undefined) headers['Content-Type'] = 'application/json'
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   try {
-    let res: Response
+    let response: Response
     try {
-      res = await fetch(`${API_BASE}${path}`, {
+      response = await fetch(path, {
         method,
         headers,
-        body: body !== undefined ? JSON.stringify(body) : undefined,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        cache: 'no-store',
+        credentials: 'same-origin',
         signal: controller.signal,
       })
-    } catch (error) {
-      if (error instanceof Error && error.name === 'AbortError') {
-        throw new ApiError('Timed out reaching the agent')
-      }
-      throw new ApiError(`Failed to reach the agent at ${API_BASE}`)
-    }
-
-    let json: { ok?: boolean; data?: unknown; error?: string }
-    try {
-      json = await res.json()
     } catch {
-      throw new ApiError(`Invalid response from agent (${res.status})`, res.status)
+      if (controller.signal.aborted) {
+        throw new AgentError('The secure local agent request timed out')
+      }
+      throw new AgentError('The secure local agent could not be reached')
     }
 
-    if (res.status === 401 && path !== '/api/auth/login') {
-      emitAuthExpired()
+    if (response.status === 401) {
+      clearSessionToken()
     }
-    if (!res.ok || !json.ok) {
-      throw new ApiError(json.error ?? `request failed (${res.status})`, res.status)
+    const contentType = response.headers.get('content-type') ?? ''
+    if (!contentType.toLowerCase().startsWith('application/json')) {
+      throw new AgentError('The agent returned an invalid response', response.status)
     }
-    return (json.data ?? {}) as Record<string, unknown>
+
+    let payload: unknown
+    try {
+      payload = await response.json()
+    } catch {
+      if (controller.signal.aborted) {
+        throw new AgentError('The secure local agent request timed out')
+      }
+      throw new AgentError('The agent returned invalid JSON', response.status)
+    }
+    if (!isRecord(payload) || typeof payload.ok !== 'boolean') {
+      throw new AgentError('The agent returned an invalid response envelope', response.status)
+    }
+    if (!response.ok || payload.ok !== true) {
+      const error = isRecord(payload.error) ? payload.error : {}
+      const message =
+        typeof error.message === 'string' ? error.message : 'The agent rejected the request'
+      const code = typeof error.code === 'string' ? error.code : undefined
+      const retry =
+        typeof error.retry_after_seconds === 'number' && Number.isInteger(error.retry_after_seconds)
+          ? error.retry_after_seconds
+          : undefined
+      throw new AgentError(message, response.status, code, retry)
+    }
+    if (!('data' in payload)) {
+      throw new AgentError('The agent response omitted data', response.status)
+    }
+    return payload.data
   } finally {
     clearTimeout(timeout)
   }
 }
 
-export const get = (path: string) => req('GET', path)
-export const post = (path: string, body?: unknown, extraHeaders?: Record<string, string>) =>
-  req('POST', path, body, extraHeaders)
-export const put = (path: string, body: unknown) => req('PUT', path, body)
-
-export async function login(
-  credentials: string | { password?: string; pin?: string },
-): Promise<{ token: string }> {
-  const body = typeof credentials === 'string' ? { password: credentials } : credentials
-  const data = await req('POST', '/api/auth/login', body)
-  return { token: data.token as string }
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }

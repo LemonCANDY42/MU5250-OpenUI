@@ -1,78 +1,62 @@
 # Dashboard
 
-React 19 + Vite + Tailwind SPA served from the device itself (uhttpd,
-port 8080, files in `/data/www`), talking to the agent on port 9090.
+The dashboard is a minimal, read-only TypeScript client for the generated
+`/v1` contract. It is built as three small static artifacts and may be served by
+the agent's existing TLS listener:
 
-## Layout
-
-Five navigation groups — bottom tab bar on phones, sidebar on desktop,
-light/dark theme (auto + manual), each group lazy-loaded:
-
-| Group | Contents |
-|---|---|
-| **Home** | signal, modem mode, throughput, battery, connection, device, data usage — backed by the single batched `/api/dashboard` poll |
-| **Signal** | per-carrier LTE/NR detail (PCI, ARFCN, RSRP/RSRQ/SINR) + network mode, band lock, one-tap cell lock from live cells |
-| **Network** | clients by Wi-Fi/USB-C/Ethernet with link details, per-band Wi-Fi configuration, LAN/DHCP and DNS |
-| **Modem** | APN profiles (with carrier presets), data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
-| **System** | thermals, battery health, charge control, signal/connection loggers, AT console, on-demand process list, device/SIM info, USB mode + powerbank, power actions |
-
-The agent exposes exactly what these screens use and nothing else — the
-unsurfaced extras (DoH proxy, speed test, scheduler, SMS forwarding, SIM PIN
-flows, calls/USSD/STK) were removed rather than left dangling. See
-[AGENT.md](AGENT.md) for the route table, and
-`scripts/check-api-contract.py`, which fails if the two drift apart.
-
-## Source layout
-
-```
-web-app/src/
-  App.tsx            auth gate + group switching (lazy-loaded)
-  app/               shell (sidebar/bottom tabs), login, theme, home poll context
-  data/
-    client.ts        token handling, envelope unwrapping, timeouts
-    api.ts           endpoint bindings + firmware response mappers
-    poll.ts          visibility-aware, non-overlapping poller with SWR cache
-  ui/                design-system primitives (cards, controls, toast, confirm)
-  icons.tsx          inline SVG icon set (no icon dependency)
-  features/
-    home/            Overview — single batched /api/dashboard poll
-    signal/          Overview + Mode & Locking
-    network/         Clients + Wi-Fi + Router
-    modem/           APN + Data + TTL + SMS
-    system/          Metrics + Tools + Settings
+```sh
+zte-agent serve --web-root /path/to/web-app/dist
 ```
 
-## Conventions that keep the device happy
+Static hosting is opt-in. See [AGENT.md](AGENT.md) for canonical-directory,
+symlink, asset allowlist and response-header rules. The source-only command
+above is documentation, not authorization to run the agent on the U60.
 
-- Home is one batched request (`/api/dashboard`) every 3 s — not nine calls.
-- Pollers never overlap (next poll scheduled after the previous completes)
-  and pause while the browser tab is hidden.
-- Expensive endpoints (`/api/network/clients`, `/api/system/top`) poll
-  slowly (15 s) or load on demand.
-- Last-good data is cached in memory, so switching tabs renders instantly
-  and refreshes in the background.
+## Product surface
 
-## Develop
+After authentication the dashboard reads the capability report first. It then
+requests only supported or degraded read endpoints and displays:
+
+- normalized device identity;
+- capability status and recovery metadata;
+- system uptime, kernel and load average;
+- battery state, capacity, voltage, current and temperature;
+- validated thermal sensors.
+
+An unsupported capability is shown explicitly and is not requested. A degraded
+capability retains its reason and maintenance action. There are no raw commands,
+firmware dictionaries, device mutations or legacy endpoint bindings.
+
+## Browser authentication
+
+The preferred local flow generates an ECDSA P-256 WebCrypto key pair with
+`extractable=false`. The browser exports only the public SPKI for the existing
+one-time pairing endpoint. IndexedDB stores the non-exportable private CryptoKey,
+public CryptoKey, credential ID and label. A later login requests the exact
+domain-separated challenge bytes, signs them with ECDSA/SHA-256 and exchanges
+the single-use signature for a scoped session.
+
+Raw 64-byte WebCrypto signatures are accepted directly; unambiguous canonical
+DER output is strictly parsed and normalized. An exact 64-byte sequence is
+inherently ambiguous, so the server tries both raw and DER interpretations and
+accepts only one that verifies. Bearer tokens remain only in page memory and
+logout clears them. Password recovery is a manual form fallback; the dashboard
+does not persist it, while browser password-manager behavior remains separately
+controlled by the browser and user.
+
+## Verification
 
 ```sh
 cd web-app
-npm install
-npm run dev       # local dev server (expects agent at <hostname>:9090)
-npm run build     # tsc + vite build -> dist/
+npm ci
+npm ci --prefix ../tools/openapi
+npm audit --audit-level=high
 npm run lint
+npm run check:api
+npm test
+npm run build
+npm run check:artifact
 ```
 
-Deploy to the device: `./deploy-dashboard.sh` from the repo root.
-
-### Local demo without the device
-
-```sh
-cd web-app
-bash tools/demo.sh        # dashboard on :8080 + mock agent on :9090
-bash tools/demo.sh stop
-```
-
-The mock agent (`tools/mock_agent.py`, stdlib-only) serves realistic U60 Pro
-data — Telstra ENDC with LTE anchor + n78 NR, live-jittering throughput,
-battery, clients, thermals — so every screen can be reviewed without
-hardware. Sign in with any password.
+The artifact gate scans the completed `dist/` tree for legacy API paths,
+plaintext URLs, the old split-origin port and common token-persistence markers.

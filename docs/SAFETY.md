@@ -23,8 +23,10 @@ cannot happen again.
    restore runs as root and extracts whatever it validates.
 5. **Exploit/injection tooling lives in `scripts/research/` and stays
    there.** It is quarantined for a reason — see its README.
-6. **FOTA auto-update stays off** (`zharden.sh` step 4). A surprise firmware
-   update wipes rc.local hooks and can change the rules under the agent.
+6. **Do not use this branch to change FOTA state.** A surprise firmware update
+   can change the recovery assumptions, but FOTA control is permanently outside
+   the integrated public API. Record and manage the owner's existing setting
+   only through a separately approved maintenance procedure.
 7. **Never write the USB composition node (`usb_op`) live** — set it via
    rc.local + reboot. Live writes (`0` or `2` after `1`) kill the gadget
    until the next reboot.
@@ -61,11 +63,10 @@ zte_topsw_jwxk_query, zte_topsw_tr069_sub, zte_mqtt_sdk_st,
 zte_topsw_dua, zte-topsw-tunnel
 ```
 
-The agent's `kill-bloat` endpoint (`agent/src/system.rs` `SAFE_OPTIONAL_DAEMONS`)
-contains only the safe list and subtracts the live daemon.conf barrier at
-runtime. An unreadable or empty barrier blocks the operation. Do not add daemon.conf names to it
-(killing `zte_topsw_wms` breaks SMS, `zte_topsw_sleep_faw` breaks wakelocks,
-and procd will respawn them anyway).
+The private integrated agent exposes **no process-killing endpoint**. The lists
+above are retained only as historical recovery evidence. Do not turn them into
+an allowlist: even a process once considered expendable may participate in a
+different B04 lifecycle or be restarted by procd.
 
 If a daemon.conf daemon truly must be disabled, comment it out in
 `/etc/config/zte_topsw_daemon.conf` (prefix `#`) — never via init.d.
@@ -115,20 +116,25 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   from low-power mode. Only fix: reboot.
 - **Charge policy inversion**: `zwrt_bsp.charger set
   {"direct_power_supply_mode":"enable"}` STOPS charging; `"disable"` STARTS
-  it. The agent's charge-control code (`agent/src/charge_policy.rs`) already
-  accounts for this — don't "fix" the inversion.
-- **procd respawn**: `kill -9` on a procd service may respawn it. Use
-  `/etc/init.d/<name> stop` instead.
+  it. Historical code accounts for this inversion, but the route is dormant
+  until a typed transaction and B04 recovery test exist.
+- **procd lifecycle**: signalling or stopping a managed service can cause a
+  respawn or block firmware synchronization. The integrated platform performs
+  neither operation.
 - **rc.local discipline**: stock rc.local contains a flash-protect block that
   READS `usb_op` — never delete that block (`sed '/usb_op/d'` breaks the
   script's syntax and kills ALL rc.local actions next boot). Always `sh -n
   /etc/rc.local` after any edit.
-- **IMEI is QFPROM-fused** — hardware-locked, not modifiable. Don't try.
+- **Reported IMEI is mutable in some firmware/service paths.** It is not a safe
+  regional-update mechanism and is not authoritative device identity. The
+  integrated platform neither exposes nor modifies it.
 - **eSIM**: no eUICC chip; not feasible.
 
-## What the deploy path does (and only this)
+## No persistent deploy path
 
-`setup.sh` / `deploy.sh` / `deploy-dashboard.sh` / `scripts/zharden.sh`:
+`setup.sh`, `deploy.sh`, `deploy-dashboard.sh` and `scripts/zharden.sh` are
+historical upstream scripts and now exit before device access. The old flow
+would have:
 
 - push `/data/zte-agent` + `/data/local/tmp/start_zte_agent.sh`
 - push dashboard static files to `/data/www`
@@ -138,7 +144,15 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
 - add a second uhttpd instance on :8080 for the dashboard (uci `uhttpd.dashboard`)
 - disable FOTA auto-update (`zwrt_zte_dm set_update_mode`)
 
-Anything beyond this list is a red flag during review.
+None of those historical actions is authorized by the current source baseline.
+A separately reviewed manual canary now exists only under the new `/data/u60`
+namespace, bound to device loopback and reached through a temporary USB ADB
+forward. It does not modify or reuse the dormant `/data/zte-agent` and
+`/data/local/tmp/start_zte_agent.sh` paths, and it has no `rc.local`, init or
+firewall entry. Its baseline and start evidence are under the approved NAS
+backup share. The owner later reduced the initial observation to a one-hour fast
+gate; this is not equivalent evidence for the original 24-hour leak target and
+does not itself authorize a stable release symlink or boot persistence.
 
 ## Known-good ubus surface
 
@@ -150,38 +164,35 @@ and methods; anything outside that surface deserves extra scrutiny.
 
 ---
 
-# Safety audit — 2026-08-09
+# Historical upstream safety audit — 2026-08-09
 
 Scope: every commit (`git log --all`), the working tree, and the deploy
 path. Goal: confirm nothing in this repo can brick the device when ADB is
 regained and this is deployed again.
 
-**Verdict: the deploy path is clean.** Findings and dispositions below.
+This audit predates the B04 V1 integration. Its findings are retained as
+device-recovery evidence, not as approval to bypass the disabled deploy guards.
 
 ## 1. Deploy path
 
 | Surface | What it does | Verdict |
 |---|---|---|
-| `setup.sh` | unlock (via zunlock.py) + agent push, startup script, rc.local line | idempotent, grep-guarded rc.local edits; safe |
-| `deploy.sh` | ssh-only binary push + restart | safe |
-| `deploy-dashboard.sh` | builds `web-app`, tars to `/data/www` | safe (data partition only) |
-| `scripts/zharden.sh` | dropbear to `/data`, rc.local cleanup, uhttpd :8080, FOTA off | v2 removed the firewall-include bootstrap — the last boot-critical hook; safe now |
+| `setup.sh` | historical unlock + agent push + rc.local edit | disabled in this branch |
+| `deploy.sh` | historical SSH binary replacement | disabled in this branch |
+| `deploy-dashboard.sh` | historical dashboard copy to `/data/www` | disabled in this branch |
+| `scripts/zharden.sh` | historical Dropbear/uhttpd/FOTA/rc.local changes | disabled; does not establish key-only SSH |
 | `scripts/zunlock.py` / `zbackup.py` | config backup patch + restore (the unlock itself) | highest-risk by nature, but gated: `--dry-run`, explicit confirm, sha256 upload verification, payload auto-discovered from the device's own rc.local |
 
-## 2. Agent boot-time behavior — acceptable, documented
+## 2. Current private agent behavior
 
-- `main.rs` runs `/data/local/tmp/start_ttl.sh` (iptables mangle TTL/HL
-  rules). Runtime firewall only; no persistence beyond that script. Safe.
-- `usb::enforce_usb_mode_on_boot()` rebuilds the USB configfs gadget **only
-  if NCM was explicitly persisted** (`/data/local/tmp/usb_config.json`),
-  waits up to 75 s for the stock USB stack to finish (bridge-membership
-  check), and skips in power-off-charging states. configfs is runtime sysfs —
-  a failure cannot persist across reboot. Worst case: tethering needs a
-  reboot. Acceptable.
-- All agent state files live under `/data/local/tmp/` (writable data
-  partition). The agent never writes `/etc`, `/zteoverlay`, or raw
-  partitions, except via `uci commit wireless`/`dhcp`/`uhttpd` and the
-  documented rc.local lines.
+- The compiled agent performs no boot-time migration or device mutation.
+- Its default listener is host-only `127.0.0.1:19090`; this is a test default,
+  not the future device port.
+- `B04Adapter` reads only the fixed `/usr/zte_web/web/version` identity file
+  plus fixed proc/sysfs paths. No public request can select an object, method,
+  command, key or path.
+- Legacy TTL, USB, Wi-Fi, charge, SMS, routing and logger modules remain only as
+  dormant provenance files and are not in the compiled module graph.
 
 ## 3. Findings acted on (2026-08-09)
 
@@ -199,24 +210,22 @@ regained and this is deployed again.
 
 ## 4. v2.1 features ported, and what was deliberately NOT ported
 
-Ported (safe, gated): charge control (`zwrt_bsp.charger`, inverted semantics
-handled), USB powerbank (`zwrt_bsp.powerbank set`), firmware WMS SMS translation
-with readiness gating (no direct database writes), `/api/at/port`, WiFi dual UCI namespace
-(`zte_mbb.wifi.*` + `wireless.zte_mbb.*`) with guest-time read.
+The upstream snapshot contained charge control, USB powerbank, SMS
+SQLite-delete fallback, raw AT-port discovery and Wi-Fi UCI behavior. In the
+B04 V1 integration these legacy routes are dormant; none is accepted for B04
+until it is represented by a typed `/v1` capability and passes its own backup,
+readback and recovery gate.
 
 **Rejected from v2.1 (safety regressions):**
 
 | v2.1 change | Why rejected |
 |---|---|
-| kill-bloat list adds `zte_topsw_mc`, `zte_dm`, `zte_topsw_wms`, `zte_topsw_sleep_faw`, `zte_topsw_tr098db` | daemon.conf daemons — sync-barrier risk (see above); current list kept |
-| unrestricted AT terminal (any `AT…` accepted) | current allowlist kept (`AT+CFUN`, `AT^…`, `AT+CMGD`, `AT$QCRMCALL` etc. blocked) |
-| bind `0.0.0.0:9090`, no CORS pinning, no body limit, no `X-Confirm` on destructive ops | current hardening kept (LAN bind `192.168.0.1`, LAN-only CORS, 1 MiB body cap, `X-Confirm: true` required) |
+| any kill-bloat/process-killing API | process lifecycle is not a stable device contract; the public capability is permanently absent |
+| unrestricted or allowlisted raw AT terminal | string allowlists are not a safe semantic boundary; the route and AT transport module were removed |
+| any plaintext LAN listener or generic destructive endpoint | current source binds only to loopback for host tests and exposes no writes; the device canary must use pinned HTTPS |
 
-The scheduler, DoH proxy and SMS forwarder have since been removed entirely —
-they had no dashboard surface, and `main.rs` runs a one-shot migration that
-undoes DoH's dnsmasq rewiring so a device that had it enabled does not come
-back up forwarding DNS to a dead port.
-| Tailscale module | skipped by owner decision (installs/supervises a daemon, downloads binaries) |
+Scheduler, DoH, SMS forwarding and Tailscale are outside the compiled private
+agent. They are not fallback services and must not be added to the core runtime.
 
 ## 5. Secrets / sensitive data
 
@@ -224,16 +233,18 @@ back up forwarding DNS to a dead port.
   (contains the backup-key suffix, IMEI and sticker credentials), `logs/`,
   `loopdebug-capture/` are **gitignored and never committed** — verified
   across all history. Keep it that way.
-- No IMEI, passwords, session tokens or backup-key material in any committed
-  file (scanned 2026-08-09).
+- No real IMEI, passwords, session tokens or backup-key material may enter any
+  commit. Synthetic mock identifiers are test data only.
 - `scripts/research/` tools are env-parameterized (no embedded credentials).
 
-## 6. Residual risks (accepted, documented)
+## 6. Residual source risks
 
-- `zunlock.py` restore path: inherent to the unlock; mitigations in place.
-- NCM gadget rebuild: runtime-only, recoverable by reboot.
-- `zwrt_bsp.charger set` can stop charging; the charge-limit enforcer
-  re-enables on charger unplug and on disable. Manual override is exposed
-  via the API.
-- `scripts/research/` remains runnable if deliberately invoked — that is the
-  point of the quarantine README.
+- `zunlock.py` and config restore are inherently privileged recovery tools;
+  neither participates in normal runtime or deployment.
+- Dormant upstream mutation modules remain for provenance and reference. The
+  route-contract test and minimal compiled module graph prevent them from
+  becoming public behavior accidentally.
+- Every `scripts/research/` executable fails closed before a socket, listener
+  or queue side effect unless the privileged-research one-command
+  acknowledgement is present. The acknowledgement is an audit gate, not a
+  safety claim; the quarantine rules still apply.

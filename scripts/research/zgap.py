@@ -16,6 +16,10 @@ ROUTER_PW env. Non-destructive by default:
   - fac_reset / fac_reboot are DESTRUCTIVE and stay commented behind DANGER=1.
   - VPN probes use 127.0.0.1 as the base host (no outbound connection attempted).
 """
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar
 
 GW = os.environ.get("GW", "192.168.0.1"); PW = os.environ["ROUTER_PW"]; ANON = "0" * 32

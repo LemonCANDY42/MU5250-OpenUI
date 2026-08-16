@@ -1,0 +1,353 @@
+import { AgentError, getJson, isRecord } from './client'
+import type {
+  V1BatteryStatus,
+  V1Capability,
+  V1CapabilityReport,
+  V1CellularStatus,
+  V1Device,
+  V1LanClients,
+  V1SignalStatus,
+  V1SmsPage,
+  V1SystemStatus,
+  V1ThermalStatus,
+  V1TrafficStatus,
+  V1WifiStatus,
+} from './v1-contract'
+
+type CapabilityId = V1Capability['id']
+type PanelValue =
+  | V1Device
+  | V1SystemStatus
+  | V1BatteryStatus
+  | V1ThermalStatus
+  | V1SignalStatus
+  | V1CellularStatus
+  | V1TrafficStatus
+  | V1WifiStatus
+  | V1LanClients
+  | V1SmsPage
+
+export interface DashboardPanel {
+  capability: V1Capability
+  value?: PanelValue
+  error?: string
+}
+
+export interface DashboardSnapshot {
+  report: V1CapabilityReport
+  panels: readonly DashboardPanel[]
+}
+
+const ENDPOINTS: Readonly<
+  Record<CapabilityId, { path: string; parse: (value: unknown) => PanelValue }>
+> = {
+  device_identity: { path: '/v1/device', parse: parseDevice },
+  system_status: { path: '/v1/status/system', parse: parseSystem },
+  battery_status: { path: '/v1/status/battery', parse: parseBattery },
+  thermal_status: { path: '/v1/status/thermal', parse: parseThermal },
+  signal_status: { path: '/v1/status/signal', parse: parseSignal },
+  cellular_status: { path: '/v1/status/cellular', parse: parseCellular },
+  traffic_status: { path: '/v1/status/traffic', parse: parseTraffic },
+  wifi_status: { path: '/v1/status/wifi', parse: parseWifi },
+  lan_clients: { path: '/v1/lan/clients', parse: parseLanClients },
+  sms_list: { path: '/v1/sms', parse: parseSmsPage },
+}
+
+export async function loadDashboard(): Promise<DashboardSnapshot> {
+  const report = parseCapabilityReport(await getJson('/v1/capabilities'))
+  const panels = await Promise.all(
+    report.capabilities.map(async (capability): Promise<DashboardPanel> => {
+      if (capability.status === 'unsupported') {
+        return { capability }
+      }
+      const endpoint = ENDPOINTS[capability.id]
+      try {
+        return {
+          capability,
+          value: endpoint.parse(await getJson(endpoint.path)),
+        }
+      } catch (error) {
+        if (error instanceof AgentError && error.status === 401) {
+          throw error
+        }
+        return {
+          capability,
+          error: error instanceof Error ? error.message : 'Status unavailable',
+        }
+      }
+    }),
+  )
+  return { report, panels }
+}
+
+function parseCapabilityReport(value: unknown): V1CapabilityReport {
+  if (
+    !isRecord(value) ||
+    typeof value.adapter !== 'string' ||
+    typeof value.firmware_target !== 'string' ||
+    !Array.isArray(value.capabilities)
+  ) {
+    throw new AgentError('The agent returned an invalid capability report')
+  }
+  const capabilities = value.capabilities.map(parseCapability)
+  const ids = new Set(capabilities.map((capability) => capability.id))
+  if (
+    capabilities.length !== 10 ||
+    ids.size !== 10 ||
+    Object.keys(ENDPOINTS).some((id) => !ids.has(id as CapabilityId))
+  ) {
+    throw new AgentError('The agent capability report is incomplete')
+  }
+  return {
+    adapter: value.adapter,
+    firmware_target: value.firmware_target,
+    capabilities,
+  }
+}
+
+function parseCapability(value: unknown): V1Capability {
+  if (!isRecord(value) || !isCapabilityId(value.id)) {
+    throw new AgentError('The agent returned an invalid capability')
+  }
+  if (!['available', 'degraded', 'unsupported'].includes(String(value.status))) {
+    throw new AgentError('The agent returned an invalid capability state')
+  }
+  if (
+    !isRecord(value.recovery) ||
+    typeof value.recovery.required !== 'boolean' ||
+    (value.recovery.action !== undefined && typeof value.recovery.action !== 'string') ||
+    (value.reason !== undefined && typeof value.reason !== 'string')
+  ) {
+    throw new AgentError('The agent returned invalid capability recovery metadata')
+  }
+  return value as unknown as V1Capability
+}
+
+function parseDevice(value: unknown): V1Device {
+  if (
+    !isRecord(value) ||
+    !hasStrings(value, ['manufacturer', 'model', 'adapter', 'firmware_target']) ||
+    (value.firmware_version !== undefined && typeof value.firmware_version !== 'string') ||
+    (value.hardware_version !== undefined && typeof value.hardware_version !== 'string')
+  ) {
+    throw new AgentError('The agent returned invalid device identity')
+  }
+  return value as unknown as V1Device
+}
+
+function parseSystem(value: unknown): V1SystemStatus {
+  if (
+    !isRecord(value) ||
+    !hasStrings(value, ['hostname', 'kernel']) ||
+    !isNonNegativeInteger(value.uptime_seconds) ||
+    !Array.isArray(value.load_average) ||
+    value.load_average.length !== 3 ||
+    !value.load_average.every(isFiniteNumber)
+  ) {
+    throw new AgentError('The agent returned invalid system status')
+  }
+  return value as unknown as V1SystemStatus
+}
+
+function parseBattery(value: unknown): V1BatteryStatus {
+  if (
+    !isRecord(value) ||
+    typeof value.state !== 'string' ||
+    !isNonNegativeInteger(value.capacity_percent) ||
+    value.capacity_percent > 100 ||
+    !Number.isInteger(value.voltage_mv) ||
+    !Number.isInteger(value.current_ma) ||
+    !isFiniteNumber(value.temperature_c)
+  ) {
+    throw new AgentError('The agent returned invalid battery status')
+  }
+  return value as unknown as V1BatteryStatus
+}
+
+function parseThermal(value: unknown): V1ThermalStatus {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.sensors) ||
+    !value.sensors.every(
+      (sensor) =>
+        isRecord(sensor) && typeof sensor.sensor === 'string' && isFiniteNumber(sensor.temperature_c),
+    )
+  ) {
+    throw new AgentError('The agent returned invalid thermal status')
+  }
+  return value as unknown as V1ThermalStatus
+}
+
+function parseSignal(value: unknown): V1SignalStatus {
+  if (
+    !isRecord(value) ||
+    typeof value.network_type !== 'string' ||
+    !isNonNegativeInteger(value.bars) ||
+    value.bars > 5 ||
+    typeof value.roaming !== 'boolean' ||
+    !optionalString(value.provider) ||
+    !optionalString(value.active_band) ||
+    !optionalRadio(value.lte) ||
+    !optionalRadio(value.nr5g)
+  ) {
+    throw new AgentError('The agent returned invalid signal status')
+  }
+  return value as unknown as V1SignalStatus
+}
+
+function optionalRadio(value: unknown): boolean {
+  if (value === undefined) return true
+  if (!isRecord(value)) return false
+  return (
+    optionalString(value.band) &&
+    optionalString(value.bandwidth) &&
+    optionalNonNegativeInteger(value.channel) &&
+    optionalNonNegativeInteger(value.pci) &&
+    optionalNonNegativeInteger(value.cell_id) &&
+    optionalFiniteNumber(value.rsrp_dbm) &&
+    optionalFiniteNumber(value.rsrq_db) &&
+    optionalFiniteNumber(value.rssi_dbm) &&
+    optionalFiniteNumber(value.snr_db)
+  )
+}
+
+function parseCellular(value: unknown): V1CellularStatus {
+  if (
+    !isRecord(value) ||
+    typeof value.connected !== 'boolean' ||
+    !isNonNegativeInteger(value.uptime_seconds) ||
+    typeof value.protocol !== 'string' ||
+    !optionalString(value.interface) ||
+    !isStringArray(value.ipv4_addresses, 8) ||
+    !isStringArray(value.ipv6_addresses, 8)
+  ) {
+    throw new AgentError('The agent returned invalid cellular status')
+  }
+  return value as unknown as V1CellularStatus
+}
+
+function parseTraffic(value: unknown): V1TrafficStatus {
+  if (
+    !isRecord(value) ||
+    !isTrafficPeriod(value.day) ||
+    !isTrafficPeriod(value.cycle) ||
+    !isTrafficPeriod(value.since_power_on) ||
+    !isTrafficPeriod(value.total) ||
+    !isNonNegativeInteger(value.reset_day) ||
+    value.reset_day < 1 ||
+    value.reset_day > 31 ||
+    typeof value.reset_enabled !== 'boolean'
+  ) {
+    throw new AgentError('The agent returned invalid traffic status')
+  }
+  return value as unknown as V1TrafficStatus
+}
+
+function isTrafficPeriod(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    isNonNegativeInteger(value.rx_bytes) &&
+    isNonNegativeInteger(value.tx_bytes) &&
+    isNonNegativeInteger(value.rx_packets) &&
+    isNonNegativeInteger(value.tx_packets) &&
+    isNonNegativeInteger(value.time_seconds)
+  )
+}
+
+function parseWifi(value: unknown): V1WifiStatus {
+  if (
+    !isRecord(value) ||
+    typeof value.enabled !== 'boolean' ||
+    !Array.isArray(value.bands) ||
+    value.bands.length > 2 ||
+    !value.bands.every(isWifiBand)
+  ) {
+    throw new AgentError('The agent returned invalid Wi-Fi status')
+  }
+  return value as unknown as V1WifiStatus
+}
+
+function isWifiBand(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasStrings(value, ['band', 'ssid', 'encryption', 'channel', 'bandwidth']) &&
+    typeof value.enabled === 'boolean' &&
+    typeof value.hidden === 'boolean' &&
+    optionalNonNegativeInteger(value.clients) &&
+    (value.transmit_power_percent === undefined ||
+      (isNonNegativeInteger(value.transmit_power_percent) &&
+        value.transmit_power_percent <= 100))
+  )
+}
+
+function parseLanClients(value: unknown): V1LanClients {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.clients) ||
+    value.clients.length > 256 ||
+    !value.clients.every(
+      (client) =>
+        isRecord(client) &&
+        hasStrings(client, ['hostname', 'ipv4_address', 'mac_address']) &&
+        isNonNegativeInteger(client.expires_seconds),
+    )
+  ) {
+    throw new AgentError('The agent returned an invalid LAN client list')
+  }
+  return value as unknown as V1LanClients
+}
+
+function parseSmsPage(value: unknown): V1SmsPage {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeInteger(value.page) ||
+    !isNonNegativeInteger(value.per_page) ||
+    value.per_page < 1 ||
+    value.per_page > 100 ||
+    !Array.isArray(value.messages) ||
+    value.messages.length > value.per_page ||
+    !value.messages.every(
+      (message) =>
+        isRecord(message) &&
+        isNonNegativeInteger(message.id) &&
+        message.id > 0 &&
+        hasStrings(message, ['sender', 'timestamp', 'content']) &&
+        typeof message.read === 'boolean',
+    )
+  ) {
+    throw new AgentError('The agent returned an invalid SMS page')
+  }
+  return value as unknown as V1SmsPage
+}
+
+function isCapabilityId(value: unknown): value is CapabilityId {
+  return Object.hasOwn(ENDPOINTS, String(value))
+}
+
+function hasStrings(record: Record<string, unknown>, names: readonly string[]): boolean {
+  return names.every((name) => typeof record[name] === 'string')
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
+}
+
+function isStringArray(value: unknown, maximum: number): boolean {
+  return Array.isArray(value) && value.length <= maximum && value.every((item) => typeof item === 'string')
+}
+
+function optionalNonNegativeInteger(value: unknown): boolean {
+  return value === undefined || isNonNegativeInteger(value)
+}
+
+function optionalFiniteNumber(value: unknown): boolean {
+  return value === undefined || isFiniteNumber(value)
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}

@@ -1,0 +1,41 @@
+# --- Xcode generated ---
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# XcodeGen keeps the project disposable, but SwiftPM's full transitive lock is
+# committed at the documented nested location.
+!OpenU60/OpenU60.xcodeproj/
+OpenU60/OpenU60.xcodeproj/*
+!OpenU60/OpenU60.xcodeproj/project.xcworkspace/
+OpenU60/OpenU60.xcodeproj/project.xcworkspace/*
+!OpenU60/OpenU60.xcodeproj/project.xcworkspace/xcshareddata/
+OpenU60/OpenU60.xcodeproj/project.xcworkspace/xcshareddata/*
+!OpenU60/OpenU60.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
+OpenU60/OpenU60.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/*
+!OpenU60/OpenU60.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
+
+# --- Build artifacts ---
+build/
+DerivedData/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# --- Secrets & local config ---
+.env
+*.env.local
+
+# --- macOS ---
+.DS_Store
+*.swp
+*~
+
+# --- Certificates & provisioning ---
+*.mobileprovision
+*.p12
+*.pem
+*.key
+
+# --- Temporary ---
+/tmp/

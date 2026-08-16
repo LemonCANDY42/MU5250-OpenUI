@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """DNS-query diag injection probe. ROUTER_PW env.
 dnsquery_server is a second input -> test for command injection."""
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, json, time, hashlib, urllib.request, http.cookiejar
 
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32

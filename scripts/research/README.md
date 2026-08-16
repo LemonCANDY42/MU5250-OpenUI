@@ -8,6 +8,11 @@ are the class of tooling that bricked the original device. They are kept only
 as a record of what was tried; nothing in this directory is used by
 `setup.sh`, `deploy.sh`, `deploy-dashboard.sh`, or the agent.
 
+Every executable in this directory now fails closed before opening a socket,
+creating a listener or mutating a local queue. Deliberate historical research
+also requires the one-command acknowledgement enforced by
+`scripts/_device_gate.py`; that acknowledgement does not make the tools safe.
+
 | Script | What it does | Why it is dangerous |
 |---|---|---|
 | `zacs.py` | Rogue TR-069 ACS server; queues CWMP RPCs incl. `SetParameterValues` | SPV can rewrite firmware-managed config remotely; the device may also apply ACS-pushed parameters on its own schedule |
@@ -20,13 +25,18 @@ as a record of what was tried; nothing in this directory is used by
 | `zhidden.py` | Hidden-page login with factory sticker password, then `zwrt_bsp.usb set {mode:debug}` | Bypasses the removed ADB toggle path |
 | `zwrite.py` | Probes the write gate on `zwrt_router.api` setters (writes DDNS config) | Mutates live router config |
 
-## Sanctioned path instead
+## Historical recovery references
 
-For ADB/root on locked firmware use the reviewed, gated path in `scripts/`:
+The earlier recovery sequence was:
 
 1. `scripts/zunlock.py` — config backup/restore unlock (`--dry-run` first)
 2. `setup.sh` — agent install
 3. `scripts/zharden.sh` — post-unlock hardening
+
+In the B04 V1 branch, all three legacy device-facing stages are disabled or
+explicitly gated. They are provenance and recovery references, not an approved
+deployment path. The active agent remains host-only until the HTTPS,
+authentication, cross-build and canary gates are separately accepted.
 
 Design rule (2026-07-21): **shell/ssh/adb only.** No boot hooks outside
 `/etc/rc.local`, no firewall includes/hooks, no init.d changes to daemons

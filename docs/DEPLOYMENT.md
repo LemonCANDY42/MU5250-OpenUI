@@ -1,9 +1,39 @@
 # Deployment — unlock, install, update
 
+## Pre-canary recovery baseline
+
+Before the first device write, capture the retained root-ADB and boot-path
+baseline directly to the approved NAS share:
+
+```sh
+python3 scripts/capture-b04-canary-baseline.py \
+  --output-root /Volumes/backups/U60-Pro
+```
+
+The command refuses any firmware other than exact HK B04, a non-root or
+ambiguous ADB transport, any directory entry (including a dangling symlink) at
+`/data/u60`, a running `zte-agent`, a non-`en0` default route, TUN drift, or an
+unapproved NAS mount. Known dormant upstream artifacts at `/data/zte-agent` and
+`/data/local/tmp/start_zte_agent.sh` are inventoried by type, public metadata and
+SHA-256 when regular, then rechecked for drift; they are never executed,
+overwritten or removed. The command saves the current `/etc/rc.local` bytes and
+public metadata, writes an owner-only manifest, and publishes
+`baseline.complete` last. It does not write to the device. A canary must not
+begin without an exactly verified completion marker.
+
+> **Historical upstream reference only. Do not follow this deployment flow on
+> the B04 V1 branch.** `setup.sh`, `deploy.sh`,
+> `deploy-dashboard.sh` and `scripts/zharden.sh` now exit before device access.
+> A replacement canary workflow is not yet implemented. The unlock/backup
+> discussion is retained as recovery research, not as authorization to restore
+> another configuration.
+
 Everything needed to go from a locked U60 Pro to the full stack (agent +
 dashboard + SSH), and to keep it there. Read [SAFETY.md](SAFETY.md) first.
 
 ## The whole flow at a glance
+
+The following block describes the disabled upstream flow:
 
 ```sh
 python3 scripts/zunlock.py     # 1. unlock → adbd        (locked firmware only)
@@ -20,7 +50,7 @@ End state (persists across reboots):
 | Stock web UI | `http://192.168.0.1:80` / `:443` | untouched |
 | Dashboard | `http://192.168.0.1:8080` | uhttpd `dashboard` instance → `/data/www` |
 | Agent API | `http://192.168.0.1:9090` | password = your choice at setup |
-| SSH | `ssh -p 2222 root@192.168.0.1` | key-only, `/data/bin/dropbear` |
+| SSH | `ssh -p 2222 root@192.168.0.1` | installed a key, but did not actually disable password login |
 | ADB | on demand | `echo 1 > /sys/class/android_usb/android0/usb_op` via SSH + reboot; reverts next reboot |
 
 ---
@@ -112,10 +142,9 @@ bash setup.sh
 ```
 
 - Prompts for the router admin password and the agent API password.
-- **Choose "build from source"** (the default, fully auditable). The
-  pre-built download comes from this repo's GitHub releases and matches
-  the dashboard — use it when installing the Rust toolchain isn't
-  practical.
+- **Choose "build from source"** (the default). The pre-built download is
+  the upstream agent, which lacks this fork's endpoints and would leave
+  parts of the dashboard empty.
 - If the device is locked (no SSH, no ADB) it runs the unlock first (see
   above). If ADB is already up or SSH works, it deploys straight away.
 - Pushes the agent to `/data/zte-agent`, creates the startup script with

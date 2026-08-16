@@ -1,0 +1,13 @@
+{
+  "name": "u60-openapi-tooling",
+  "private": true,
+  "version": "0.0.0",
+  "scripts": {
+    "generate": "openapi-typescript ../../openapi/u60-v1.yaml -o ../../web-app/src/generated/u60-v1.d.ts --immutable --array-length",
+    "check": "npm run generate -- --check"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.12.0",
+    "typescript": "5.9.3"
+  }
+}

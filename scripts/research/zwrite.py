@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Decisively determine the write gate on zwrt_router.api setters.
 ROUTER_PW env. Tests: full-param set, zte_nwinfo setter, superuser toggle."""
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar
 
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32

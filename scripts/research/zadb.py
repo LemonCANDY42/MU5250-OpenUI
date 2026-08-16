@@ -5,6 +5,10 @@ methods, and web_hidden_page_login WITH a username field. ROUTER_PW env.
 Starts with safe reads (accessibility check, fac_query_key), then tries the
 adb_switch / fac_open / hidden_page_login with candidate credentials.
 """
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar, base64
 
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32

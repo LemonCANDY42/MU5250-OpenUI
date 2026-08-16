@@ -1,0 +1,970 @@
+use std::collections::BTreeMap;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Weak};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
+use rand_core::{OsRng, RngCore};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+use crate::b04_io::{B04Io, UbusRead, UbusWrite, WifiField};
+use crate::state_store::StateStore;
+
+const WIFI_TRANSACTION_FILE: &str = "wifi-transaction.json";
+const WIFI_TRANSACTION_LOCK: &str = "wifi-transaction.lock";
+const CHARGE_POLICY_FILE: &str = "charge-policy.json";
+const CHARGE_LOCK: &str = "charge.lock";
+const TRAFFIC_LOCK: &str = "traffic.lock";
+const SMS_LOCK: &str = "sms.lock";
+const DAILY_AUDIT_FILE: &str = "daily-audit.json";
+const DAILY_AUDIT_LOCK: &str = "daily-audit.lock";
+const WIFI_CONFIRM_SECONDS: u64 = 120;
+const CHARGE_HYSTERESIS_PERCENT: u8 = 5;
+const CHARGE_POLL_SECONDS: u64 = 30;
+const MAX_DAILY_AUDIT_EVENTS: usize = 128;
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WriteResult {
+    pub result: &'static str,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SmsSendRequest {
+    pub recipient: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ChargingStatus {
+    pub capacity_percent: u8,
+    pub paused: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub automatic_limit_percent: Option<u8>,
+    pub hysteresis_percent: u8,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ChargingOperation {
+    Pause,
+    Resume,
+    SetLimit,
+    DisableLimit,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ChargingRequest {
+    pub operation: ChargingOperation,
+    #[serde(default)]
+    pub limit_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TrafficCycleRequest {
+    pub reset_day: u8,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WifiTransactionRequest {
+    #[serde(default)]
+    pub ssid_2g: Option<String>,
+    #[serde(default)]
+    pub passphrase_2g: Option<String>,
+    #[serde(default)]
+    pub hidden_2g: Option<bool>,
+    #[serde(default)]
+    pub ssid_5g: Option<String>,
+    #[serde(default)]
+    pub passphrase_5g: Option<String>,
+    #[serde(default)]
+    pub hidden_5g: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WifiConfirmRequest {
+    pub transaction_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WifiTransactionGrant {
+    pub transaction_id: String,
+    pub confirm_within_seconds: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct PendingWifiTransaction {
+    id: String,
+    expires_at: u64,
+    old_values: BTreeMap<WifiField, String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct ChargePolicy {
+    automatic_limit_percent: Option<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DailyAuditEvent {
+    timestamp: u64,
+    event: String,
+    outcome: String,
+}
+
+pub struct DailyService {
+    store: StateStore,
+    io: Arc<dyn B04Io>,
+    charge_enforcer_started: AtomicBool,
+}
+
+impl DailyService {
+    pub fn open(store: StateStore) -> Result<Self, String> {
+        Self::with_io(store, Arc::new(crate::b04_io::SystemB04Io::new()))
+    }
+
+    pub fn run_wifi_rollback_worker(
+        store: StateStore,
+        transaction_id: &str,
+    ) -> Result<bool, String> {
+        validate_transaction_id(transaction_id)?;
+        let service = Self {
+            store,
+            io: Arc::new(crate::b04_io::SystemB04Io::new()),
+            charge_enforcer_started: AtomicBool::new(false),
+        };
+        service.rollback_pending_wifi(Some(transaction_id))
+    }
+
+    fn with_io(store: StateStore, io: Arc<dyn B04Io>) -> Result<Self, String> {
+        let service = Self {
+            store,
+            io,
+            charge_enforcer_started: AtomicBool::new(false),
+        };
+        // A reboot or service restart during an unconfirmed Wi-Fi transaction
+        // must restore the saved values before the listener can start.
+        service.rollback_pending_wifi(None)?;
+        Ok(service)
+    }
+
+    pub fn start_charge_enforcer(self: &Arc<Self>) {
+        if self.charge_enforcer_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        thread::spawn(move || charge_enforcer(weak));
+    }
+
+    pub fn sms_send(&self, request: SmsSendRequest) -> Result<WriteResult, String> {
+        validate_recipient(&request.recipient)?;
+        validate_message(&request.message)?;
+        let _lock = self.store.lock_exclusive(SMS_LOCK)?;
+        let timestamp = sms_timestamp()?;
+        let encoding = sms_encoding(&request.message);
+        self.io.ubus_write(UbusWrite::SmsSend {
+            number: request.recipient,
+            timestamp,
+            encoded_message: encode_sms_message(&request.message),
+            encoding,
+        })?;
+        for attempt in 0..20 {
+            match sms_command_status(self.io.as_ref(), 4)? {
+                3 => {
+                    self.audit("sms_send", "success");
+                    return Ok(WriteResult { result: "accepted" });
+                }
+                2 => {
+                    self.audit("sms_send", "failed");
+                    return Err("SMS send reached the failed state".into());
+                }
+                _ => {}
+            }
+            if attempt < 19 {
+                thread::sleep(Duration::from_millis(500));
+            }
+        }
+        self.audit("sms_send", "failed");
+        Err("SMS send did not reach the completed state".into())
+    }
+
+    pub fn charging_status(&self) -> Result<ChargingStatus, String> {
+        let policy = self.charge_policy()?;
+        Ok(ChargingStatus {
+            capacity_percent: self.io.battery_capacity()?,
+            paused: charger_paused(self.io.as_ref())?,
+            automatic_limit_percent: policy.automatic_limit_percent,
+            hysteresis_percent: CHARGE_HYSTERESIS_PERCENT,
+        })
+    }
+
+    pub fn charging_update(&self, request: ChargingRequest) -> Result<ChargingStatus, String> {
+        validate_charging_request(&request)?;
+        let _lock = self.store.lock_exclusive(CHARGE_LOCK)?;
+        let previous_policy = self.charge_policy()?;
+        let previous_paused = charger_paused(self.io.as_ref())?;
+        let result = (|| {
+            match request.operation {
+                ChargingOperation::Pause | ChargingOperation::Resume => {
+                    self.persist_charge_policy(&ChargePolicy::default())?;
+                    let paused = request.operation == ChargingOperation::Pause;
+                    self.set_charge_paused(paused)?;
+                }
+                ChargingOperation::SetLimit => {
+                    let limit = request
+                        .limit_percent
+                        .filter(|value| (50..=95).contains(value))
+                        .ok_or_else(|| "limit_percent must be between 50 and 95".to_string())?;
+                    self.persist_charge_policy(&ChargePolicy {
+                        automatic_limit_percent: Some(limit),
+                    })?;
+                    self.enforce_charge_policy_locked()?;
+                }
+                ChargingOperation::DisableLimit => {
+                    self.persist_charge_policy(&ChargePolicy::default())?;
+                }
+            }
+            self.charging_status()
+        })();
+        match result {
+            Ok(status) => {
+                self.audit("charging_update", "success");
+                Ok(status)
+            }
+            Err(cause) => {
+                let recovery = self.restore_charge_state(&previous_policy, previous_paused);
+                match recovery {
+                    Ok(()) => {
+                        self.audit("charging_update", "rolled_back");
+                        Err(format!("charging update was rolled back: {cause}"))
+                    }
+                    Err(rollback_error) => {
+                        self.audit("charging_update", "rollback_failed");
+                        Err(format!(
+                            "charging update failed and recovery is still pending: {cause}; {rollback_error}"
+                        ))
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn traffic_cycle_update(
+        &self,
+        request: TrafficCycleRequest,
+    ) -> Result<WriteResult, String> {
+        if !(1..=31).contains(&request.reset_day) {
+            return Err("reset_day must be between 1 and 31".into());
+        }
+        let _lock = self.store.lock_exclusive(TRAFFIC_LOCK)?;
+        let previous = traffic_cycle_state(self.io.as_ref())?;
+        let write = self.io.ubus_write(UbusWrite::TrafficCycle {
+            reset_day: request.reset_day,
+            enabled: request.enabled,
+        });
+        let applied = write.and_then(|_| traffic_cycle_state(self.io.as_ref()));
+        if applied.as_ref() != Ok(&(request.reset_day, request.enabled)) {
+            let cause = applied.err().unwrap_or_else(|| {
+                "traffic cycle readback did not match the requested state".into()
+            });
+            let recovery = self.restore_traffic_cycle(previous);
+            return match recovery {
+                Ok(()) => {
+                    self.audit("traffic_cycle_update", "rolled_back");
+                    Err(format!("traffic cycle update was rolled back: {cause}"))
+                }
+                Err(rollback_error) => {
+                    self.audit("traffic_cycle_update", "rollback_failed");
+                    Err(format!(
+                        "traffic cycle update failed and recovery is still pending: {cause}; {rollback_error}"
+                    ))
+                }
+            };
+        }
+        self.audit("traffic_cycle_update", "success");
+        Ok(WriteResult { result: "applied" })
+    }
+
+    pub fn wifi_transaction_begin(
+        &self,
+        request: WifiTransactionRequest,
+    ) -> Result<WifiTransactionGrant, String> {
+        let values = wifi_values_from_request(request)?;
+        if values.is_empty() {
+            return Err("at least one Wi-Fi setting is required".into());
+        }
+        let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
+        if self
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
+            .is_some()
+        {
+            return Err("another Wi-Fi transaction is awaiting confirmation".into());
+        }
+        let old_values = self
+            .io
+            .wifi_values(&values.keys().copied().collect::<Vec<_>>())?;
+        if old_values.len() != values.len() {
+            return Err("one or more Wi-Fi settings are unavailable on this firmware".into());
+        }
+        let transaction = PendingWifiTransaction {
+            id: random_id(),
+            expires_at: unix_now()?.saturating_add(WIFI_CONFIRM_SECONDS),
+            old_values,
+        };
+        self.store.write_json(WIFI_TRANSACTION_FILE, &transaction)?;
+        if let Err(apply_error) = self.io.apply_wifi_values(&values) {
+            return self.rollback_after_failed_apply(&transaction, apply_error);
+        }
+        if let Err(spawn_error) = spawn_wifi_rollback(&transaction.id) {
+            return self.rollback_after_failed_apply(&transaction, spawn_error);
+        }
+        self.audit("wifi_transaction_begin", "pending");
+        Ok(WifiTransactionGrant {
+            transaction_id: transaction.id,
+            confirm_within_seconds: WIFI_CONFIRM_SECONDS,
+        })
+    }
+
+    pub fn wifi_transaction_confirm(&self, transaction_id: &str) -> Result<WriteResult, String> {
+        validate_transaction_id(transaction_id)?;
+        let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
+        let transaction = self
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
+            .ok_or_else(|| "no Wi-Fi transaction is awaiting confirmation".to_string())?;
+        if transaction.id != transaction_id {
+            return Err("Wi-Fi transaction identifier did not match".into());
+        }
+        if unix_now()? > transaction.expires_at {
+            self.io.apply_wifi_values(&transaction.old_values)?;
+            self.store.remove(WIFI_TRANSACTION_FILE)?;
+            self.audit("wifi_transaction_confirm", "expired_rolled_back");
+            return Err("Wi-Fi confirmation deadline expired; old settings were restored".into());
+        }
+        self.store.remove(WIFI_TRANSACTION_FILE)?;
+        self.audit("wifi_transaction_confirm", "success");
+        Ok(WriteResult {
+            result: "committed",
+        })
+    }
+
+    pub fn rollback_pending_wifi(&self, expected_id: Option<&str>) -> Result<bool, String> {
+        let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
+        let Some(transaction) = self
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
+        else {
+            return Ok(false);
+        };
+        if expected_id.is_some_and(|expected| expected != transaction.id) {
+            return Ok(false);
+        }
+        self.io.apply_wifi_values(&transaction.old_values)?;
+        self.store.remove(WIFI_TRANSACTION_FILE)?;
+        self.audit("wifi_transaction_rollback", "success");
+        Ok(true)
+    }
+
+    fn rollback_after_failed_apply<T>(
+        &self,
+        transaction: &PendingWifiTransaction,
+        cause: String,
+    ) -> Result<T, String> {
+        match self.io.apply_wifi_values(&transaction.old_values) {
+            Ok(()) => {
+                self.store.remove(WIFI_TRANSACTION_FILE)?;
+                self.audit("wifi_transaction_begin", "rolled_back");
+                Err(format!("Wi-Fi transaction was rolled back: {cause}"))
+            }
+            Err(rollback_error) => {
+                self.audit("wifi_transaction_begin", "rollback_failed");
+                Err(format!(
+                    "Wi-Fi apply failed and recovery is still pending: {cause}; {rollback_error}"
+                ))
+            }
+        }
+    }
+
+    fn charge_policy(&self) -> Result<ChargePolicy, String> {
+        Ok(self
+            .store
+            .read_json(CHARGE_POLICY_FILE)?
+            .unwrap_or_default())
+    }
+
+    fn persist_charge_policy(&self, policy: &ChargePolicy) -> Result<(), String> {
+        self.store.write_json(CHARGE_POLICY_FILE, policy)
+    }
+
+    fn enforce_charge_policy(&self) -> Result<(), String> {
+        let _lock = self.store.lock_exclusive(CHARGE_LOCK)?;
+        self.enforce_charge_policy_locked()
+    }
+
+    fn enforce_charge_policy_locked(&self) -> Result<(), String> {
+        let Some(limit) = self.charge_policy()?.automatic_limit_percent else {
+            return Ok(());
+        };
+        let capacity = self.io.battery_capacity()?;
+        let paused = charger_paused(self.io.as_ref())?;
+        if capacity >= limit && !paused {
+            self.set_charge_paused(true)?;
+        } else if capacity <= limit.saturating_sub(CHARGE_HYSTERESIS_PERCENT) && paused {
+            self.set_charge_paused(false)?;
+        }
+        Ok(())
+    }
+
+    fn set_charge_paused(&self, paused: bool) -> Result<(), String> {
+        self.io.ubus_write(UbusWrite::ChargePaused(paused))?;
+        if charger_paused(self.io.as_ref())? != paused {
+            return Err("charging control readback did not match the requested state".into());
+        }
+        Ok(())
+    }
+
+    fn restore_charge_state(&self, policy: &ChargePolicy, paused: bool) -> Result<(), String> {
+        self.persist_charge_policy(policy)?;
+        match charger_paused(self.io.as_ref()) {
+            Ok(current) if current == paused => Ok(()),
+            _ => self.set_charge_paused(paused),
+        }
+    }
+
+    fn restore_traffic_cycle(&self, previous: (u8, bool)) -> Result<(), String> {
+        self.io.ubus_write(UbusWrite::TrafficCycle {
+            reset_day: previous.0,
+            enabled: previous.1,
+        })?;
+        if traffic_cycle_state(self.io.as_ref())? != previous {
+            return Err("traffic cycle rollback readback did not match".into());
+        }
+        Ok(())
+    }
+
+    fn audit(&self, event: &str, outcome: &str) {
+        let result = (|| -> Result<(), String> {
+            let _lock = self.store.lock_exclusive(DAILY_AUDIT_LOCK)?;
+            let mut events = self
+                .store
+                .read_json::<Vec<DailyAuditEvent>>(DAILY_AUDIT_FILE)?
+                .unwrap_or_default();
+            events.push(DailyAuditEvent {
+                timestamp: unix_now()?,
+                event: event.to_owned(),
+                outcome: outcome.to_owned(),
+            });
+            if events.len() > MAX_DAILY_AUDIT_EVENTS {
+                events.drain(0..events.len() - MAX_DAILY_AUDIT_EVENTS);
+            }
+            self.store.write_json(DAILY_AUDIT_FILE, &events)
+        })();
+        if let Err(error) = result {
+            eprintln!(
+                "[daily-audit] persistence degraded: {error}; event={event}; outcome={outcome}"
+            );
+        }
+    }
+}
+
+fn charge_enforcer(weak: Weak<DailyService>) {
+    while let Some(service) = weak.upgrade() {
+        if let Err(error) = service.enforce_charge_policy() {
+            eprintln!("[charging] automatic policy degraded: {error}");
+        }
+        drop(service);
+        thread::sleep(Duration::from_secs(CHARGE_POLL_SECONDS));
+    }
+}
+
+fn spawn_wifi_rollback(transaction_id: &str) -> Result<(), String> {
+    validate_transaction_id(transaction_id)?;
+    Command::new(std::env::current_exe().map_err(|_| "cannot resolve agent executable")?)
+        .args([
+            "wifi-rollback-after",
+            transaction_id,
+            &WIFI_CONFIRM_SECONDS.to_string(),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|_| "cannot start the independent Wi-Fi rollback worker".into())
+}
+
+fn wifi_values_from_request(
+    request: WifiTransactionRequest,
+) -> Result<BTreeMap<WifiField, String>, String> {
+    let mut values = BTreeMap::new();
+    for (field, value) in [
+        (WifiField::Ssid2g, request.ssid_2g),
+        (WifiField::Ssid5g, request.ssid_5g),
+    ] {
+        if let Some(value) = value {
+            validate_ssid(&value)?;
+            values.insert(field, value);
+        }
+    }
+    for (field, value) in [
+        (WifiField::Passphrase2g, request.passphrase_2g),
+        (WifiField::Passphrase5g, request.passphrase_5g),
+    ] {
+        if let Some(value) = value {
+            validate_passphrase(&value)?;
+            values.insert(field, value);
+        }
+    }
+    for (field, value) in [
+        (WifiField::Hidden2g, request.hidden_2g),
+        (WifiField::Hidden5g, request.hidden_5g),
+    ] {
+        if let Some(value) = value {
+            values.insert(field, if value { "1" } else { "0" }.into());
+        }
+    }
+    Ok(values)
+}
+
+fn validate_ssid(value: &str) -> Result<(), String> {
+    let len = value.len();
+    if len == 0 || len > 32 || value.chars().any(char::is_control) {
+        return Err("SSID must contain 1 to 32 UTF-8 bytes and no control characters".into());
+    }
+    Ok(())
+}
+
+fn validate_passphrase(value: &str) -> Result<(), String> {
+    let valid_ascii = value.is_ascii() && !value.chars().any(char::is_control);
+    let valid_length = (8..=63).contains(&value.len())
+        || (value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    if !valid_ascii || !valid_length {
+        return Err(
+            "Wi-Fi passphrase must be 8 to 63 printable ASCII characters or 64 hex digits".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_charging_request(request: &ChargingRequest) -> Result<(), String> {
+    match request.operation {
+        ChargingOperation::SetLimit => {
+            if !request
+                .limit_percent
+                .is_some_and(|value| (50..=95).contains(&value))
+            {
+                return Err("limit_percent must be between 50 and 95".into());
+            }
+        }
+        ChargingOperation::Pause | ChargingOperation::Resume | ChargingOperation::DisableLimit => {
+            if request.limit_percent.is_some() {
+                return Err("limit_percent is only valid with set_limit".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_recipient(value: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 32
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'+' | b'*' | b'#'))
+    {
+        return Err(
+            "recipient must use only digits, +, * or # and be at most 32 characters".into(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_message(value: &str) -> Result<(), String> {
+    let count = value.chars().count();
+    if count == 0 || count > 160 || value.contains('\0') {
+        return Err("message must contain 1 to 160 characters".into());
+    }
+    Ok(())
+}
+
+fn encode_sms_message(value: &str) -> String {
+    value
+        .encode_utf16()
+        .map(|code_unit| format!("{code_unit:04X}"))
+        .collect()
+}
+
+fn sms_encoding(value: &str) -> &'static str {
+    const GSM7: &str = "@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞ ÆæßÉ !\"#¤%&'()*+,-./0123456789:;<=>?¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà^{}\\[~]|€";
+    if value.chars().all(|character| GSM7.contains(character)) {
+        "GSM7_default"
+    } else {
+        "UNICODE"
+    }
+}
+
+fn sms_timestamp() -> Result<String, String> {
+    let output = Command::new("date")
+        .arg("+%y;%m;%d;%H;%M;%S;%z")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "cannot generate the SMS timestamp".to_string())?;
+    if !output.status.success() {
+        return Err("cannot generate the SMS timestamp".into());
+    }
+    let raw =
+        String::from_utf8(output.stdout).map_err(|_| "SMS timestamp was not UTF-8".to_string())?;
+    normalize_sms_timestamp(raw.trim())
+}
+
+fn normalize_sms_timestamp(raw: &str) -> Result<String, String> {
+    let (prefix, zone) = raw
+        .rsplit_once(';')
+        .ok_or_else(|| "SMS timestamp had an invalid shape".to_string())?;
+    if zone.len() != 5 || !matches!(&zone[..1], "+" | "-") {
+        return Err("SMS timezone offset had an invalid shape".into());
+    }
+    let hours: u8 = zone[1..3]
+        .parse()
+        .map_err(|_| "SMS timezone hours were invalid".to_string())?;
+    let minutes: u8 = zone[3..5]
+        .parse()
+        .map_err(|_| "SMS timezone minutes were invalid".to_string())?;
+    if hours > 14 || minutes > 59 {
+        return Err("SMS timezone offset was out of range".into());
+    }
+    let offset = f64::from(hours) + f64::from(minutes) / 60.0;
+    let offset = if minutes == 0 {
+        format!("{}{}", &zone[..1], hours)
+    } else {
+        format!("{}{offset}", &zone[..1])
+    };
+    Ok(format!("{prefix};{offset}"))
+}
+
+fn sms_command_status(io: &dyn B04Io, command: u8) -> Result<i64, String> {
+    let value = io.ubus_read(UbusRead::SmsCommandStatus { command })?;
+    value_i64(value.get("sms_cmd_status_result"))
+        .ok_or_else(|| "SMS command status response was invalid".to_string())
+}
+
+fn charger_paused(io: &dyn B04Io) -> Result<bool, String> {
+    let value = io.ubus_read(UbusRead::ChargerStatus)?;
+    value
+        .get("direct_power_supply_mode")
+        .and_then(Value::as_str)
+        .and_then(|value| match value {
+            "enable" => Some(true),
+            "disable" => Some(false),
+            _ => None,
+        })
+        .ok_or_else(|| "charger status response was invalid".to_string())
+}
+
+fn traffic_cycle_state(io: &dyn B04Io) -> Result<(u8, bool), String> {
+    let readback = io.ubus_read(UbusRead::DataCycle)?;
+    let day = value_u8(readback.get("clearday"))
+        .filter(|value| (1..=31).contains(value))
+        .ok_or_else(|| "traffic cycle readback did not contain a valid day".to_string())?;
+    let enabled = value_bool(readback.get("enable")).ok_or_else(|| {
+        "traffic cycle readback did not contain a valid enabled state".to_string()
+    })?;
+    Ok((day, enabled))
+}
+
+fn value_i64(value: Option<&Value>) -> Option<i64> {
+    match value? {
+        Value::Number(value) => value.as_i64(),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
+}
+
+fn value_u8(value: Option<&Value>) -> Option<u8> {
+    value_i64(value).and_then(|value| u8::try_from(value).ok())
+}
+
+fn value_bool(value: Option<&Value>) -> Option<bool> {
+    match value? {
+        Value::Bool(value) => Some(*value),
+        Value::Number(value) => value.as_u64().and_then(|value| match value {
+            0 => Some(false),
+            1 => Some(true),
+            _ => None,
+        }),
+        Value::String(value) => match value.as_str() {
+            "0" | "disable" | "disabled" => Some(false),
+            "1" | "enable" | "enabled" => Some(true),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn random_id() -> String {
+    let mut bytes = [0u8; 18];
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+fn validate_transaction_id(value: &str) -> Result<(), String> {
+    if value.len() != 24
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid Wi-Fi transaction identifier".into());
+    }
+    Ok(())
+}
+
+fn unix_now() -> Result<u64, String> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| "system clock is before the Unix epoch".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::b04_io::{UbusRead, UbusWrite, WifiInterface};
+
+    struct MockIo {
+        wifi: Mutex<BTreeMap<WifiField, String>>,
+        paused: Mutex<bool>,
+        capacity: Mutex<u8>,
+        cycle: Mutex<(u8, bool)>,
+        fail_next_charge_readback: AtomicBool,
+        corrupt_charge_readback: AtomicBool,
+        fail_next_cycle_readback: AtomicBool,
+        corrupt_cycle_readback: AtomicBool,
+    }
+
+    impl MockIo {
+        fn new() -> Self {
+            Self {
+                wifi: Mutex::new(BTreeMap::from([
+                    (WifiField::Ssid2g, "old-2g".into()),
+                    (WifiField::Passphrase2g, "oldpass88".into()),
+                    (WifiField::Hidden2g, "0".into()),
+                    (WifiField::Ssid5g, "old-5g".into()),
+                    (WifiField::Passphrase5g, "oldpass55".into()),
+                    (WifiField::Hidden5g, "0".into()),
+                ])),
+                paused: Mutex::new(false),
+                capacity: Mutex::new(80),
+                cycle: Mutex::new((1, false)),
+                fail_next_charge_readback: AtomicBool::new(false),
+                corrupt_charge_readback: AtomicBool::new(false),
+                fail_next_cycle_readback: AtomicBool::new(false),
+                corrupt_cycle_readback: AtomicBool::new(false),
+            }
+        }
+    }
+
+    impl B04Io for MockIo {
+        fn ubus_read(&self, operation: UbusRead) -> Result<Value, String> {
+            match operation {
+                UbusRead::SmsCommandStatus { .. } => Ok(json!({"sms_cmd_status_result": 3})),
+                UbusRead::ChargerStatus => {
+                    if self.corrupt_charge_readback.swap(false, Ordering::SeqCst) {
+                        return Ok(json!({"direct_power_supply_mode": "unknown"}));
+                    }
+                    Ok(json!({
+                        "direct_power_supply_mode": if *self.paused.lock().unwrap() { "enable" } else { "disable" }
+                    }))
+                }
+                UbusRead::DataCycle => {
+                    if self.corrupt_cycle_readback.swap(false, Ordering::SeqCst) {
+                        return Ok(json!({"clearday": 0, "enable": 7}));
+                    }
+                    let (day, enabled) = *self.cycle.lock().unwrap();
+                    Ok(json!({"clearday": day, "enable": u8::from(enabled)}))
+                }
+                _ => Err("unused read".into()),
+            }
+        }
+
+        fn ubus_write(&self, operation: UbusWrite) -> Result<Value, String> {
+            match operation {
+                UbusWrite::SmsSend { .. } => Ok(json!({})),
+                UbusWrite::ChargePaused(value) => {
+                    *self.paused.lock().unwrap() = value;
+                    if self.fail_next_charge_readback.swap(false, Ordering::SeqCst) {
+                        self.corrupt_charge_readback.store(true, Ordering::SeqCst);
+                    }
+                    Ok(json!({}))
+                }
+                UbusWrite::TrafficCycle { reset_day, enabled } => {
+                    *self.cycle.lock().unwrap() = (reset_day, enabled);
+                    if self.fail_next_cycle_readback.swap(false, Ordering::SeqCst) {
+                        self.corrupt_cycle_readback.store(true, Ordering::SeqCst);
+                    }
+                    Ok(json!({}))
+                }
+            }
+        }
+
+        fn wireless_config(&self) -> Result<BTreeMap<String, String>, String> {
+            Err("unused".into())
+        }
+
+        fn station_count(&self, _interface: WifiInterface) -> Result<u32, String> {
+            Err("unused".into())
+        }
+
+        fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
+            let wifi = self.wifi.lock().unwrap();
+            Ok(fields
+                .iter()
+                .filter_map(|field| wifi.get(field).cloned().map(|value| (*field, value)))
+                .collect())
+        }
+
+        fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
+            self.wifi.lock().unwrap().extend(values.clone());
+            Ok(())
+        }
+
+        fn battery_capacity(&self) -> Result<u8, String> {
+            Ok(*self.capacity.lock().unwrap())
+        }
+    }
+
+    fn service() -> (tempfile::TempDir, Arc<MockIo>, DailyService) {
+        let temp = tempfile::tempdir().unwrap();
+        let io = Arc::new(MockIo::new());
+        let service = DailyService::with_io(
+            StateStore::open(temp.path().join("state")).unwrap(),
+            io.clone(),
+        )
+        .unwrap();
+        (temp, io, service)
+    }
+
+    #[test]
+    fn validators_reject_command_and_configuration_injection() {
+        assert!(validate_recipient("+61400000000").is_ok());
+        assert!(validate_recipient("12; reboot").is_err());
+        assert!(validate_ssid("Owner Wi-Fi").is_ok());
+        assert!(validate_ssid("bad\nssid").is_err());
+        assert!(validate_passphrase("safe passphrase").is_ok());
+        assert!(validate_passphrase("short").is_err());
+    }
+
+    #[test]
+    fn charge_and_traffic_writes_require_readback() {
+        let (_temp, io, service) = service();
+        let status = service
+            .charging_update(ChargingRequest {
+                operation: ChargingOperation::SetLimit,
+                limit_percent: Some(80),
+            })
+            .unwrap();
+        assert!(status.paused);
+        assert_eq!(status.automatic_limit_percent, Some(80));
+        assert!(*io.paused.lock().unwrap());
+        service
+            .traffic_cycle_update(TrafficCycleRequest {
+                reset_day: 15,
+                enabled: true,
+            })
+            .unwrap();
+        assert_eq!(*io.cycle.lock().unwrap(), (15, true));
+    }
+
+    #[test]
+    fn charge_and_traffic_restore_previous_state_after_bad_readback() {
+        let (_temp, io, service) = service();
+        io.fail_next_charge_readback.store(true, Ordering::SeqCst);
+        let charge_error = service
+            .charging_update(ChargingRequest {
+                operation: ChargingOperation::Pause,
+                limit_percent: None,
+            })
+            .unwrap_err();
+        assert!(charge_error.contains("rolled back"));
+        assert!(!*io.paused.lock().unwrap());
+        assert_eq!(service.charge_policy().unwrap(), ChargePolicy::default());
+
+        io.fail_next_cycle_readback.store(true, Ordering::SeqCst);
+        let cycle_error = service
+            .traffic_cycle_update(TrafficCycleRequest {
+                reset_day: 15,
+                enabled: true,
+            })
+            .unwrap_err();
+        assert!(cycle_error.contains("rolled back"));
+        assert_eq!(*io.cycle.lock().unwrap(), (1, false));
+    }
+
+    #[test]
+    fn invalid_charge_request_is_rejected_before_any_state_change() {
+        let (_temp, io, service) = service();
+        let error = service
+            .charging_update(ChargingRequest {
+                operation: ChargingOperation::Pause,
+                limit_percent: Some(80),
+            })
+            .unwrap_err();
+        assert_eq!(error, "limit_percent is only valid with set_limit");
+        assert!(!*io.paused.lock().unwrap());
+        assert_eq!(service.charge_policy().unwrap(), ChargePolicy::default());
+    }
+
+    #[test]
+    fn wifi_pending_record_restores_on_service_restart() {
+        let (temp, io, service) = service();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let old = io
+            .wifi_values(&[WifiField::Ssid2g])
+            .unwrap()
+            .remove(&WifiField::Ssid2g)
+            .unwrap();
+        let pending = PendingWifiTransaction {
+            id: random_id(),
+            expires_at: unix_now().unwrap() + 120,
+            old_values: BTreeMap::from([(WifiField::Ssid2g, old.clone())]),
+        };
+        store.write_json(WIFI_TRANSACTION_FILE, &pending).unwrap();
+        io.apply_wifi_values(&BTreeMap::from([(WifiField::Ssid2g, "new-ssid".into())]))
+            .unwrap();
+        drop(service);
+        DailyService::with_io(store.clone(), io.clone()).unwrap();
+        assert_eq!(
+            io.wifi_values(&[WifiField::Ssid2g]).unwrap()[&WifiField::Ssid2g],
+            old
+        );
+        assert!(store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn timestamp_and_sms_encoding_match_stock_shapes() {
+        assert_eq!(
+            normalize_sms_timestamp("26;08;16;12;34;56;+0530").unwrap(),
+            "26;08;16;12;34;56;+5.5"
+        );
+        assert_eq!(encode_sms_message("Hi"), "00480069");
+        assert_eq!(encode_sms_message("😀"), "D83DDE00");
+        assert_eq!(sms_encoding("Hello"), "GSM7_default");
+        assert_eq!(sms_encoding("你好"), "UNICODE");
+    }
+}
