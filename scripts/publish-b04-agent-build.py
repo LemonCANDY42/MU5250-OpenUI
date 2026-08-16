@@ -411,7 +411,7 @@ def ensure_physical_local_path(path: Path) -> None:
             raise BuildPublishError("local artifact path contains a symlink")
 
 
-def open_local_regular(path: Path, *, owner_mode: int | None = None) -> int:
+def open_local_regular(path: Path) -> int:
     ensure_physical_local_path(path)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     metadata = os.fstat(descriptor)
@@ -420,9 +420,6 @@ def open_local_regular(path: Path, *, owner_mode: int | None = None) -> int:
         raise BuildPublishError(
             "local artifact is not an owner-controlled regular file"
         )
-    if owner_mode is not None and stat.S_IMODE(metadata.st_mode) != owner_mode:
-        os.close(descriptor)
-        raise BuildPublishError(f"local artifact must have mode {owner_mode:04o}")
     return descriptor
 
 
@@ -697,9 +694,11 @@ def read_receipt_fd(descriptor: int) -> tuple[dict[str, Any], bytes]:
 
 
 def open_verified_bundle() -> tuple[int, int, dict[str, Any], str]:
-    receipt_fd = open_local_regular(RECEIPT, owner_mode=0o600)
+    receipt_fd = open_local_regular(RECEIPT)
     binary_fd: int | None = None
     try:
+        if not receipt_mode_is_owner_only(stat.S_IMODE(os.fstat(receipt_fd).st_mode)):
+            raise BuildPublishError("local build receipt is not owner-only")
         receipt_fingerprint = fd_fingerprint(receipt_fd)
         document, content = read_receipt_fd(receipt_fd)
         binary_fd = open_local_regular(BINARY)
