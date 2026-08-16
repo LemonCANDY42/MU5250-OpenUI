@@ -304,14 +304,19 @@ function parseSmsPage(value: unknown): V1SmsPage {
     !isNonNegativeInteger(value.per_page) ||
     value.per_page < 1 ||
     value.per_page > 100 ||
+    !isNonNegativeInteger(value.omitted_messages) ||
+    value.omitted_messages > value.per_page ||
     !Array.isArray(value.messages) ||
-    value.messages.length > value.per_page ||
+    value.messages.length + value.omitted_messages > value.per_page ||
     !value.messages.every(
       (message) =>
         isRecord(message) &&
         isNonNegativeInteger(message.id) &&
         message.id > 0 &&
-        hasStrings(message, ['sender', 'timestamp', 'content']) &&
+        isBoundedString(message.sender, 64) &&
+        isBoundedString(message.timestamp, 64) &&
+        isBoundedString(message.content, 4096) &&
+        typeof message.content_truncated === 'boolean' &&
         typeof message.read === 'boolean',
     )
   ) {
@@ -326,6 +331,10 @@ function isCapabilityId(value: unknown): value is CapabilityId {
 
 function hasStrings(record: Record<string, unknown>, names: readonly string[]): boolean {
   return names.every((name) => typeof record[name] === 'string')
+}
+
+function isBoundedString(value: unknown, maximum: number): value is string {
+  return typeof value === 'string' && value.length <= maximum
 }
 
 function optionalString(value: unknown): boolean {

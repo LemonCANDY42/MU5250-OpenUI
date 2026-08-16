@@ -173,8 +173,16 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
     '/v1/sms': {
       page: 0,
       per_page: 100,
+      omitted_messages: 0,
       messages: [
-        { id: 1, sender: '+100', timestamp: 'now', content: 'hello', read: true },
+        {
+          id: 1,
+          sender: '+100',
+          timestamp: 'now',
+          content: 'hello',
+          content_truncated: false,
+          read: true,
+        },
       ],
     },
   }

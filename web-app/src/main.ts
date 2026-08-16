@@ -702,11 +702,20 @@ function appendSms(card: HTMLElement, value: V1SmsPage): void {
       .slice(0, 20)
       .map((message) => [
         `${message.read ? '' : 'Unread · '}${message.sender}`,
-        `${message.timestamp} · ${message.content}`,
+        `${message.timestamp} · ${message.content}${message.content_truncated ? ' … [truncated]' : ''}`,
       ]),
   )
   if (value.messages.length > 20) {
     card.append(element('p', 'hint', `Showing 20 of ${value.messages.length} recent messages.`))
+  }
+  if (value.omitted_messages > 0) {
+    card.append(
+      element(
+        'p',
+        'hint',
+        `${value.omitted_messages} malformed message entr${value.omitted_messages === 1 ? 'y was' : 'ies were'} omitted.`,
+      ),
+    )
   }
 }
 

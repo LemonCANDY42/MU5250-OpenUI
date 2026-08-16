@@ -613,12 +613,14 @@ export interface components {
             readonly page: number;
             readonly per_page: number;
             readonly messages: readonly components["schemas"]["SmsMessage"][];
+            readonly omitted_messages: number;
         };
         readonly SmsMessage: {
             readonly id: number;
             readonly sender: string;
             readonly timestamp: string;
             readonly content: string;
+            readonly content_truncated: boolean;
             readonly read: boolean;
         };
         readonly SmsSendRequest: {

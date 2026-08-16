@@ -206,6 +206,7 @@ pub struct SmsMessage {
     pub sender: String,
     pub timestamp: String,
     pub content: String,
+    pub content_truncated: bool,
     pub read: bool,
 }
 
@@ -214,6 +215,7 @@ pub struct SmsPage {
     pub page: u16,
     pub per_page: u16,
     pub messages: Vec<SmsMessage>,
+    pub omitted_messages: u16,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -890,23 +892,39 @@ fn parse_sms_page(value: &Value, page: u16, per_page: u16) -> Result<SmsPage, St
         return Err("SMS response exceeded the requested page size".into());
     }
     let mut parsed = Vec::with_capacity(messages.len());
+    let mut omitted_messages = 0u16;
     for message in messages {
-        let object = message
-            .as_object()
-            .ok_or_else(|| "SMS entry was not an object".to_string())?;
-        let sender = required_string(object.get("number"), "number")?;
-        let timestamp = required_string(object.get("date"), "date")?;
-        let content = required_string_allow_empty(object.get("content"), "content")?;
-        if sender.len() > 64 || timestamp.len() > 64 || content.len() > 4096 {
-            return Err("SMS entry exceeded the fixed field limit".into());
+        let Some(object) = message.as_object() else {
+            omitted_messages += 1;
+            continue;
+        };
+        let Some(sender) = optional_string(object.get("number")) else {
+            omitted_messages += 1;
+            continue;
+        };
+        let Some(timestamp) = optional_string(object.get("date")) else {
+            omitted_messages += 1;
+            continue;
+        };
+        let Some(content) = object.get("content").and_then(Value::as_str) else {
+            omitted_messages += 1;
+            continue;
+        };
+        let Some(id) = value_u64(object.get("id")).filter(|value| *value > 0) else {
+            omitted_messages += 1;
+            continue;
+        };
+        if sender.len() > 64 || timestamp.len() > 64 {
+            omitted_messages += 1;
+            continue;
         }
+        let (content, content_truncated) = truncate_utf8_bytes(content, 4096);
         parsed.push(SmsMessage {
-            id: value_u64(object.get("id"))
-                .filter(|value| *value > 0)
-                .ok_or_else(|| "SMS entry had an invalid id".to_string())?,
+            id,
             sender,
             timestamp,
             content,
+            content_truncated,
             read: optional_string(object.get("tag")).as_deref() == Some("0"),
         });
     }
@@ -914,18 +932,23 @@ fn parse_sms_page(value: &Value, page: u16, per_page: u16) -> Result<SmsPage, St
         page,
         per_page,
         messages: parsed,
+        omitted_messages,
     })
+}
+
+fn truncate_utf8_bytes(value: &str, maximum: usize) -> (String, bool) {
+    if value.len() <= maximum {
+        return (value.to_owned(), false);
+    }
+    let mut boundary = maximum;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    (value[..boundary].to_owned(), true)
 }
 
 fn required_string(value: Option<&Value>, name: &str) -> Result<String, String> {
     optional_string(value).ok_or_else(|| format!("{name} was missing or empty"))
-}
-
-fn required_string_allow_empty(value: Option<&Value>, name: &str) -> Result<String, String> {
-    value
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| format!("{name} was missing"))
 }
 
 fn optional_string(value: Option<&Value>) -> Option<String> {
@@ -1288,6 +1311,8 @@ mod tests {
         .unwrap();
         assert!(sms.messages[0].read);
         assert_eq!(sms.messages[0].content, "hello");
+        assert!(!sms.messages[0].content_truncated);
+        assert_eq!(sms.omitted_messages, 0);
     }
 
     #[test]
@@ -1297,13 +1322,28 @@ mod tests {
             "macaddr":"not-a-mac", "expires":1
         }]}))
         .is_err());
-        assert!(parse_sms_page(
+        let sms = parse_sms_page(
             &json!({"messages":[{
                 "id":0, "number":"+100", "date":"now", "content":"", "tag":"1"
             }]}),
             0,
             100,
         )
-        .is_err());
+        .unwrap();
+        assert!(sms.messages.is_empty());
+        assert_eq!(sms.omitted_messages, 1);
+
+        let oversized = format!("{}é", "a".repeat(4095));
+        let sms = parse_sms_page(
+            &json!({"messages":[{
+                "id":1, "number":"+100", "date":"now", "content":oversized, "tag":"1"
+            }]}),
+            0,
+            100,
+        )
+        .unwrap();
+        assert_eq!(sms.messages[0].content.len(), 4095);
+        assert!(sms.messages[0].content_truncated);
+        assert_eq!(sms.omitted_messages, 0);
     }
 }

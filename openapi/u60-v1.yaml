@@ -1171,7 +1171,7 @@ components:
     SmsPage:
       type: object
       additionalProperties: false
-      required: [page, per_page, messages]
+      required: [page, per_page, messages, omitted_messages]
       properties:
         page:
           type: integer
@@ -1185,20 +1185,29 @@ components:
           maxItems: 100
           items:
             $ref: "#/components/schemas/SmsMessage"
+        omitted_messages:
+          type: integer
+          minimum: 0
+          maximum: 100
     SmsMessage:
       type: object
       additionalProperties: false
-      required: [id, sender, timestamp, content, read]
+      required: [id, sender, timestamp, content, content_truncated, read]
       properties:
         id:
           type: integer
           minimum: 1
         sender:
           type: string
+          maxLength: 64
         timestamp:
           type: string
+          maxLength: 64
         content:
           type: string
+          maxLength: 4096
+        content_truncated:
+          type: boolean
         read:
           type: boolean
     SmsSendRequest:
