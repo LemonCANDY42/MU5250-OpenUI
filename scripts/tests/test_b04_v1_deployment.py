@@ -170,6 +170,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
         with (
             mock.patch.object(DEPLOY, "require_local_release", return_value="a" * 64),
             mock.patch.object(DEPLOY, "install_release", return_value=False),
+            mock.patch.object(DEPLOY, "verify_device_public_ca_matches") as ca_match,
             mock.patch.object(DEPLOY, "stop_managed_agent") as stop,
             mock.patch.object(
                 DEPLOY, "stop_legacy_canary_without_pid_file"
@@ -177,13 +178,16 @@ class DeploymentBoundaryTests(unittest.TestCase):
             mock.patch.object(DEPLOY, "assert_no_zte_agent_processes") as no_agent,
             mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
             mock.patch.object(DEPLOY, "run") as run,
-            mock.patch.object(DEPLOY, "verify_tls_unauthorized") as verify_tls,
+            mock.patch.object(
+                DEPLOY, "verify_device_lan_tls_unauthorized"
+            ) as verify_tls,
             mock.patch.object(DEPLOY, "switch_current") as switch_current,
         ):
             details = DEPLOY.command_lan_canary(arguments)
         self.assertEqual(
             stop.call_args_list, [mock.call("canary.pid"), mock.call("agent.pid")]
         )
+        ca_match.assert_called_once_with(arguments.ca_cert)
         stop_legacy.assert_called_once_with()
         no_agent.assert_called_once_with()
         adb_shell.assert_called_once_with(
@@ -200,31 +204,33 @@ class DeploymentBoundaryTests(unittest.TestCase):
                     check=False,
                 ),
                 mock.call(
-                    ["adb", "forward", "tcp:9443", "tcp:9443"],
+                    ["adb", "forward", "--remove", "tcp:9443"],
                     timeout=10,
                     limit=4096,
+                    check=False,
                 ),
             ],
         )
-        verify_tls.assert_called_once_with(9443, arguments.ca_cert)
+        verify_tls.assert_called_once_with()
         switch_current.assert_not_called()
         self.assertEqual(details["lan_canary"], True)
 
-    def test_lan_canary_stops_and_removes_forward_when_tls_fails(self) -> None:
+    def test_lan_canary_stops_when_tls_fails(self) -> None:
         arguments = mock.Mock(
             release=Path("/accepted/release"), ca_cert=Path("/accepted/ca.pem")
         )
         with (
             mock.patch.object(DEPLOY, "require_local_release", return_value="a" * 64),
             mock.patch.object(DEPLOY, "install_release", return_value=False),
+            mock.patch.object(DEPLOY, "verify_device_public_ca_matches"),
             mock.patch.object(DEPLOY, "stop_managed_agent") as stop,
             mock.patch.object(DEPLOY, "stop_legacy_canary_without_pid_file"),
             mock.patch.object(DEPLOY, "assert_no_zte_agent_processes"),
             mock.patch.object(DEPLOY, "adb_shell"),
-            mock.patch.object(DEPLOY, "run") as run,
+            mock.patch.object(DEPLOY, "run"),
             mock.patch.object(
                 DEPLOY,
-                "verify_tls_unauthorized",
+                "verify_device_lan_tls_unauthorized",
                 side_effect=DEPLOY.DeployError("synthetic TLS failure"),
             ),
         ):
@@ -237,15 +243,6 @@ class DeploymentBoundaryTests(unittest.TestCase):
                 mock.call("agent.pid"),
                 mock.call("agent.pid"),
             ],
-        )
-        self.assertEqual(
-            run.call_args_list[-1],
-            mock.call(
-                ["adb", "forward", "--remove", "tcp:9443"],
-                timeout=10,
-                limit=4096,
-                check=False,
-            ),
         )
 
     def test_rc_metadata_accepts_only_exact_b04_baseline(self) -> None:

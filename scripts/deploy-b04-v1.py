@@ -408,6 +408,32 @@ def verify_tls_unauthorized(port: int, ca_cert: Path) -> None:
         )
 
 
+def verify_device_lan_tls_unauthorized() -> None:
+    result = adb_shell(
+        "curl --silent --show-error --output /dev/null --write-out '%{http_code}' "
+        "--cacert /data/u60/pki/owner-ca-cert.pem "
+        "--resolve u60.local:9443:192.168.0.1 "
+        "https://u60.local:9443/v1/device",
+        timeout=20,
+        limit=4096,
+    )
+    if result != "401":
+        raise DeployError(
+            "device-local LAN TLS check did not return the authenticated boundary"
+        )
+
+
+def verify_device_public_ca_matches(ca_cert: Path) -> None:
+    if ca_cert.is_symlink() or not ca_cert.is_file():
+        raise DeployError("CA certificate must be a physical file")
+    device_digest = adb_shell(
+        "sha256sum /data/u60/pki/owner-ca-cert.pem | cut -d' ' -f1",
+        limit=128,
+    )
+    if device_digest != sha256_file(ca_cert):
+        raise DeployError("device owner CA does not match the accepted host CA")
+
+
 def write_evidence(
     action: str,
     before: dict[str, Any],
@@ -810,6 +836,7 @@ def command_canary(arguments: argparse.Namespace) -> dict[str, Any]:
 def command_lan_canary(arguments: argparse.Namespace) -> dict[str, Any]:
     release_id = require_local_release(arguments.release)
     installed = install_release(arguments.release, release_id)
+    verify_device_public_ca_matches(arguments.ca_cert)
     stop_managed_agent("canary.pid")
     stop_managed_agent("agent.pid")
     stop_legacy_canary_without_pid_file()
@@ -820,20 +847,19 @@ def command_lan_canary(arguments: argparse.Namespace) -> dict[str, Any]:
         limit=4096,
         check=False,
     )
+    run(
+        ["adb", "forward", "--remove", "tcp:9443"],
+        timeout=10,
+        limit=4096,
+        check=False,
+    )
     adb_shell(
         f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30
     )
-    run(["adb", "forward", "tcp:9443", "tcp:9443"], timeout=10, limit=4096)
     try:
-        verify_tls_unauthorized(9443, arguments.ca_cert)
+        verify_device_lan_tls_unauthorized()
     except BaseException:
         stop_managed_agent("agent.pid")
-        run(
-            ["adb", "forward", "--remove", "tcp:9443"],
-            timeout=10,
-            limit=4096,
-            check=False,
-        )
         raise
     return {
         "release_id": release_id,

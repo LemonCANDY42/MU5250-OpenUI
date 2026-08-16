@@ -77,10 +77,12 @@ python3 scripts/deploy-b04-v1.py boot-hook
 `lan-canary` is deliberately narrower than `activate`: it requires `current`
 and `previous` to remain absent, stops the loopback canary, starts the exact
 accepted release on `192.168.0.1:9443`, and proves the CA-verified `401`
-authentication boundary through USB ADB. It does not create a release symlink,
+authentication boundary with a device-local request invoked through USB ADB.
+This avoids changing a Mac route or TUN and does not create an ADB forward,
+release symlink,
 boot hook, firewall rule or service. A physical client must join the U60's own
 Wi-Fi for this gate. Any failed TLS or evidence step stops the managed LAN
-agent and removes its host ADB forward.
+agent.
 
 `activate` preserves the old `current` target as `previous`; a failed TLS health
 check automatically restores it when available. `rollback` is also explicit.
