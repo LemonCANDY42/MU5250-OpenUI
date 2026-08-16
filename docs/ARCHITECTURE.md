@@ -105,6 +105,25 @@ open-u60-pro implementations may inform V1, but no upstream raw AT, arbitrary
 ubus/UCI/shell, kill-bloat, factory-reset, firmware or process-control surface
 is enabled merely because it exists upstream.
 
+### V1 feature selection from MU and open-u60-pro
+
+V1 deliberately takes the mature, low-risk overlap instead of copying either
+upstream feature list wholesale:
+
+| Included V1 domain | Source value retained | Safety boundary |
+| --- | --- | --- |
+| Signal/cellular/dashboard | MU's compact device UI and open-u60-pro's richer normalized status | Read-only typed values; no raw AT or vendor JSON |
+| Traffic/battery/thermal | Proven firmware sources and charge-policy semantics | Bounded reads; charge writes use fixed enum/state transitions |
+| Wi-Fi/LAN | Useful settings and connected-client views | No arbitrary UCI; Wi-Fi changes are persisted transactions with timeout rollback |
+| SMS | Listing and sending from both projects | No SQL fallback, bulk delete, forwarding plugin or arbitrary modem command |
+| Web/iOS clients | MU information density plus open-u60-pro SwiftUI navigation | One OpenAPI contract, capability hiding, pinned HTTPS and public-key login |
+
+SIM identifiers, raw process lists, APN credentials, DNS/firewall control,
+network/band/cell lock, USB composition, FOTA, reboot/shutdown, arbitrary AT,
+ubus/UCI/shell and external forwarding remain outside V1. Active radio type is
+reported through normalized signal status; the configured APN is not exposed
+until a separate redaction contract and B04 acceptance exist.
+
 ## Authentication target
 
 The host-tested local protocol uses client-held public keys:

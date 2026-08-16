@@ -3,12 +3,13 @@
 Safety-first control-plane work for one owner-operated ZTE U60 Pro (MU5250) on
 HK B04 firmware.
 
-> **Do not install this branch persistently or enable write capabilities yet.**
-> One content-addressed, loopback-only, read-only B04 canary is running through
-> a temporary USB ADB forward. It has no boot hook and has passed only the
-> immediate and owner-approved one-hour device-process gates. The temporary Mac
-> ADB forward was not continuous, and the original 24-hour RSS-growth target was
-> not run.
+> **Do not install this branch persistently or enable write capabilities until
+> the remaining V1 gates are recorded.** One content-addressed, loopback-only
+> B04 canary is running through a temporary USB ADB forward. It has no stable
+> symlink or boot hook. Its release checksum, TLS authentication boundary and
+> unchanged recovery/network invariants are accepted; browser/iPhone pairing and
+> each daily write still require their independent device gates. The original
+> 24-hour RSS-growth target was replaced by the owner's one-hour V1 gate.
 > The legacy setup, deployment and hardening entry points remain fail-closed.
 
 This branch directly descends from `dklasens/MU5250-OpenUI` at commit
@@ -61,23 +62,21 @@ running device canary remains read-only.
 
 ## Current read-only canary
 
-The active canary is the accepted static AArch64 build produced from Git commit
-`bfa6981`, installed after the recovery baseline at `1c687c8` under
-`/data/u60/canary-bfa698172f43-c1b6db6ebb35/` and bound only to
-`127.0.0.1:19443`. The Mac reaches it through a temporary
-`adb forward tcp:19443 tcp:19443` mapping. It is not referenced by `rc.local`,
-init, firewall or the dormant legacy agent paths and will not restart after a
-reboot.
+The active canary is release
+`b49fe94a536eb526b80e65420836b302318e77fe37d895654cc92293e04d48bc`,
+whose identifier binds its complete checksum list. It is installed under the
+immutable `/data/u60/releases/` store and bound only to `127.0.0.1:19443`.
+`current` and `previous` are still absent, so it is not a stable installation.
+The Mac reaches it only through `adb forward tcp:19443 tcp:19443`; it is not
+referenced by `rc.local`, init, firewall or a new system service.
 
-Immediate acceptance proved TLS 1.3 with the owner CA, rejection of an
-unauthenticated API request, Argon2id password login, structured `200` responses
-from all five read-only endpoints, root ADB retention, unchanged firmware,
-USB properties, default route, TUN set, `rc.local` and legacy-agent hashes. Idle
-smoke RSS was about 2 MiB with one thread and an empty canary log. The
-secret-free NAS evidence is
-`/Volumes/backups/U60-Pro/B04-canary-start-20260816T092824Z`; its manifest
-SHA-256 is
-`20d89e9e11b2b9cfcf8627185dd87632a49744748bf0fe1c8f7faa1b6219b95e`.
+Immediate acceptance proved the full device-side release checksum, TLS owner-CA
+verification with unauthenticated `401`, root ADB retention and unchanged exact
+firmware, USB properties, default route, nine-interface TUN set and `rc.local`.
+The replaced legacy canary exited, one release process remained on loopback, and
+the new process used 2,268 KiB RSS with two threads. Secret-free, hash-bound NAS
+evidence is in
+`/Volumes/backups/U60-Pro/B04-v1-canary-20260816T134249791350Z`.
 
 The one-hour device-process checkpoint completed after 3,756 seconds with one
 thread, 2,164 KiB RSS (100 KiB above the start) and empty canary/audit logs. The
@@ -155,7 +154,7 @@ then, the local checks above remain the acceptance evidence.
 ```text
 agent/          Minimal Rust device agent and B04 adapter
 openapi/        Versioned public API contract
-web-app/        Minimal same-origin read-only TypeScript dashboard
+web-app/        Same-origin typed dashboard and gated daily controls
 clients/ios/    Imported history plus safe generated-contract iOS target
 scripts/        Contract checks plus upstream recovery/research references
 docs/           Architecture, safety and historical device notes

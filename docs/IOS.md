@@ -40,6 +40,11 @@ stores only its enclave-wrapped representation in a non-synchronizing,
 The simulator uses a software P-256 Keychain item only for host tests and labels
 it as a simulator test key; it is not represented as a passkey.
 
+The repository-local `.xcodebuildmcp/config.yaml` enables only the simulator and
+physical-device workflows and keeps machine-specific device identifiers out of
+Git. A Codex/XcodeBuildMCP session must be reloaded after this file is added or
+changed before physical-device tools become available.
+
 Credential metadata, certificate pin and endpoint are also device-local
 Keychain records. Bearer tokens exist only in the in-memory `SessionVault` and
 are cleared on sign-out. The dedicated management password is copied out of the
