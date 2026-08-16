@@ -95,15 +95,17 @@ not a substitute for certificate verification.
 
 ## Current evidence boundary
 
-Host evidence currently establishes XcodeGen generation, build-plugin model
-generation, a clean iOS simulator build and launch, and unit tests for pairing
-validation, local-key signing/storage and exact SPKI pin construction. It does
-not establish:
+Current evidence establishes XcodeGen generation, build-plugin model
+generation, a clean iOS simulator build and launch, unit tests for pairing
+validation, local-key signing/storage and exact SPKI pin construction, plus an
+owner-signed physical-device build, install and successful process launch. The
+physical build used command-local team and bundle-identifier overrides; neither
+identifier is committed to this public repository. It does not establish:
 
 - Secure Enclave behavior on the owner's physical iPhone;
 - installation or full trust of a real owner CA;
 - a handshake with a real U60 certificate or live agent;
 - QR pairing against a real maintenance window;
-- TestFlight or physical-device deployment.
+- a completed authenticated physical-device session.
 
 Those remain later acceptance gates and do not authorize device changes.
