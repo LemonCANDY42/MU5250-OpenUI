@@ -1,25 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useHome } from '../../app/HomeContext'
 import { api } from '../../data/api'
-import type { SignalInfo } from '../../types'
+import type { ModemCapabilities, SignalInfo } from '../../types'
 import { Button, Field, Input } from '../../ui/controls'
 import { toast, toastError, confirm } from '../../ui/feedback'
 import { Card, Chip, Skeleton } from '../../ui/primitives'
 
-const NR_BANDS = [1, 2, 3, 5, 7, 8, 18, 20, 26, 28, 29, 38, 40, 41, 48, 66, 71, 75, 77, 78, 79]
-const LTE_BANDS = [1, 2, 3, 4, 5, 7, 8, 12, 13, 14, 17, 18, 19, 20, 25, 26, 28, 29, 30, 32, 34, 38, 39, 40, 41, 42, 43, 48, 66, 71]
-
-const NETWORK_MODES: { value: string; label: string }[] = [
-  { value: 'WL_AND_5G', label: '5G + 4G' },
-  { value: 'Only_5G', label: '5G SA' },
-  { value: 'LTE_AND_5G', label: '5G NSA' },
-  { value: 'Only_LTE', label: '4G LTE' },
-  { value: 'Only_WCDMA', label: '3G' },
-]
-
 // ── Network mode ──────────────────────────────────────────────────────────────
 
-function NetworkMode({ currentMode, onApplied }: { currentMode: string; onApplied: () => void }) {
+function NetworkMode({ currentMode, modes, onApplied }: { currentMode: string; modes: ModemCapabilities['network_modes']; onApplied: () => void }) {
   const [selected, setSelected] = useState(currentMode)
   const [busy, setBusy] = useState(false)
 
@@ -44,7 +33,7 @@ function NetworkMode({ currentMode, onApplied }: { currentMode: string; onApplie
         Preferred network technology. The modem reconnects after a change.
       </p>
       <div className="flex flex-wrap gap-1.5">
-        {NETWORK_MODES.map((m) => (
+        {modes.map((m) => (
           <button
             key={m.value}
             onClick={() => setSelected(m.value)}
@@ -64,7 +53,7 @@ function NetworkMode({ currentMode, onApplied }: { currentMode: string; onApplie
         </Button>
         {selected !== currentMode && (
           <span className="text-[12px] text-ink3">
-            Current: {NETWORK_MODES.find((m) => m.value === currentMode)?.label ?? currentMode}
+            Current: {modes.find((m) => m.value === currentMode)?.label ?? currentMode}
           </span>
         )}
       </div>
@@ -286,6 +275,11 @@ export default function Locking() {
   // `refresh` re-runs that batch after a lock is applied.
   const { data: home, refresh } = useHome()
   const signal = home?.signal ?? null
+  const [capabilities, setCapabilities] = useState<ModemCapabilities | null | undefined>(undefined)
+
+  useEffect(() => {
+    api.modemCapabilities().then(setCapabilities).catch(() => setCapabilities(null))
+  }, [])
 
   async function handleLockCell(type: 'nr' | 'lte', pci: number, earfcn: number, band?: string) {
     try {
@@ -343,15 +337,23 @@ export default function Locking() {
 
   return (
     <div className="space-y-3">
-      <NetworkMode currentMode={signal.net_select ?? 'WL_AND_5G'} onApplied={refresh} />
+      {capabilities ? (
+        <NetworkMode currentMode={signal.net_select ?? 'WL_AND_5G'} modes={capabilities.network_modes} onApplied={refresh} />
+      ) : capabilities === undefined ? (
+        <Skeleton className="h-40" />
+      ) : (
+        <Card title="Network mode and bands">
+          <p className="text-[12px] text-warn">Firmware capability data is unavailable, so radio mode and band changes are disabled.</p>
+        </Card>
+      )}
 
       <ServingCells signal={signal} onLock={handleLockCell} />
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+      {capabilities && <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <BandLock
           title="NR 5G band lock"
           description="Allowed NR bands. Works in 5G SA mode only — firmware does not support NSA band locking."
-          bands={NR_BANDS}
+          bands={capabilities.nr_sa_bands}
           type="nr"
           lockedBands={signal.nr_band_lock}
           onApplied={refresh}
@@ -359,12 +361,12 @@ export default function Locking() {
         <BandLock
           title="LTE band lock"
           description="Allowed LTE bands."
-          bands={LTE_BANDS}
+          bands={capabilities.lte_bands}
           type="lte"
           lockedBands={signal.lte_band_lock}
           onApplied={refresh}
         />
-      </div>
+      </div>}
 
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         <CellLock type="nr" onApplied={refresh} />

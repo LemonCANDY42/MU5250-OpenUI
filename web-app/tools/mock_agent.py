@@ -156,11 +156,17 @@ def wifi_defaults():
     return {
         "wifi_onoff": "1", "wifi_onoff_supported": True,
         "wifi6_switch": "1", "wifi6_supported": True,
+        "wifi7_supported": True,
         "radio2_disabled": "0", "radio5_disabled": "0",
         "channel_2g": "0", "channel_5g": "44",
         "actual_channel_2g": 6, "actual_channel_5g": 44,
         "actual_bw_2g": "40 MHz", "actual_bw_5g": "160 MHz",
-        "htmode_2g": "HT40", "htmode_5g": "HT160",
+        "htmode_2g": "EHT40", "htmode_5g": "EHT160",
+        "hwmode_2g": "11beg", "hwmode_5g": "11bea",
+        "supported_standards_2g": "b,g,n,ax,be",
+        "supported_standards_5g": "a,n,ac,ax,be",
+        "bandwidth_options_2g": ["EHT20", "EHT40"],
+        "bandwidth_options_5g": ["EHT20", "EHT40", "EHT80", "EHT160"],
         "txpower_2g": "100", "txpower_5g": "100",
         "country_code": "AU",
         "ssid_2g": "U60Pro-Home", "ssid_5g": "U60Pro-Home",
@@ -204,6 +210,7 @@ def usb_defaults():
 
 def battery_detail():
     return {
+        "available": True,
         "capacity": 78, "status": "Charging",
         "voltage_mv": 4210, "voltage_max_mv": 4500, "voltage_ocv_mv": 4190,
         "current_ma": 1450, "power_mw": 6105, "temperature_c": 33.0,
@@ -215,6 +222,7 @@ def battery_detail():
 
 def thermal_all():
     return {
+        "available": True,
         "cpu_0": 61.2, "cpu_1": 60.8, "cpu_2": 59.7, "cpu_3": 60.1,
         "modem": 55.0, "modem_ss0": 52.0, "modem_ss1": 51.0, "modem_ss2": 50.0,
         "battery": 33.0, "usb": 38.0, "eth_phy": 44.0, "pmic": 49.0,
@@ -295,6 +303,7 @@ CONNECTION_LOG_CSV = (
 
 STATE = {
     "charge_control": {
+        "available": True, "battery_available": True, "charger_available": True,
         "charging_stopped": False, "battery_status": "Charging", "capacity": 78,
         "charge_limit_enabled": False, "charge_limit": 90, "hysteresis": 5,
         "manual_override": False,
@@ -309,9 +318,9 @@ STATE = {
         "ipv6_wan_standby_dns_manual": "2606:4700:4700::1001",
     },
     "lan": {
-        "lan_ipaddr": "192.168.0.1", "lan_netmask": "255.255.255.0",
-        "dhcp_start": "192.168.0.100", "dhcp_end": "192.168.0.200",
-        "dhcp_lease_time": "43200",
+        "ipaddr": "192.168.0.1", "netmask": "255.255.255.0", "dhcp_enabled": True,
+        "dhcp_start": "192.168.0.2", "dhcp_end": "192.168.0.253",
+        "lease_seconds": 86400,
     },
     "apn_mode": {"apn_mode": 1},
 }
@@ -410,18 +419,34 @@ ROUTES_GET = {
     "/api/device/thermal/all": thermal_all,
     "/api/device/battery/detail": battery_detail,
     "/api/device/battery-info": lambda: {
-        "battery_online": 1, "battery_low_power": 0, "battery_using_hw_fg_chip": 1,
-        "battery_time_to_full": 55, "battery_time_to_empty": 0,
+        "available": True, "online": True, "low_power": False, "using_hw_fg_chip": True,
+        "time_to_full_mins": 55, "time_to_empty_mins": 0,
+    },
+    "/api/modem/capabilities": lambda: {
+        "network_modes": [
+            {"value": "WL_AND_5G", "label": "5G / 4G / 3G"},
+            {"value": "LTE_AND_5G", "label": "5G NSA"},
+            {"value": "Only_5G", "label": "5G SA"},
+            {"value": "WCDMA_AND_LTE", "label": "4G / 3G"},
+            {"value": "Only_LTE", "label": "4G only"},
+            {"value": "Only_WCDMA", "label": "3G only"},
+        ],
+        "lte_bands": [1, 2, 3, 4, 5, 7, 8, 18, 19, 20, 26, 28, 29, 32, 34, 38, 39, 40, 41, 42, 43, 48, 66, 71],
+        "nr_sa_bands": [1, 2, 3, 5, 7, 8, 18, 20, 26, 28, 29, 38, 40, 41, 48, 66, 71, 75, 77, 78, 79],
+        "nr_nsa_band_lock_supported": False,
+    },
+    "/api/sms/capabilities": lambda: {
+        "available": True, "ready": True, "object": "mock_wms", "storage": "native",
     },
     "/api/router/dns": lambda: STATE["dns"],
     "/api/router/lan": lambda: STATE["lan"],
     "/api/router/apn/mode": lambda: STATE["apn_mode"],
     "/api/router/apn/profiles": apn_profiles,
     "/api/sim/info": lambda: {
-        "sim_iccid": "89610112345678901234", "sim_imsi": "505011234567890",
+        "sim_iccid": "", "sim_imsi": "",
         "sim_states": "SIM_READY", "mdm_mcc": "505", "mdm_mnc": "01",
     },
-    "/api/sim/imei": lambda: {"imei": "351234567890123"},
+    "/api/sim/imei": lambda: {"imei": ""},
     "/api/ttl/status": lambda: STATE["ttl"],
     "/api/system/top": system_top,
     "/api/logger/signal/status": lambda: {

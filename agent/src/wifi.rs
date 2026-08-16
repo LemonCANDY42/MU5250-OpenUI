@@ -124,6 +124,26 @@ fn sanitize_wifi_input_value(key: &str, v: &str) -> String {
     }
 }
 
+fn bandwidth_options(hwmode: &str, standards: &str, is_5g: bool) -> Vec<String> {
+    let mode = hwmode.to_ascii_lowercase();
+    let supported: Vec<String> = standards
+        .split(',')
+        .map(|value| value.trim().to_ascii_lowercase())
+        .collect();
+    let has = |standard: &str| supported.iter().any(|value| value == standard);
+    let prefix = if mode.contains("be") || has("be") {
+        "EHT"
+    } else if mode.contains("ax") || has("ax") {
+        "HE"
+    } else if is_5g && (mode.contains("ac") || has("ac")) {
+        "VHT"
+    } else {
+        "HT"
+    };
+    let widths: &[u16] = if is_5g { &[20, 40, 80, 160] } else { &[20, 40] };
+    widths.iter().map(|width| format!("{prefix}{width}")).collect()
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/wifi/status
 // ---------------------------------------------------------------------------
@@ -182,6 +202,27 @@ pub fn wifi_status(_state: &AppState) -> (u16, Value) {
     );
     result.insert("htmode_2g".into(), json!(cfg.get("wifi0.htmode")));
     result.insert("htmode_5g".into(), json!(cfg.get("wifi1.htmode")));
+    let hwmode_2g = cfg.get("wifi0.hwmode");
+    let hwmode_5g = cfg.get("wifi1.hwmode");
+    let standards_2g = cfg.get("wifi0.SupportedStandards");
+    let standards_5g = cfg.get("wifi1.SupportedStandards");
+    result.insert("hwmode_2g".into(), json!(hwmode_2g));
+    result.insert("hwmode_5g".into(), json!(hwmode_5g));
+    result.insert("supported_standards_2g".into(), json!(standards_2g));
+    result.insert("supported_standards_5g".into(), json!(standards_5g));
+    result.insert(
+        "bandwidth_options_2g".into(),
+        json!(bandwidth_options(&hwmode_2g, &standards_2g, false)),
+    );
+    result.insert(
+        "bandwidth_options_5g".into(),
+        json!(bandwidth_options(&hwmode_5g, &standards_5g, true)),
+    );
+    result.insert(
+        "wifi7_supported".into(),
+        json!(standards_2g.split(',').any(|s| s.trim() == "be")
+            || standards_5g.split(',').any(|s| s.trim() == "be")),
+    );
     result.insert(
         "country_code".into(),
         json!(cfg.get("wifi0.country")),
@@ -262,6 +303,23 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
         Some(o) => o,
         None => return (400, json!({"ok": false, "error": "expected JSON object"})),
     };
+    let cfg = WifiConfig::load();
+    for (key, value) in obj {
+        if key == "htmode_2g" || key == "htmode_5g" {
+            let Some(value) = value.as_str() else {
+                return (400, json!({"ok": false, "error": format!("{key} must be a string")}));
+            };
+            let is_5g = key == "htmode_5g";
+            let options = if is_5g {
+                bandwidth_options(&cfg.get("wifi1.hwmode"), &cfg.get("wifi1.SupportedStandards"), true)
+            } else {
+                bandwidth_options(&cfg.get("wifi0.hwmode"), &cfg.get("wifi0.SupportedStandards"), false)
+            };
+            if !options.iter().any(|option| option == value) {
+                return (400, json!({"ok": false, "error": format!("{value} is not supported by this radio; allowed values: {}", options.join(", "))}));
+            }
+        }
+    }
 
     let uci_map: &[(&str, &str)] = &[
         ("ssid_2g", "wireless.main_2g.ssid"),
@@ -461,7 +519,7 @@ pub fn wifi_set(_state: &AppState, body: &[u8]) -> (u16, Value) {
 
 #[cfg(test)]
 mod tests {
-    use super::sanitize_wifi_input_value;
+    use super::{bandwidth_options, sanitize_wifi_input_value};
 
     #[test]
     fn wifi_keys_keep_special_characters() {
@@ -483,5 +541,17 @@ mod tests {
     fn non_key_values_remain_sanitized() {
         let input = r#"wifi$';`"\name|<&"#;
         assert_eq!(sanitize_wifi_input_value("ssid_5g", input), "wifiname");
+    }
+
+    #[test]
+    fn wifi7_radios_use_eht_bandwidth_names() {
+        assert_eq!(
+            bandwidth_options("11beg", "b,g,n,ax,be", false),
+            ["EHT20", "EHT40"]
+        );
+        assert_eq!(
+            bandwidth_options("11bea", "a,n,ac,ax,be", true),
+            ["EHT20", "EHT40", "EHT80", "EHT160"]
+        );
     }
 }

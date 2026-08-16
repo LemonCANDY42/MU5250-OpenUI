@@ -5,22 +5,6 @@ import { Button, Field, Input, Select } from '../../ui/controls'
 import { toast, toastError, confirm } from '../../ui/feedback'
 import { Card, Chip, Empty, Skeleton } from '../../ui/primitives'
 
-const APN_PRESETS: { name: string; apn: string; user: string; pass: string; auth: number; pdp: number }[] = [
-  { name: 'Vodafone AU', apn: 'live.vodafone.com', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'Optus', apn: 'yesinternet', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'Telstra', apn: 'telstra.internet', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'T-Mobile US', apn: 'fast.t-mobile.com', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'AT&T', apn: 'broadband', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'Verizon', apn: 'vzwinternet', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'EE UK', apn: 'everywhere', user: 'eesecure', pass: 'secure', auth: 2, pdp: 3 },
-  { name: 'Three UK', apn: 'three.co.uk', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'Vodafone UK', apn: 'wap.vodafone.co.uk', user: 'wap', pass: 'wap', auth: 1, pdp: 3 },
-  { name: 'DoCoMo', apn: 'ppsim.jp', user: 'pp@sim', pass: 'jpn', auth: 2, pdp: 3 },
-  { name: 'SoftBank', apn: 'plus.4g', user: 'plus', pass: '4g', auth: 2, pdp: 3 },
-  { name: 'KDDI au', apn: 'uad5gn.au-net.ne.jp', user: '', pass: '', auth: 0, pdp: 3 },
-  { name: 'Generic IPv4v6', apn: 'internet', user: '', pass: '', auth: 0, pdp: 3 },
-]
-
 const PDP_LABELS: Record<number, string> = { 1: 'IPv4', 2: 'IPv6', 3: 'IPv4v6' }
 const AUTH_LABELS: Record<number, string> = { 0: 'None', 1: 'PAP', 2: 'CHAP', 3: 'PAP/CHAP' }
 
@@ -32,7 +16,7 @@ function ApnMode() {
 
   useEffect(() => {
     api.apnModeGet()
-      .then((d) => setMode((d?.apn_mode as number) ?? 0))
+      .then((d) => setMode(Number(d?.apn_mode) || 0))
       .catch(() => {})
   }, [])
 
@@ -91,7 +75,17 @@ function Profiles() {
     try {
       const data = await api.apnProfiles()
       const list = data?.apnListArray
-      setProfiles(Array.isArray(list) ? (list as ApnProfile[]) : [])
+      setProfiles(
+        Array.isArray(list)
+          ? (list as Record<string, unknown>[]).map((profile) => ({
+              ...profile,
+              profileId: String(profile.profileId),
+              pdpType: Number(profile.pdpType),
+              pppAuthMode: Number(profile.pppAuthMode),
+              isEnable: profile.isEnable === true || profile.isEnable === 1 || profile.isEnable === '1',
+            })) as ApnProfile[]
+          : [],
+      )
     } catch {
       setProfiles([])
     }
@@ -146,18 +140,13 @@ function Profiles() {
     }
   }
 
-  function applyPreset(p: (typeof APN_PRESETS)[0]) {
-    setForm({ name: p.name, apn: p.apn, user: p.user, pass: p.pass, auth: p.auth, pdp: p.pdp })
-    setAdding(true)
-  }
-
   return (
     <>
       <Card title="APN profiles">
         {loading ? (
           <Skeleton className="h-20" />
         ) : profiles.length === 0 ? (
-          <Empty title="No manual APN profiles" body="Add one below or pick a preset." />
+          <Empty title="No manual APN profiles" body="Add the exact settings supplied by your carrier." />
         ) : (
           <div className="space-y-2">
             {profiles.map((p) => (
@@ -183,7 +172,7 @@ function Profiles() {
                       Activate
                     </Button>
                   )}
-                  <Button size="sm" variant="ghost" onClick={() => deleteProfile(p.profileId)}>
+                  <Button size="sm" variant="ghost" disabled={p.isEnable} onClick={() => deleteProfile(p.profileId)} title={p.isEnable ? 'Switch to another APN before deleting this profile' : undefined}>
                     Delete
                   </Button>
                 </div>
@@ -206,7 +195,7 @@ function Profiles() {
               <Input value={form.user} onChange={(e) => setForm((f) => ({ ...f, user: e.target.value }))} placeholder="(optional)" />
             </Field>
             <Field label="Password">
-              <Input value={form.pass} onChange={(e) => setForm((f) => ({ ...f, pass: e.target.value }))} placeholder="(optional)" />
+              <Input type="password" autoComplete="new-password" value={form.pass} onChange={(e) => setForm((f) => ({ ...f, pass: e.target.value }))} placeholder="(optional)" />
             </Field>
             <Field label="Authentication">
               <Select value={form.auth} onChange={(e) => setForm((f) => ({ ...f, auth: parseInt(e.target.value) }))}>
@@ -239,20 +228,6 @@ function Profiles() {
         </Button>
       )}
 
-      <Card title="Quick presets">
-        <p className="mb-2 text-[12px] text-ink2">Tap a preset to pre-fill the add form.</p>
-        <div className="flex flex-wrap gap-1.5">
-          {APN_PRESETS.map((p) => (
-            <button
-              key={p.name}
-              onClick={() => applyPreset(p)}
-              className="rounded-lg bg-surface2 px-2.5 py-1.5 text-[12px] font-semibold text-ink2 transition-colors hover:bg-line/10 hover:text-ink"
-            >
-              {p.name}
-            </button>
-          ))}
-        </div>
-      </Card>
     </>
   )
 }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { api } from '../../data/api'
-import type { SmsMessage } from '../../types'
+import type { SmsCapabilities, SmsMessage } from '../../types'
 import { IMessage, IPlus } from '../../icons'
 import { Button, Field, Input, Segmented } from '../../ui/controls'
 import { toast, toastError, confirm } from '../../ui/feedback'
@@ -12,7 +12,11 @@ const BOX_SENT = 2
 function formatDate(d?: string) {
   if (!d) return ''
   try {
-    return new Date(d).toLocaleString()
+    const stock = d.match(/^(\d{2});(\d{2});(\d{2});(\d{2});(\d{2});(\d{2})/)
+    const value = stock
+      ? new Date(2000 + Number(stock[1]), Number(stock[2]) - 1, Number(stock[3]), Number(stock[4]), Number(stock[5]), Number(stock[6]))
+      : new Date(d)
+    return Number.isNaN(value.getTime()) ? d : value.toLocaleString()
   } catch {
     return d
   }
@@ -27,11 +31,17 @@ export default function SmsTab() {
   const [to, setTo] = useState('')
   const [text, setText] = useState('')
   const [sending, setSending] = useState(false)
+  const [capabilities, setCapabilities] = useState<SmsCapabilities | null | undefined>(undefined)
+
+  useEffect(() => {
+    api.smsCapabilities().then(setCapabilities).catch(() => setCapabilities(null))
+  }, [])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      setMessages(await api.smsList(box))
+      const all = await api.smsList()
+      setMessages(all.filter((message) => box === BOX_INBOX ? message.tag === 0 || message.tag === 1 : message.tag === 2 || message.tag === 3))
     } catch {
       setMessages([])
     } finally {
@@ -40,8 +50,9 @@ export default function SmsTab() {
   }, [box])
 
   useEffect(() => {
-    load()
-  }, [load])
+    if (capabilities?.available && capabilities.ready) load()
+    else if (capabilities !== undefined) setLoading(false)
+  }, [capabilities, load])
 
   async function markRead(id: number) {
     try {
@@ -66,9 +77,9 @@ export default function SmsTab() {
 
   function openMsg(m: SmsMessage) {
     setSelected(m)
-    if (m.tag === 0) {
+    if (m.tag === 1) {
       markRead(m.id)
-      setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, tag: 1 } : x)))
+      setMessages((ms) => ms.map((x) => (x.id === m.id ? { ...x, tag: 0 } : x)))
     }
   }
 
@@ -89,7 +100,20 @@ export default function SmsTab() {
     }
   }
 
-  const unread = messages.filter((m) => m.tag === 0).length
+  const unread = messages.filter((m) => m.tag === 1).length
+
+  if (capabilities === undefined) return <Skeleton className="h-64" />
+  if (!capabilities?.available || !capabilities.ready) {
+    return (
+      <Card title="SMS unavailable">
+        <Empty
+          icon={<IMessage size={26} />}
+          title="Firmware WMS is not ready"
+          body={capabilities?.reason ?? 'The agent could not verify the SMS service, so listing, sending, and deletion are disabled.'}
+        />
+      </Card>
+    )
+  }
 
   return (
     <div className="space-y-3">
@@ -166,10 +190,10 @@ export default function SmsTab() {
                     }`}
                   >
                     <div className="flex items-start justify-between gap-2">
-                      <p className={`truncate text-[13px] ${m.tag === 0 ? 'font-bold text-ink' : 'font-medium text-ink2'}`}>
+                      <p className={`truncate text-[13px] ${m.tag === 1 ? 'font-bold text-ink' : 'font-medium text-ink2'}`}>
                         {m.number || '—'}
                       </p>
-                      {m.tag === 0 && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent" />}
+                      {m.tag === 1 && <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-accent" />}
                     </div>
                     <p className="mt-0.5 truncate text-[12px] text-ink3">{m.content}</p>
                     <p className="tnum mt-0.5 text-[11px] text-ink3">{formatDate(m.date)}</p>

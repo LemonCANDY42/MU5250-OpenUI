@@ -37,6 +37,11 @@ build_payload() {
 
 	cp "target/$TARGET/release/zte-agent" "$EMU/payload/root/"
 	cp "$EMU/fakemodem/target/$TARGET/release/fakemodem" "$EMU/payload/root/"
+	# Tracked emulator overlays. The firmware images and expanded payload tree
+	# are intentionally gitignored, so test doubles must be copied from here.
+	cp scripts/emulator-payload/install.sh "$EMU/payload/root/install.sh"
+	mkdir -p "$EMU/payload/root/rpcd"
+	cp scripts/emulator-payload/zte_agent_emu_wms "$EMU/payload/root/rpcd/zte_agent_emu_wms"
 	chmod +x "$EMU/payload/root/"* 2>/dev/null || true
 	# Optional full stock-UI asset tree pulled from a live device:
 	#   tar czf - -C / usr/zte_web/web  →  unpack into firmware/emulation/payload/ztedata/

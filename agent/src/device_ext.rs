@@ -37,6 +37,7 @@ pub fn device_thermal_all(_state: &AppState) -> (u16, Value) {
             }
         }
     }
+    data.insert("available".to_string(), json!(!data.is_empty()));
     (200, json!({"ok": true, "data": data}))
 }
 
@@ -49,44 +50,48 @@ pub fn device_battery_detail(_state: &AppState) -> (u16, Value) {
     };
     let read_i64 = |name: &str| -> Option<i64> { read_sysfs(name)?.parse().ok() };
 
-    let capacity = read_i64("capacity").unwrap_or(0);
-    let status = read_sysfs("status").unwrap_or_default();
-    let voltage_uv = read_i64("voltage_now").unwrap_or(0);
-    let voltage_max_uv = read_i64("voltage_max").unwrap_or(0);
-    let voltage_ocv_uv = read_i64("voltage_ocv").unwrap_or(0);
-    let current_ua = read_i64("current_now").unwrap_or(0);
+    let capacity = read_i64("capacity");
+    let status = read_sysfs("status");
+    let voltage_uv = read_i64("voltage_now");
+    let voltage_max_uv = read_i64("voltage_max");
+    let voltage_ocv_uv = read_i64("voltage_ocv");
+    let current_ua = read_i64("current_now");
     // power_now sysfs is unreliable on PM7550B — compute from V * I instead
     let _ = read_i64("power_now"); // ignore sysfs value
-    let temp_tenths = read_i64("temp").unwrap_or(0);
-    let charge_type = read_sysfs("charge_type").unwrap_or_default();
-    let health = read_sysfs("health").unwrap_or_default();
-    let cycle_count = read_i64("cycle_count").unwrap_or(0);
-    let charge_counter_uah = read_i64("charge_counter").unwrap_or(0);
-    let charge_full_uah = read_i64("charge_full").unwrap_or(0);
-    let charge_full_design_uah = read_i64("charge_full_design").unwrap_or(0);
-    let time_to_full = read_i64("time_to_full_avg").unwrap_or(-1);
-    let time_to_empty = read_i64("time_to_empty_avg").unwrap_or(-1);
+    let temp_tenths = read_i64("temp");
+    let charge_type = read_sysfs("charge_type");
+    let health = read_sysfs("health");
+    let cycle_count = read_i64("cycle_count");
+    let charge_counter_uah = read_i64("charge_counter");
+    let charge_full_uah = read_i64("charge_full");
+    let charge_full_design_uah = read_i64("charge_full_design");
+    let time_to_full = read_i64("time_to_full_avg").filter(|value| *value >= 0);
+    let time_to_empty = read_i64("time_to_empty_avg").filter(|value| *value >= 0);
 
     // Compute power from voltage * current (more accurate than sysfs power_now)
-    let power_mw = (voltage_uv as f64 * current_ua as f64 / 1e9) as i64;
+    let power_mw = voltage_uv.zip(current_ua).map(|(voltage, current)| {
+        (voltage as f64 * current as f64 / 1e9) as i64
+    });
+    let available = capacity.is_some() || status.is_some() || voltage_uv.is_some();
 
     (
         200,
         json!({"ok": true, "data": {
+            "available": available,
             "capacity": capacity,
             "status": status,
-            "voltage_mv": voltage_uv / 1000,
-            "voltage_max_mv": voltage_max_uv / 1000,
-            "voltage_ocv_mv": voltage_ocv_uv / 1000,
-            "current_ma": current_ua / 1000,
+            "voltage_mv": voltage_uv.map(|value| value / 1000),
+            "voltage_max_mv": voltage_max_uv.map(|value| value / 1000),
+            "voltage_ocv_mv": voltage_ocv_uv.map(|value| value / 1000),
+            "current_ma": current_ua.map(|value| value / 1000),
             "power_mw": power_mw,
-            "temperature_c": temp_tenths as f64 / 10.0,
+            "temperature_c": temp_tenths.map(|value| value as f64 / 10.0),
             "charge_type": charge_type,
             "health": health,
             "cycle_count": cycle_count,
-            "charge_counter_mah": charge_counter_uah / 1000,
-            "charge_full_mah": charge_full_uah / 1000,
-            "charge_full_design_mah": charge_full_design_uah / 1000,
+            "charge_counter_mah": charge_counter_uah.map(|value| value / 1000),
+            "charge_full_mah": charge_full_uah.map(|value| value / 1000),
+            "charge_full_design_mah": charge_full_design_uah.map(|value| value / 1000),
             "time_to_full_secs": time_to_full,
             "time_to_empty_secs": time_to_empty,
         }}),
@@ -142,23 +147,20 @@ pub fn agent_restart(_state: &AppState) -> (u16, Value) {
 
 /// GET /api/device/charge-control — charge stop state + limit enforcer config
 pub fn charge_control_get(state: &AppState) -> (u16, Value) {
-    let read_sysfs = |path: &str| -> String {
-        fs::read_to_string(path)
-            .unwrap_or_default()
-            .trim()
-            .to_string()
+    let read_sysfs = |path: &str| -> Option<String> {
+        fs::read_to_string(path).ok().map(|value| value.trim().to_string())
     };
 
     let battery_status = read_sysfs("/sys/class/power_supply/battery/status");
-    let capacity: i64 = read_sysfs("/sys/class/power_supply/battery/capacity")
-        .parse()
-        .unwrap_or(0);
+    let capacity: Option<i64> = read_sysfs("/sys/class/power_supply/battery/capacity")
+        .and_then(|value| value.parse().ok());
 
     // Inverted firmware semantics: direct_power_supply_mode "enable" = charging STOPPED
     let charging_stopped = ubus::call("zwrt_bsp.charger", "list", Some("{}"))
         .ok()
-        .and_then(|v| v["direct_power_supply_mode"].as_str().map(|s| s == "enable"))
-        .unwrap_or(false);
+        .and_then(|v| v["direct_power_supply_mode"].as_str().map(|s| s == "enable"));
+    let battery_available = capacity.is_some() || battery_status.is_some();
+    let charger_available = charging_stopped.is_some();
 
     let (limit_enabled, limit_pct, hysteresis, manual_override) = state.charge_limit.get();
 
@@ -167,6 +169,9 @@ pub fn charge_control_get(state: &AppState) -> (u16, Value) {
         json!({
             "ok": true,
             "data": {
+                "available": battery_available || charger_available,
+                "battery_available": battery_available,
+                "charger_available": charger_available,
                 "charging_stopped": charging_stopped,
                 "battery_status": battery_status,
                 "capacity": capacity,
@@ -188,6 +193,13 @@ pub fn charge_control_set(state: &AppState, body: &[u8]) -> (u16, Value) {
 
     // Manual charge stop/resume via ubus (inverted: "enable" = stop, "disable" = start)
     if let Some(stopped) = parsed["charging_stopped"].as_bool() {
+        if ubus::call("zwrt_bsp.charger", "list", Some("{}"))
+            .ok()
+            .and_then(|v| v["direct_power_supply_mode"].as_str().map(str::to_string))
+            .is_none()
+        {
+            return (503, json!({"ok": false, "error": "charger control hardware is unavailable"}));
+        }
         let mode = if stopped { "enable" } else { "disable" };
         let params = format!(r#"{{"direct_power_supply_mode":"{mode}"}}"#);
         if let Err(e) = ubus::call("zwrt_bsp.charger", "set", Some(&params)) {
@@ -205,6 +217,13 @@ pub fn charge_control_set(state: &AppState, body: &[u8]) -> (u16, Value) {
         || parsed.get("charge_limit").is_some()
         || parsed.get("hysteresis").is_some()
     {
+        if fs::read_to_string("/sys/class/power_supply/battery/capacity")
+            .ok()
+            .and_then(|value| value.trim().parse::<u8>().ok())
+            .is_none()
+        {
+            return (503, json!({"ok": false, "error": "battery capacity sensor is unavailable"}));
+        }
         let (cur_enabled, cur_limit, cur_hysteresis, _) = state.charge_limit.get();
         let enabled = parsed["charge_limit_enabled"]
             .as_bool()

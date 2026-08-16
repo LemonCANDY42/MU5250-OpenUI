@@ -16,8 +16,15 @@ interface MetricsData {
   mem: MemInfo | null
 }
 
-function ThermalBar({ label, value }: { label: string; value?: number }) {
-  if (value == null) return null
+function ThermalBar({ label, value }: { label: string; value?: number | null }) {
+  if (value == null) {
+    return (
+      <div className="flex justify-between text-[12px]">
+        <span className="text-ink2">{label}</span>
+        <span className="font-medium text-ink3">Unavailable</span>
+      </div>
+    )
+  }
   const pct = Math.min((value / 100) * 100, 100)
   const tone = value > 80 ? 'bg-danger' : value > 60 ? 'bg-warn' : 'bg-ok'
   return (
@@ -65,13 +72,14 @@ function ChargeControlCard() {
           <div className="min-w-0">
             <p className="text-[13px] font-medium text-ink">Charging</p>
             <p className="truncate text-[12px] text-ink2">
-              {cc.battery_status || '\u2014'} at {cc.capacity}%{cc.manual_override ? ' · manual override' : ''}
+              {cc.battery_status ?? 'Battery data unavailable'}{cc.capacity != null ? ` at ${cc.capacity}%` : ''}{cc.manual_override ? ' · manual override' : ''}
             </p>
           </div>
           <Button
             size="sm"
             variant={cc.charging_stopped ? 'primary' : 'outline'}
             loading={busy}
+            disabled={!cc.charger_available}
             onClick={() => apply({ charging_stopped: !cc.charging_stopped })}
           >
             {cc.charging_stopped ? 'Resume charging' : 'Stop charging'}
@@ -88,7 +96,7 @@ function ChargeControlCard() {
             </div>
             <Toggle
               checked={cc.charge_limit_enabled}
-              disabled={busy}
+              disabled={busy || !cc.battery_available}
               onChange={(v) => apply({ charge_limit_enabled: v })}
               label="Charge limit enforcer"
             />
@@ -100,7 +108,7 @@ function ChargeControlCard() {
               max={100}
               step={5}
               value={limit ?? cc.charge_limit}
-              disabled={busy || !cc.charge_limit_enabled}
+              disabled={busy || !cc.charge_limit_enabled || !cc.battery_available}
               onChange={(e) => setLimit(Number(e.target.value))}
               onPointerDown={() => setDragging(true)}
               onPointerUp={(e) => {
@@ -120,6 +128,7 @@ function ChargeControlCard() {
           Firmware note: the charger switch is inverted (enable = stop). Charging auto-resumes when the
           charger is unplugged or the limit is disabled.
         </p>
+        {!cc.available && <p className="text-[12px] font-medium text-warn">Battery and charger hardware data are unavailable; controls are disabled.</p>}
       </div>
     </Card>
   )
@@ -163,7 +172,7 @@ export default function MetricsTab() {
   const { thermal, battery, batteryInfo, cpu, mem } = data
 
   const cpuAvg =
-    thermal && thermal.cpu_0 != null
+    thermal?.available && thermal.cpu_0 != null
       ? [thermal.cpu_0, thermal.cpu_1, thermal.cpu_2, thermal.cpu_3]
           .filter((v): v is number => v != null)
           .reduce((a, b) => a + b, 0) /
@@ -171,14 +180,14 @@ export default function MetricsTab() {
       : undefined
 
   const batteryHealth =
-    battery && battery.charge_full_design_mah > 0
+    battery?.available && battery.charge_full_design_mah != null && battery.charge_full_design_mah > 0 && battery.charge_full_mah != null
       ? Math.round((battery.charge_full_mah / battery.charge_full_design_mah) * 100)
       : undefined
 
   return (
     <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
       <Card title="Temperatures">
-        {thermal ? (
+        {thermal?.available ? (
           <div className="space-y-2.5">
             <ThermalBar label="CPU (avg)" value={cpuAvg} />
             <ThermalBar label="Modem (Q6 DSP)" value={thermal.modem} />
@@ -192,7 +201,10 @@ export default function MetricsTab() {
             <ThermalBar label="Board (XO)" value={thermal.xo_therm} />
           </div>
         ) : (
-          <p className="text-[13px] text-ink3">No thermal data</p>
+          <div className="space-y-2.5">
+            <p className="text-[12px] font-medium text-warn">Thermal sensors are unavailable.</p>
+            {['CPU (avg)', 'Modem (Q6 DSP)', 'Modem SS', 'PA (power amplifier)', 'SDR (radio)', 'Battery', 'USB', 'Ethernet PHY', 'PMIC', 'Board (XO)'].map((label) => <ThermalBar key={label} label={label} />)}
+          </div>
         )}
       </Card>
 
@@ -244,52 +256,52 @@ export default function MetricsTab() {
       </div>
 
       <Card title="Battery">
-        {battery ? (
+        {battery?.available ? (
           <div className="space-y-3">
             <div>
               <div className="mb-1 flex justify-between text-[13px]">
-                <span className="tnum font-semibold text-ink">{battery.capacity}%</span>
-                <span className="text-ink2">{battery.status}</span>
+                <span className="tnum font-semibold text-ink">{battery.capacity != null ? `${battery.capacity}%` : 'Unavailable'}</span>
+                <span className="text-ink2">{battery.status ?? 'Unavailable'}</span>
               </div>
-              <Meter pct={battery.capacity} tone={battery.capacity > 20 ? 'bg-ok' : 'bg-danger'} />
+              {battery.capacity != null && <Meter pct={battery.capacity} tone={battery.capacity > 20 ? 'bg-ok' : 'bg-danger'} />}
             </div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-[13px]">
-              <Info label="Power" value={`${(battery.power_mw / 1000).toFixed(2)} W`} />
-              <Info label="Voltage" value={`${(battery.voltage_mv / 1000).toFixed(3)} V`} />
-              <Info label="Current" value={`${battery.current_ma} mA`} />
-              <Info label="Charge type" value={battery.charge_type || '\u2014'} />
-              <Info label="Temperature" value={`${battery.temperature_c.toFixed(1)}°C`} cls={tempColorClass(battery.temperature_c)} />
+              <Info label="Power" value={formatMeasure(battery.power_mw, (value) => `${(value / 1000).toFixed(2)} W`)} />
+              <Info label="Voltage" value={formatMeasure(battery.voltage_mv, (value) => `${(value / 1000).toFixed(3)} V`)} />
+              <Info label="Current" value={formatMeasure(battery.current_ma, (value) => `${value} mA`)} />
+              <Info label="Charge type" value={battery.charge_type ?? 'Unavailable'} />
+              <Info label="Temperature" value={formatMeasure(battery.temperature_c, (value) => `${value.toFixed(1)}°C`)} cls={battery.temperature_c != null ? tempColorClass(battery.temperature_c) : 'text-ink3'} />
               <Info
                 label={battery.status === 'Charging' ? 'Time to full' : 'Time to empty'}
                 value={formatClock(battery.status === 'Charging' ? battery.time_to_full_secs : battery.time_to_empty_secs)}
               />
-              <Info label="Charge counter" value={`${battery.charge_counter_mah.toLocaleString()} mAh`} />
-              <Info label="Cycles" value={String(battery.cycle_count)} />
-              <Info label="Fuel gauge" value={batteryInfo ? (batteryInfo.using_hw_fg_chip ? 'Hardware' : 'Software') : '\u2014'} />
-              <Info label="Battery online" value={batteryInfo ? (batteryInfo.online ? 'Yes' : 'No') : '\u2014'} />
+              <Info label="Charge counter" value={formatMeasure(battery.charge_counter_mah, (value) => `${value.toLocaleString()} mAh`)} />
+              <Info label="Cycles" value={formatMeasure(battery.cycle_count, String)} />
+              <Info label="Fuel gauge" value={batteryInfo?.available && batteryInfo.using_hw_fg_chip != null ? (batteryInfo.using_hw_fg_chip ? 'Hardware' : 'Software') : 'Unavailable'} />
+              <Info label="Battery online" value={batteryInfo?.available && batteryInfo.online != null ? (batteryInfo.online ? 'Yes' : 'No') : 'Unavailable'} />
             </div>
           </div>
         ) : (
-          <p className="text-[13px] text-ink3">No battery data</p>
+          <p className="text-[13px] font-medium text-warn">Battery hardware data are unavailable.</p>
         )}
       </Card>
 
       <div className="space-y-3">
         <Card title="Battery health">
-          {battery ? (
+          {battery?.available ? (
             <div className="space-y-1.5 text-[13px]">
-              <KV k="Health" v={battery.health} />
-              <KV k="Capacity" v={`${battery.charge_full_mah.toLocaleString()} / ${battery.charge_full_design_mah.toLocaleString()} mAh`} />
+              <KV k="Health" v={battery.health ?? 'Unavailable'} />
+              <KV k="Capacity" v={battery.charge_full_mah != null && battery.charge_full_design_mah != null ? `${battery.charge_full_mah.toLocaleString()} / ${battery.charge_full_design_mah.toLocaleString()} mAh` : 'Unavailable'} />
               {batteryHealth != null && (
                 <div className="flex justify-between">
                   <span className="text-ink2">Capacity retention</span>
                   <span className={`tnum font-semibold ${batteryHealth > 80 ? 'text-ok' : 'text-warn'}`}>{batteryHealth}%</span>
                 </div>
               )}
-              <KV k="OCV" v={`${(battery.voltage_ocv_mv / 1000).toFixed(3)} V`} />
+              <KV k="OCV" v={formatMeasure(battery.voltage_ocv_mv, (value) => `${(value / 1000).toFixed(3)} V`)} />
             </div>
           ) : (
-            <p className="text-[13px] text-ink3">No battery data</p>
+          <p className="text-[13px] font-medium text-warn">Battery health measures are unavailable.</p>
           )}
         </Card>
 
@@ -317,8 +329,12 @@ function KV({ k, v }: { k: string; v: string }) {
   )
 }
 
-function formatClock(secs: number) {
-  if (secs <= 0) return '\u2014'
+function formatMeasure(value: number | null, format: (value: number) => string) {
+  return value == null ? 'Unavailable' : format(value)
+}
+
+function formatClock(secs: number | null) {
+  if (secs == null || secs <= 0) return 'Unavailable'
   const h = Math.floor(secs / 3600)
   const m = Math.floor((secs % 3600) / 60)
   return h > 0 ? `${h}h ${m}m` : `${m}m`

@@ -22,10 +22,12 @@ import type {
   LoggerDownload,
   LoggerStatus,
   MemInfo,
+  ModemCapabilities,
   ProcessListResult,
   SignalInfo,
   SimInfo,
   SmsMessage,
+  SmsCapabilities,
   SpeedInfo,
   ThermalAll,
   ThermalInfo,
@@ -448,6 +450,8 @@ function mapWifi(d: Record<string, unknown>): WifiAll {
       bandwidth: actualBw2g,
       configuredChannel: configuredChannel2g === '0' ? 'auto' : configuredChannel2g,
       configuredBandwidth: d.htmode_2g as string | undefined,
+      bandwidthOptions: d.bandwidth_options_2g as string[] | undefined,
+      supportedStandards: d.supported_standards_2g as string | undefined,
       actualChannel: actualChannel2g,
       actualBandwidth: actualBw2g,
       password: (d.key_2g as string) || (d.has_key_2g ? '••••••••' : undefined),
@@ -462,6 +466,8 @@ function mapWifi(d: Record<string, unknown>): WifiAll {
       bandwidth: actualBw5g,
       configuredChannel: configuredChannel5g === '0' ? 'auto' : configuredChannel5g,
       configuredBandwidth: d.htmode_5g as string | undefined,
+      bandwidthOptions: d.bandwidth_options_5g as string[] | undefined,
+      supportedStandards: d.supported_standards_5g as string | undefined,
       actualChannel: actualChannel5g,
       actualBandwidth: actualBw5g,
       password: (d.key_5g as string) || (d.has_key_5g ? '••••••••' : undefined),
@@ -474,6 +480,7 @@ function mapWifi(d: Record<string, unknown>): WifiAll {
     master_enabled: masterEnabled,
     wifi6_supported: wifi6Supported,
     wifi6_enabled: wifi6Enabled,
+    wifi7_supported: parseBoolLike(d.wifi7_supported, false),
   }
 }
 
@@ -488,11 +495,12 @@ function mapDns(d: Record<string, unknown>): DnsConfig {
 
 function mapLan(d: Record<string, unknown>): LanConfig {
   return {
-    ip: (d.lan_ipaddr as string) || '',
-    netmask: (d.lan_netmask as string) || '',
+    ipaddr: (d.ipaddr as string) || '',
+    netmask: (d.netmask as string) || '',
+    dhcp_enabled: d.dhcp_enabled === true,
     dhcp_start: (d.dhcp_start as string) || '',
     dhcp_end: (d.dhcp_end as string) || '',
-    dhcp_lease: (d.dhcp_lease_time as string) || '',
+    lease_seconds: Number(d.lease_seconds) || 0,
   }
 }
 
@@ -574,11 +582,12 @@ function mapThermal(d: Record<string, unknown>): ThermalInfo {
 
 function mapBatteryBspInfo(d: Record<string, unknown>): BatteryBspInfo {
   return {
-    online: d.battery_online === 1,
-    low_power: d.battery_low_power === 1,
-    using_hw_fg_chip: d.battery_using_hw_fg_chip === 1,
-    time_to_full_mins: d.battery_time_to_full as number | undefined,
-    time_to_empty_mins: d.battery_time_to_empty as number | undefined,
+    available: d.available === true,
+    online: typeof d.online === 'boolean' ? d.online : null,
+    low_power: typeof d.low_power === 'boolean' ? d.low_power : null,
+    using_hw_fg_chip: typeof d.using_hw_fg_chip === 'boolean' ? d.using_hw_fg_chip : null,
+    time_to_full_mins: typeof d.time_to_full_mins === 'number' ? d.time_to_full_mins : null,
+    time_to_empty_mins: typeof d.time_to_empty_mins === 'number' ? d.time_to_empty_mins : null,
   }
 }
 
@@ -622,6 +631,7 @@ export const api = {
   // Modem / SIM
   simInfo: () => get('/api/sim/info').then(mapSim),
   simImei: () => get('/api/sim/imei'),
+  modemCapabilities: () => get('/api/modem/capabilities').then((d) => d as unknown as ModemCapabilities),
   networkModeSet: (net_select: string) => put('/api/modem/network-mode', { net_select }),
 
   // WiFi
@@ -653,18 +663,19 @@ export const api = {
   apnDelete: (body: Record<string, unknown>) => post('/api/router/apn/profiles/delete', body),
   apnActivate: (body: Record<string, unknown>) => post('/api/router/apn/profiles/activate', body),
 
-  // SMS (firmware expects legacy semicolon-joined id strings: "12;34;")
-  smsList: (box: number) =>
-    post('/api/sms/list', { cmd: 1, page: 0, data_per_page: 500, mem_store: box, tags: 0, order_by: 'date,desc' }).then(
-      mapSmsList,
-    ),
-  smsSend: (to: string, text: string) => post('/api/sms/send', { to, text }),
-  smsDelete: (ids: number[]) => post('/api/sms/delete', { id: ids.map((n) => `${n};`).join('') }),
-  smsRead: (ids: number[]) => post('/api/sms/read', { id: ids.map((n) => `${n};`).join(''), tag: 0 }),
+  // SMS: the agent owns translation to ZTE's legacy WMS payloads.
+  smsCapabilities: () => get('/api/sms/capabilities').then((d) => d as unknown as SmsCapabilities),
+  smsList: () => post('/api/sms/list', { page: 0, per_page: 500 }).then(mapSmsList),
+  smsSend: (number: string, message: string) => post('/api/sms/send', { number, message }),
+  smsDelete: (ids: number[]) => post('/api/sms/delete', { ids }),
+  smsRead: (ids: number[]) => post('/api/sms/read', { ids }),
 
   // System
   top: () => get('/api/system/top').then((d) => d as unknown as ProcessListResult),
-  killBloat: () => post('/api/system/kill-bloat', { all: true }).then((d) => d as unknown as KillBloatResult),
+  killBloat: () =>
+    post('/api/system/kill-bloat', { all: true }, { 'X-Confirm': 'true' }).then(
+      (d) => d as unknown as KillBloatResult,
+    ),
   restartAgent: () => post('/api/system/restart-agent', {}),
 
   // USB

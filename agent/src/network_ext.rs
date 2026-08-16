@@ -260,7 +260,34 @@ pub fn network_clients(_state: &AppState) -> (u16, Value) {
 
 pub fn network_battery_ubus(_state: &AppState) -> (u16, Value) {
     match ubus::call("zwrt_bsp.battery", "list", Some("{}")) {
-        Ok(data) => (200, json!({"ok": true, "data": data})),
+        Ok(data) => {
+            let number = |key: &str| -> Option<i64> {
+                match data.get(key)? {
+                    Value::Number(value) => value.as_i64(),
+                    Value::String(value) => value.parse().ok(),
+                    _ => None,
+                }
+                .filter(|value| *value >= 0)
+            };
+            let online = number("battery_online").map(|value| value == 1);
+            let low_power = number("battery_low_power").map(|value| value == 1);
+            let using_hw_fg_chip = number("battery_using_hw_fg_chip").map(|value| value == 1);
+            let time_to_full_mins = number("battery_time_to_full");
+            let time_to_empty_mins = number("battery_time_to_empty");
+            let available = online.is_some()
+                || low_power.is_some()
+                || using_hw_fg_chip.is_some()
+                || time_to_full_mins.is_some()
+                || time_to_empty_mins.is_some();
+            (200, json!({"ok": true, "data": {
+                "available": available,
+                "online": online,
+                "low_power": low_power,
+                "using_hw_fg_chip": using_hw_fg_chip,
+                "time_to_full_mins": time_to_full_mins,
+                "time_to_empty_mins": time_to_empty_mins,
+            }}))
+        }
         Err(e) => (503, json!({"ok": false, "error": e})),
     }
 }

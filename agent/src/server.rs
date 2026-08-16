@@ -83,7 +83,11 @@ pub fn start(bind: &str, threads: usize, state: Arc<AppState>) {
     }
 }
 
-const DESTRUCTIVE_PATHS: &[&str] = &["/api/device/reboot", "/api/device/shutdown"];
+const DESTRUCTIVE_PATHS: &[&str] = &[
+    "/api/device/reboot",
+    "/api/device/shutdown",
+    "/api/system/kill-bloat",
+];
 
 fn cors_headers(origin: Option<&str>) -> Vec<Header> {
     let allowed = origin
@@ -256,8 +260,10 @@ pub fn route(
         (&Method::Put, "/api/data-usage/reset-day") => {
             handlers::data_usage_reset_day_set(state, body)
         }
+        (&Method::Get, "/api/modem/capabilities") => cell::modem_capabilities(state),
         (&Method::Put, "/api/modem/network-mode") => cell::modem_network_mode_set(state, body),
         // SMS
+        (&Method::Get, "/api/sms/capabilities") => sms::sms_capabilities(state),
         (&Method::Post, "/api/sms/list") => sms::sms_list(state, body),
         (&Method::Post, "/api/sms/send") => sms::sms_send(state, body),
         (&Method::Post, "/api/sms/delete") => sms::sms_delete(state, body),
@@ -353,14 +359,16 @@ const AT_BLOCKED_PREFIXES: &[&str] = &[
     "AT+CGACT=",
 ];
 
-const AT_ALLOWED_PREFIXES: &[&str] = &[
+const AT_ALLOWED_EXACT: &[&str] = &[
+    "AT",
     "ATI",
     "AT+CSQ",
-    "AT+COPS",
+    "AT+COPS?",
+    "AT+COPS=?",
     "AT+CGDCONT?",
-    "AT+CREG",
-    "AT+CGREG",
-    "AT+CEREG",
+    "AT+CREG?",
+    "AT+CGREG?",
+    "AT+CEREG?",
     "AT+CGPADDR",
     "AT+CGACT?",
     "AT+CLAC",
@@ -368,17 +376,14 @@ const AT_ALLOWED_PREFIXES: &[&str] = &[
     "AT+CGMI",
     "AT+CGMM",
     "AT+CGMR",
-    "AT+QENG",
+    "AT+QENG=\"SERVINGCELL\"",
     "AT+QNWINFO",
     "AT+QRSRP",
     "AT+QRSRQ",
     "AT+QINISTAT",
     "AT+QSPN",
     "AT+QCIDINCOMING",
-    "AT+CGDCONT?",
     "AT+CGCONTRDP",
-    "AT+CGPADDR",
-    "AT",
 ];
 
 fn is_at_command_allowed(cmd: &str) -> bool {
@@ -391,12 +396,7 @@ fn is_at_command_allowed(cmd: &str) -> bool {
             return false;
         }
     }
-    for prefix in AT_ALLOWED_PREFIXES {
-        if upper.starts_with(prefix) {
-            return true;
-        }
-    }
-    false
+    AT_ALLOWED_EXACT.contains(&upper.as_str())
 }
 
 /// GET /api/at/port — report the detected AT serial port (if any)
@@ -551,4 +551,20 @@ fn respond(request: Request, status: u16, body: Value, origin: Option<&str>) {
         response = response.with_header(h);
     }
     let _ = request.respond(response);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_at_command_allowed;
+
+    #[test]
+    fn at_allowlist_is_exact_and_read_only() {
+        assert!(is_at_command_allowed("AT"));
+        assert!(is_at_command_allowed("at+csq"));
+        assert!(is_at_command_allowed("AT+QENG=\"servingcell\""));
+        assert!(!is_at_command_allowed("AT+CSQ=1"));
+        assert!(!is_at_command_allowed("AT+FOO"));
+        assert!(!is_at_command_allowed("AT+CFUN=1"));
+        assert!(!is_at_command_allowed("AT^RESET"));
+    }
 }
