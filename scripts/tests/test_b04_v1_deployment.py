@@ -136,6 +136,73 @@ class ReleasePreparationTests(unittest.TestCase):
 
 
 class DeploymentBoundaryTests(unittest.TestCase):
+    def test_evidence_publication_is_hash_bound_and_completion_last(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="u60-evidence-test-") as temporary:
+            root = Path(temporary)
+            os.chmod(root, 0o700)
+            with (
+                mock.patch.object(DEPLOY, "APPROVED_NAS_ROOT", root),
+                mock.patch.object(
+                    DEPLOY.PROBE,
+                    "open_validated_output_root",
+                    side_effect=lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY),
+                ),
+            ):
+                published = DEPLOY.write_evidence(
+                    "canary",
+                    {"root_adb": True},
+                    {"root_adb": True},
+                    {"release_id": "0" * 64},
+                )
+            manifest_bytes = (published / "EVIDENCE-MANIFEST.json").read_bytes()
+            marker = (published / "evidence.complete").read_text()
+            self.assertEqual(
+                marker,
+                f"{DEPLOY.COMPLETION_PREFIX}{hashlib.sha256(manifest_bytes).hexdigest()}\n",
+            )
+            manifest = json.loads(manifest_bytes)
+            evidence = (published / "evidence.json").read_bytes()
+            self.assertEqual(manifest["files"][0]["path"], "evidence.json")
+            self.assertEqual(manifest["files"][0]["size"], len(evidence))
+            self.assertEqual(
+                manifest["files"][0]["sha256"], hashlib.sha256(evidence).hexdigest()
+            )
+
+    def test_failed_evidence_publication_leaves_no_partial_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="u60-evidence-test-") as temporary:
+            root = Path(temporary)
+            os.chmod(root, 0o700)
+            real_write = DEPLOY.PROBE.atomic_write_at
+            calls = 0
+
+            def fail_second_write(directory_fd: int, name: str, data: bytes) -> None:
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise OSError("synthetic publication interruption")
+                real_write(directory_fd, name, data)
+
+            with (
+                mock.patch.object(DEPLOY, "APPROVED_NAS_ROOT", root),
+                mock.patch.object(
+                    DEPLOY.PROBE,
+                    "open_validated_output_root",
+                    side_effect=lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY),
+                ),
+                mock.patch.object(
+                    DEPLOY.PROBE, "atomic_write_at", side_effect=fail_second_write
+                ),
+            ):
+                with self.assertRaises(OSError):
+                    DEPLOY.write_evidence(
+                        "boot-hook",
+                        {"root_adb": True},
+                        {"root_adb": True},
+                        {},
+                        rc_backup=b"#!/bin/sh\nexit 0\n",
+                    )
+            self.assertEqual(list(root.iterdir()), [])
+
     def test_boot_candidate_is_exact_and_idempotent(self) -> None:
         original = b"#!/bin/sh\necho stock\nexit 0\n"
         candidate = DEPLOY.build_rc_candidate(original)

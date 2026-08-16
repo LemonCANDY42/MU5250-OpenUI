@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -30,7 +31,7 @@ DEVICE_ROOT = "/data/u60"
 START_CURRENT_SOURCE = ROOT / "device" / "b04-v1" / "start-current.sh"
 BOOT_LINE = b"sh /data/u60/start-current.sh >/dev/null 2>&1 &\n"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
-COMPLETION_MARKER = b"u60-b04-v1-deploy-evidence-complete-v1\n"
+COMPLETION_PREFIX = "u60-b04-v1-deploy-evidence-complete-v1:"
 MAX_ADB_OUTPUT = 256 * 1024
 
 
@@ -393,11 +394,13 @@ def write_evidence(
     extra_files: dict[str, bytes] | None = None,
 ) -> Path:
     root_fd = PROBE.open_validated_output_root(APPROVED_NAS_ROOT)
-    os.close(root_fd)
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    directory = APPROVED_NAS_ROOT / f"B04-v1-{action}-{timestamp}"
-    directory.mkdir(mode=0o700)
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    final_name = f"B04-v1-{action}-{timestamp}"
+    staging_name = f".B04-v1-evidence-stage-{os.getpid()}-{os.urandom(8).hex()}"
+    staging_fd: int | None = None
+    final_published = False
     try:
+        staging_fd = PROBE.create_private_result_directory(root_fd, staging_name)
         payload = {
             "schema_version": 1,
             "action": action,
@@ -407,29 +410,116 @@ def write_evidence(
             "details": details,
             "secrets_recorded": False,
         }
-        manifest_bytes = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
-        manifest = directory / "evidence.json"
-        manifest.write_bytes(manifest_bytes)
-        os.chmod(manifest, 0o600)
+        evidence_bytes = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode()
+        files = {"evidence.json": evidence_bytes}
         if rc_backup is not None:
-            backup = directory / "rc.local.before"
-            backup.write_bytes(rc_backup)
-            os.chmod(backup, 0o600)
+            files["rc.local.before"] = rc_backup
         for name, content in sorted((extra_files or {}).items()):
             if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", name):
                 raise DeployError("evidence filename is invalid")
-            extra = directory / name
-            extra.write_bytes(content)
-            os.chmod(extra, 0o600)
-        marker = directory / "evidence.complete"
-        marker.write_bytes(COMPLETION_MARKER)
-        os.chmod(marker, 0o600)
-        return directory
+            if name in files or name in {"EVIDENCE-MANIFEST.json", "evidence.complete"}:
+                raise DeployError("evidence filename collides with reserved metadata")
+            files[name] = content
+        for name, content in sorted(files.items()):
+            PROBE.atomic_write_at(staging_fd, name, content)
+            if read_private_file_at(staging_fd, name) != content:
+                raise DeployError("evidence file did not survive exact read-back")
+        manifest = {
+            "schema_version": 1,
+            "action": action,
+            "files": [
+                {
+                    "path": name,
+                    "size": len(content),
+                    "sha256": sha256_bytes(content),
+                }
+                for name, content in sorted(files.items())
+            ],
+        }
+        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+        PROBE.atomic_write_at(staging_fd, "EVIDENCE-MANIFEST.json", manifest_bytes)
+        if read_private_file_at(staging_fd, "EVIDENCE-MANIFEST.json") != manifest_bytes:
+            raise DeployError("evidence manifest did not survive exact read-back")
+        marker = f"{COMPLETION_PREFIX}{sha256_bytes(manifest_bytes)}\n".encode()
+        os.fsync(staging_fd)
+        os.close(staging_fd)
+        staging_fd = None
+        os.rename(staging_name, final_name, src_dir_fd=root_fd, dst_dir_fd=root_fd)
+        final_published = True
+        os.fsync(root_fd)
+        final_fd = os.open(
+            final_name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=root_fd,
+        )
+        try:
+            if read_private_file_at(final_fd, "EVIDENCE-MANIFEST.json") != manifest_bytes:
+                raise DeployError("published evidence manifest changed after rename")
+            PROBE.atomic_write_at(final_fd, "evidence.complete", marker)
+            os.fsync(final_fd)
+            if read_private_file_at(final_fd, "evidence.complete") != marker:
+                raise DeployError("published evidence marker changed after rename")
+        finally:
+            os.close(final_fd)
+        return APPROVED_NAS_ROOT / final_name
     except BaseException:
-        for child in directory.iterdir():
-            child.unlink()
-        directory.rmdir()
+        if final_published:
+            try:
+                final_fd = os.open(
+                    final_name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                    dir_fd=root_fd,
+                )
+                try:
+                    os.unlink("evidence.complete", dir_fd=final_fd)
+                    os.fsync(final_fd)
+                finally:
+                    os.close(final_fd)
+            except FileNotFoundError:
+                pass
+        if staging_fd is not None:
+            for name in os.listdir(staging_fd):
+                try:
+                    os.unlink(name, dir_fd=staging_fd)
+                except FileNotFoundError:
+                    pass
+            os.close(staging_fd)
+        try:
+            os.rmdir(staging_name, dir_fd=root_fd)
+        except FileNotFoundError:
+            pass
         raise
+    finally:
+        os.close(root_fd)
+
+
+def read_private_file_at(directory_fd: int, name: str) -> bytes:
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=directory_fd,
+    )
+    try:
+        metadata = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) not in PROBE.PRIVATE_FILE_MODES
+        ):
+            raise DeployError("evidence file is not owner-only and regular")
+        chunks: list[bytes] = []
+        size = 0
+        while True:
+            chunk = os.read(descriptor, 64 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_ADB_OUTPUT:
+                raise DeployError("evidence file exceeded the bounded size")
+            chunks.append(chunk)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
 
 
 def build_rc_candidate(current: bytes) -> bytes:
