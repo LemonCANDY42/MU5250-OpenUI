@@ -25,7 +25,14 @@ def die(message: str) -> None:
 
 parser = argparse.ArgumentParser()
 parser.add_argument("bundle_dir", type=Path)
-parser.add_argument("base_url", choices=("https://u60.local:9443", "https://u60.local:19443"))
+parser.add_argument(
+    "base_url",
+    choices=(
+        "https://u60.local:9443",
+        "https://u60.local:19443",
+        "https://192.168.0.1:9443",
+    ),
+)
 args = parser.parse_args()
 
 bundle = args.bundle_dir.resolve(strict=True)
@@ -47,7 +54,12 @@ except (ValueError, binascii.Error):
     die("SPKI pin encoding is invalid")
 
 parsed_url = urlsplit(args.base_url)
-if parsed_url.scheme != "https" or parsed_url.hostname != "u60.local" or parsed_url.port not in (9443, 19443):
+if (
+    parsed_url.scheme != "https"
+    or parsed_url.hostname not in ("u60.local", "192.168.0.1")
+    or parsed_url.port not in (9443, 19443)
+    or (parsed_url.hostname == "192.168.0.1" and parsed_url.port != 9443)
+):
     die("base URL is outside the fixed local HTTPS profile")
 
 try:

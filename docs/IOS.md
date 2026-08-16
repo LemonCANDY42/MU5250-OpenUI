@@ -27,10 +27,12 @@ or provide a trust-bypass mode. The `/v1` API has no redirect contract, so the
 session refuses every HTTP redirect before a bearer token could be replayed to
 plaintext, another host or another port.
 
-Only `https://u60.local:9443` and the pre-install canary at port `19443` are
-accepted. The fixed leaf also covers `192.168.0.1`, but the pairing payload
-intentionally chooses `u60.local` so name-based trust and the future RP name do
-not diverge.
+Only `https://u60.local:9443`, its loopback-maintenance profile at port `19443`,
+and the exact physical-client gate `https://192.168.0.1:9443` are accepted. The
+fixed leaf covers both the name and management IP. The physical iPhone gate
+uses the certificate-covered IP while the phone is joined directly to the U60
+Wi-Fi, avoiding an unproven local-DNS dependency. `u60.local` remains the
+preferred stable name and future RP-aligned endpoint.
 
 ## Local key and password fallback
 
@@ -82,7 +84,7 @@ root ADB or already verified SSH. On the owner Mac, pipe that JSON on stdin to:
 ```sh
 scripts/pairing/make-pairing-qr.sh \
   /absolute/path/to/verified-device-bundle \
-  https://u60.local:19443 \
+  https://192.168.0.1:9443 \
   /absolute/path/outside-the-repository/u60-pairing.png
 ```
 

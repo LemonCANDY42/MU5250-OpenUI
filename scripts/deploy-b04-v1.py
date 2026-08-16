@@ -73,7 +73,9 @@ def run(
         raise DeployError(f"bounded output exceeded for {command[0]}")
     if check and result.returncode != 0:
         detail = result.stderr.decode("utf-8", "replace").strip()[:400]
-        raise DeployError(f"command failed ({command[0]}): {detail or result.returncode}")
+        raise DeployError(
+            f"command failed ({command[0]}): {detail or result.returncode}"
+        )
     return result
 
 
@@ -100,7 +102,9 @@ def sha256_file(path: Path) -> str:
 
 def require_local_release(path: Path) -> str:
     if path.parent != APPROVED_RELEASE_ROOT or path.is_symlink():
-        raise DeployError(f"release must be a physical child of {APPROVED_RELEASE_ROOT}")
+        raise DeployError(
+            f"release must be a physical child of {APPROVED_RELEASE_ROOT}"
+        )
     release_id = path.name
     if not HEX64.fullmatch(release_id):
         raise DeployError("release directory name is not a SHA-256 identifier")
@@ -184,7 +188,9 @@ def read_rc_metadata() -> dict[str, int]:
     except ValueError as error:
         raise DeployError("rc.local metadata was not numeric") from error
     if (mode, uid, gid) != (0o775, 0, 0):
-        raise DeployError("rc.local metadata differs from the accepted B04 root:root 0775 baseline")
+        raise DeployError(
+            "rc.local metadata differs from the accepted B04 root:root 0775 baseline"
+        )
     return {"mode": mode, "uid": uid, "gid": gid}
 
 
@@ -223,6 +229,7 @@ def assert_invariants(
     after: dict[str, Any],
     *,
     allow_rc_local_change: bool = False,
+    allow_release_link_change: bool = False,
 ) -> None:
     if before["firmware"] != after["firmware"] or not after["root_adb"]:
         raise DeployError("firmware or root ADB recovery invariant changed")
@@ -230,8 +237,16 @@ def assert_invariants(
         raise DeployError("Mac default route or TUN set changed")
     if before["usb"] != after["usb"]:
         raise DeployError("device USB properties changed")
-    if not allow_rc_local_change and before["rc_local_sha256"] != after["rc_local_sha256"]:
+    if (
+        not allow_rc_local_change
+        and before["rc_local_sha256"] != after["rc_local_sha256"]
+    ):
         raise DeployError("rc.local changed outside the boot-hook operation")
+    if (
+        not allow_release_link_change
+        and before["release_links"] != after["release_links"]
+    ):
+        raise DeployError("release links changed outside activation or rollback")
 
 
 def verify_device_release_script(
@@ -240,15 +255,15 @@ def verify_device_release_script(
     quoted_root = shlex.quote(root)
     quoted_id = shlex.quote(release_id)
     basename_gate = (
-        f"[ \"$(basename \"$d\")\" = {quoted_id} ]; " if require_basename else ""
+        f'[ "$(basename "$d")" = {quoted_id} ]; ' if require_basename else ""
     )
     return (
-        f"set -eu; d={quoted_root}; [ -d \"$d\" ] && [ ! -L \"$d\" ]; "
+        f'set -eu; d={quoted_root}; [ -d "$d" ] && [ ! -L "$d" ]; '
         + basename_gate
-        + "[ \"$(sha256sum \"$d/release.sha256\" | cut -d' ' -f1)\" = "
+        + '[ "$(sha256sum "$d/release.sha256" | cut -d\' \' -f1)" = '
         f"{quoted_id} ]; "
-        f"[ \"$(sed -n '1p' \"$d/release.complete\")\" = u60-b04-v1-release:{release_id} ]; "
-        "cd \"$d\"; sha256sum -c release.sha256 >/dev/null"
+        f'[ "$(sed -n \'1p\' "$d/release.complete")" = u60-b04-v1-release:{release_id} ]; '
+        'cd "$d"; sha256sum -c release.sha256 >/dev/null'
     )
 
 
@@ -294,27 +309,32 @@ def stop_managed_agent(pid_name: str) -> None:
         raise DeployError("invalid managed PID name")
     pid_file = f"{DEVICE_ROOT}/runtime/{pid_name}"
     script = (
-        f"set -eu; f={pid_file}; [ -f \"$f\" ] && [ ! -L \"$f\" ] || exit 0; "
-        "p=$(sed -n '1p' \"$f\"); case \"$p\" in ''|*[!0-9]*) rm -f \"$f\"; exit 0;; esac; "
-        "[ -d \"/proc/$p\" ] || { rm -f \"$f\"; exit 0; }; "
-        "x=$(readlink \"/proc/$p/exe\" 2>/dev/null || true); case \"$x\" in "
+        f'set -eu; f={pid_file}; [ -f "$f" ] && [ ! -L "$f" ] || exit 0; '
+        'p=$(sed -n \'1p\' "$f"); case "$p" in \'\'|*[!0-9]*) rm -f "$f"; exit 0;; esac; '
+        '[ -d "/proc/$p" ] || { rm -f "$f"; exit 0; }; '
+        'x=$(readlink "/proc/$p/exe" 2>/dev/null || true); case "$x" in '
         f"{DEVICE_ROOT}/releases/[0-9a-f]*/zte-agent|{DEVICE_ROOT}/canary-*/zte-agent) ;; "
-        "*) exit 1;; esac; kill \"$p\"; i=0; while kill -0 \"$p\" 2>/dev/null; "
-        "do i=$((i+1)); [ \"$i\" -lt 20 ] || exit 1; sleep 1; done; rm -f \"$f\""
+        '*) exit 1;; esac; kill "$p"; i=0; while kill -0 "$p" 2>/dev/null; '
+        'do i=$((i+1)); [ "$i" -lt 20 ] || exit 1; sleep 1; done; rm -f "$f"'
     )
     adb_shell(script, timeout=30)
 
 
 def stop_legacy_canary_without_pid_file() -> None:
     script = (
-        "set -eu; pids=$(pidof zte-agent 2>/dev/null || true); [ -n \"$pids\" ] || exit 0; "
-        "count=0; chosen=; for p in $pids; do x=$(readlink \"/proc/$p/exe\" 2>/dev/null || true); "
-        f"case \"$x\" in {DEVICE_ROOT}/canary-*/zte-agent) count=$((count+1)); chosen=$p;; esac; "
-        "done; [ \"$count\" -le 1 ]; [ \"$count\" -eq 1 ] || exit 0; kill \"$chosen\"; "
-        "i=0; while kill -0 \"$chosen\" 2>/dev/null; do i=$((i+1)); "
-        "[ \"$i\" -lt 20 ] || exit 1; sleep 1; done"
+        'set -eu; pids=$(pidof zte-agent 2>/dev/null || true); [ -n "$pids" ] || exit 0; '
+        'count=0; chosen=; for p in $pids; do x=$(readlink "/proc/$p/exe" 2>/dev/null || true); '
+        f'case "$x" in {DEVICE_ROOT}/canary-*/zte-agent) count=$((count+1)); chosen=$p;; esac; '
+        'done; [ "$count" -le 1 ]; [ "$count" -eq 1 ] || exit 0; kill "$chosen"; '
+        'i=0; while kill -0 "$chosen" 2>/dev/null; do i=$((i+1)); '
+        '[ "$i" -lt 20 ] || exit 1; sleep 1; done'
     )
     adb_shell(script, timeout=30)
+
+
+def assert_no_zte_agent_processes() -> None:
+    if adb_shell("pidof zte-agent 2>/dev/null || true", limit=4096):
+        raise DeployError("an unowned zte-agent process remains after managed stop")
 
 
 def start_canary(release_id: str) -> None:
@@ -332,9 +352,9 @@ def switch_current(release_id: str) -> None:
     adb_shell(verify_device_release_script(release_id, release), timeout=45)
     script = (
         f"set -eu; cd {DEVICE_ROOT}; rm -f current.next previous.next; "
-        "if [ -L current ]; then old=$(readlink current); case \"$old\" in "
+        'if [ -L current ]; then old=$(readlink current); case "$old" in '
         f"{DEVICE_ROOT}/releases/[0-9a-f]*|releases/[0-9a-f]*) ;; *) exit 1;; esac; "
-        "ln -s \"$old\" previous.next; mv -f previous.next previous; fi; "
+        'ln -s "$old" previous.next; mv -f previous.next previous; fi; '
         f"ln -s {release} current.next; mv -f current.next current"
     )
     adb_shell(script)
@@ -348,7 +368,9 @@ def rollback_current() -> str:
     release_id = previous.rstrip("/").split("/")[-1]
     if not HEX64.fullmatch(release_id):
         raise DeployError("previous release link is invalid")
-    adb_shell(verify_device_release_script(release_id, f"{DEVICE_ROOT}/releases/{release_id}"))
+    adb_shell(
+        verify_device_release_script(release_id, f"{DEVICE_ROOT}/releases/{release_id}")
+    )
     stop_managed_agent("agent.pid")
     adb_shell(
         f"set -eu; cd {DEVICE_ROOT}; rm -f current.next; "
@@ -381,7 +403,9 @@ def verify_tls_unauthorized(port: int, ca_cert: Path) -> None:
         limit=4096,
     )
     if result.stdout != b"401":
-        raise DeployError("TLS health check did not return the expected authenticated boundary")
+        raise DeployError(
+            "TLS health check did not return the expected authenticated boundary"
+        )
 
 
 def write_evidence(
@@ -436,7 +460,9 @@ def write_evidence(
                 for name, content in sorted(files.items())
             ],
         }
-        manifest_bytes = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+        manifest_bytes = (
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        ).encode()
         PROBE.atomic_write_at(staging_fd, "EVIDENCE-MANIFEST.json", manifest_bytes)
         if read_private_file_at(staging_fd, "EVIDENCE-MANIFEST.json") != manifest_bytes:
             raise DeployError("evidence manifest did not survive exact read-back")
@@ -453,7 +479,10 @@ def write_evidence(
             dir_fd=root_fd,
         )
         try:
-            if read_private_file_at(final_fd, "EVIDENCE-MANIFEST.json") != manifest_bytes:
+            if (
+                read_private_file_at(final_fd, "EVIDENCE-MANIFEST.json")
+                != manifest_bytes
+            ):
                 raise DeployError("published evidence manifest changed after rename")
             PROBE.atomic_write_at(final_fd, "evidence.complete", marker)
             os.fsync(final_fd)
@@ -526,7 +555,9 @@ def build_rc_candidate(current: bytes) -> bytes:
     if BOOT_LINE in current:
         return current
     if b"/data/u60/start-current.sh" in current:
-        raise DeployError("rc.local contains an unrecognized U60 start-current reference")
+        raise DeployError(
+            "rc.local contains an unrecognized U60 start-current reference"
+        )
     lines = current.splitlines(keepends=True)
     exits = [index for index, line in enumerate(lines) if line.strip() == b"exit 0"]
     if len(exits) != 1:
@@ -551,16 +582,16 @@ def install_boot_hook(before_rc: bytes, metadata: dict[str, int]) -> bool:
     gid = metadata["gid"]
     script = (
         f"set -eu; [ -L {DEVICE_ROOT}/current ]; "
-        f"current=$(readlink {DEVICE_ROOT}/current); case \"$current\" in "
+        f'current=$(readlink {DEVICE_ROOT}/current); case "$current" in '
         f"{DEVICE_ROOT}/releases/[0-9a-f]*) release=$current;; "
         f"releases/[0-9a-f]*) release={DEVICE_ROOT}/$current;; *) exit 1;; esac; "
-        f"rid=${{release##*/}}; [ \"${{#rid}}\" -eq 64 ]; "
-        "case \"$rid\" in *[!0-9a-f]*) exit 1;; esac; "
+        f'rid=${{release##*/}}; [ "${{#rid}}" -eq 64 ]; '
+        'case "$rid" in *[!0-9a-f]*) exit 1;; esac; '
         f"ap=$(sed -n '1p' {DEVICE_ROOT}/runtime/agent.pid); "
         f"dp=$(sed -n '1p' {DEVICE_ROOT}/runtime/dropbear.pid); "
-        "case \"$ap:$dp\" in *[!0-9:]*|:*) exit 1;; esac; "
-        "[ \"$(readlink /proc/$ap/exe)\" = \"$release/zte-agent\" ]; "
-        "[ \"$(readlink /proc/$dp/exe)\" = \"$release/dropbearmulti\" ]; "
+        'case "$ap:$dp" in *[!0-9:]*|:*) exit 1;; esac; '
+        '[ "$(readlink /proc/$ap/exe)" = "$release/zte-agent" ]; '
+        '[ "$(readlink /proc/$dp/exe)" = "$release/dropbearmulti" ]; '
         f"[ -s {DEVICE_ROOT}/ssh/authorized_keys ]; "
         f"[ \"$(awk 'NF && $1 !~ /^#/ {{c++}} END {{print c+0}}' {DEVICE_ROOT}/ssh/authorized_keys)\" -eq 2 ]; "
         f"set -eu; [ \"$(sha256sum {DEVICE_ROOT}/start-current.sh.new | cut -d' ' -f1)\" = {start_digest} ]; "
@@ -676,7 +707,9 @@ def install_ssh(release_id: str, authorized_keys: bytes) -> dict[str, Any]:
     }
 
 
-def command_install_ssh(arguments: argparse.Namespace) -> tuple[dict[str, Any], bytes | None]:
+def command_install_ssh(
+    arguments: argparse.Namespace,
+) -> tuple[dict[str, Any], bytes | None]:
     release_id = require_local_release(arguments.release)
     install_release(arguments.release, release_id)
     authorized = validate_authorized_keys(arguments.authorized_keys)
@@ -774,12 +807,50 @@ def command_canary(arguments: argparse.Namespace) -> dict[str, Any]:
     return {"release_id": release_id, "release_installed": installed, "tls_401": True}
 
 
+def command_lan_canary(arguments: argparse.Namespace) -> dict[str, Any]:
+    release_id = require_local_release(arguments.release)
+    installed = install_release(arguments.release, release_id)
+    stop_managed_agent("canary.pid")
+    stop_managed_agent("agent.pid")
+    stop_legacy_canary_without_pid_file()
+    assert_no_zte_agent_processes()
+    run(
+        ["adb", "forward", "--remove", "tcp:19443"],
+        timeout=10,
+        limit=4096,
+        check=False,
+    )
+    adb_shell(
+        f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30
+    )
+    run(["adb", "forward", "tcp:9443", "tcp:9443"], timeout=10, limit=4096)
+    try:
+        verify_tls_unauthorized(9443, arguments.ca_cert)
+    except BaseException:
+        stop_managed_agent("agent.pid")
+        run(
+            ["adb", "forward", "--remove", "tcp:9443"],
+            timeout=10,
+            limit=4096,
+            check=False,
+        )
+        raise
+    return {
+        "release_id": release_id,
+        "release_installed": installed,
+        "lan_canary": True,
+        "tls_401": True,
+    }
+
+
 def command_activate(arguments: argparse.Namespace) -> dict[str, Any]:
     release_id = require_local_release(arguments.release)
     installed = install_release(arguments.release, release_id)
     switch_current(release_id)
     stop_managed_agent("agent.pid")
-    adb_shell(f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30)
+    adb_shell(
+        f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30
+    )
     run(["adb", "forward", "tcp:9443", "tcp:9443"], timeout=10, limit=4096)
     try:
         verify_tls_unauthorized(9443, arguments.ca_cert)
@@ -804,13 +875,16 @@ def command_boot_hook(
     metadata: dict[str, int],
 ) -> dict[str, Any]:
     changed = install_boot_hook(before_rc, metadata)
-    return {"boot_hook_changed": changed, "boot_line_count": read_rc_local().count(BOOT_LINE)}
+    return {
+        "boot_hook_changed": changed,
+        "boot_line_count": read_rc_local().count(BOOT_LINE),
+    }
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    for name in ("canary", "activate"):
+    for name in ("canary", "lan-canary", "activate"):
         sub = subparsers.add_parser(name)
         sub.add_argument("--release", type=Path, required=True)
         sub.add_argument("--ca-cert", type=Path, required=True)
@@ -834,8 +908,15 @@ def main() -> int:
     try:
         before = capture_invariants()
         before_rc = read_rc_local()
+        if arguments.command == "lan-canary" and before["release_links"] != {
+            "current": None,
+            "previous": None,
+        }:
+            raise DeployError("LAN canary requires absent current and previous links")
         if arguments.command == "canary":
             details = command_canary(arguments)
+        elif arguments.command == "lan-canary":
+            details = command_lan_canary(arguments)
         elif arguments.command == "activate":
             details = command_activate(arguments)
         elif arguments.command == "rollback":
@@ -847,10 +928,18 @@ def main() -> int:
         elif arguments.command == "verify-ssh":
             details = command_verify_ssh(arguments)
         else:
-            details = command_boot_hook(arguments, before_rc, before["rc_local_metadata"])
+            details = command_boot_hook(
+                arguments, before_rc, before["rc_local_metadata"]
+            )
         after = capture_invariants()
         allow_rc_change = arguments.command == "boot-hook"
-        assert_invariants(before, after, allow_rc_local_change=allow_rc_change)
+        allow_link_change = arguments.command in {"activate", "rollback"}
+        assert_invariants(
+            before,
+            after,
+            allow_rc_local_change=allow_rc_change,
+            allow_release_link_change=allow_link_change,
+        )
         evidence = write_evidence(
             arguments.command,
             before,
@@ -859,7 +948,23 @@ def main() -> int:
             rc_backup=before_rc if allow_rc_change else None,
             extra_files=extra_files,
         )
-    except (DeployError, OSError, PROBE.ProbeError, subprocess.SubprocessError) as error:
+    except (
+        DeployError,
+        OSError,
+        PROBE.ProbeError,
+        subprocess.SubprocessError,
+    ) as error:
+        if arguments.command == "lan-canary":
+            try:
+                stop_managed_agent("agent.pid")
+                run(
+                    ["adb", "forward", "--remove", "tcp:9443"],
+                    timeout=10,
+                    limit=4096,
+                    check=False,
+                )
+            except BaseException:
+                pass
         print(f"V1 deployment refused: {error}", file=sys.stderr)
         return 1
     print(evidence)

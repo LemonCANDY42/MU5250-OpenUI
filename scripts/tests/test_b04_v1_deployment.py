@@ -65,7 +65,12 @@ class ReleasePreparationTests(unittest.TestCase):
         (self.web / "index.html").write_text("<main>safe</main>")
         self.device = self.root / "device"
         self.device.mkdir()
-        for name in ("common.sh", "run-agent.sh", "run-dropbear.sh", "start-current.sh"):
+        for name in (
+            "common.sh",
+            "run-agent.sh",
+            "run-dropbear.sh",
+            "start-current.sh",
+        ):
             path = self.device / name
             path.write_text("#!/bin/sh\nexit 0\n")
             os.chmod(path, 0o700)
@@ -88,7 +93,11 @@ class ReleasePreparationTests(unittest.TestCase):
             mock.patch.object(
                 PREPARE,
                 "verify_dropbear",
-                return_value={"sha256": digest, "size": self.dropbear.stat().st_size, "file": "test"},
+                return_value={
+                    "sha256": digest,
+                    "size": self.dropbear.stat().st_size,
+                    "file": "test",
+                },
             ),
         ):
             return PREPARE.build_release(self.build, self.dropbear, digest, self.output)
@@ -136,6 +145,109 @@ class ReleasePreparationTests(unittest.TestCase):
 
 
 class DeploymentBoundaryTests(unittest.TestCase):
+    def test_invariants_reject_unexpected_release_link_change(self) -> None:
+        before = {
+            "firmware": "HK-B04",
+            "root_adb": True,
+            "network": {"default_interface": "en0"},
+            "usb": {"sys.usb.config": "adb"},
+            "rc_local_sha256": "a" * 64,
+            "release_links": {"current": None, "previous": None},
+        }
+        after = dict(before)
+        after["release_links"] = {
+            "current": f"{DEPLOY.DEVICE_ROOT}/releases/{'b' * 64}",
+            "previous": None,
+        }
+        with self.assertRaises(DEPLOY.DeployError):
+            DEPLOY.assert_invariants(before, after)
+        DEPLOY.assert_invariants(before, after, allow_release_link_change=True)
+
+    def test_lan_canary_uses_stable_listener_without_release_switch(self) -> None:
+        arguments = mock.Mock(
+            release=Path("/accepted/release"), ca_cert=Path("/accepted/ca.pem")
+        )
+        with (
+            mock.patch.object(DEPLOY, "require_local_release", return_value="a" * 64),
+            mock.patch.object(DEPLOY, "install_release", return_value=False),
+            mock.patch.object(DEPLOY, "stop_managed_agent") as stop,
+            mock.patch.object(
+                DEPLOY, "stop_legacy_canary_without_pid_file"
+            ) as stop_legacy,
+            mock.patch.object(DEPLOY, "assert_no_zte_agent_processes") as no_agent,
+            mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
+            mock.patch.object(DEPLOY, "run") as run,
+            mock.patch.object(DEPLOY, "verify_tls_unauthorized") as verify_tls,
+            mock.patch.object(DEPLOY, "switch_current") as switch_current,
+        ):
+            details = DEPLOY.command_lan_canary(arguments)
+        self.assertEqual(
+            stop.call_args_list, [mock.call("canary.pid"), mock.call("agent.pid")]
+        )
+        stop_legacy.assert_called_once_with()
+        no_agent.assert_called_once_with()
+        adb_shell.assert_called_once_with(
+            f"{DEPLOY.DEVICE_ROOT}/releases/{'a' * 64}/bin/run-agent.sh stable",
+            timeout=30,
+        )
+        self.assertEqual(
+            run.call_args_list,
+            [
+                mock.call(
+                    ["adb", "forward", "--remove", "tcp:19443"],
+                    timeout=10,
+                    limit=4096,
+                    check=False,
+                ),
+                mock.call(
+                    ["adb", "forward", "tcp:9443", "tcp:9443"],
+                    timeout=10,
+                    limit=4096,
+                ),
+            ],
+        )
+        verify_tls.assert_called_once_with(9443, arguments.ca_cert)
+        switch_current.assert_not_called()
+        self.assertEqual(details["lan_canary"], True)
+
+    def test_lan_canary_stops_and_removes_forward_when_tls_fails(self) -> None:
+        arguments = mock.Mock(
+            release=Path("/accepted/release"), ca_cert=Path("/accepted/ca.pem")
+        )
+        with (
+            mock.patch.object(DEPLOY, "require_local_release", return_value="a" * 64),
+            mock.patch.object(DEPLOY, "install_release", return_value=False),
+            mock.patch.object(DEPLOY, "stop_managed_agent") as stop,
+            mock.patch.object(DEPLOY, "stop_legacy_canary_without_pid_file"),
+            mock.patch.object(DEPLOY, "assert_no_zte_agent_processes"),
+            mock.patch.object(DEPLOY, "adb_shell"),
+            mock.patch.object(DEPLOY, "run") as run,
+            mock.patch.object(
+                DEPLOY,
+                "verify_tls_unauthorized",
+                side_effect=DEPLOY.DeployError("synthetic TLS failure"),
+            ),
+        ):
+            with self.assertRaises(DEPLOY.DeployError):
+                DEPLOY.command_lan_canary(arguments)
+        self.assertEqual(
+            stop.call_args_list,
+            [
+                mock.call("canary.pid"),
+                mock.call("agent.pid"),
+                mock.call("agent.pid"),
+            ],
+        )
+        self.assertEqual(
+            run.call_args_list[-1],
+            mock.call(
+                ["adb", "forward", "--remove", "tcp:9443"],
+                timeout=10,
+                limit=4096,
+                check=False,
+            ),
+        )
+
     def test_rc_metadata_accepts_only_exact_b04_baseline(self) -> None:
         with mock.patch.object(DEPLOY, "adb_shell", return_value="775|0|0"):
             self.assertEqual(
@@ -155,7 +267,9 @@ class DeploymentBoundaryTests(unittest.TestCase):
                 mock.patch.object(
                     DEPLOY.PROBE,
                     "open_validated_output_root",
-                    side_effect=lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY),
+                    side_effect=lambda path: os.open(
+                        path, os.O_RDONLY | os.O_DIRECTORY
+                    ),
                 ),
             ):
                 published = DEPLOY.write_evidence(
@@ -197,7 +311,9 @@ class DeploymentBoundaryTests(unittest.TestCase):
                 mock.patch.object(
                     DEPLOY.PROBE,
                     "open_validated_output_root",
-                    side_effect=lambda path: os.open(path, os.O_RDONLY | os.O_DIRECTORY),
+                    side_effect=lambda path: os.open(
+                        path, os.O_RDONLY | os.O_DIRECTORY
+                    ),
                 ),
                 mock.patch.object(
                     DEPLOY.PROBE, "atomic_write_at", side_effect=fail_second_write
@@ -224,7 +340,9 @@ class DeploymentBoundaryTests(unittest.TestCase):
         with self.assertRaises(DEPLOY.DeployError):
             DEPLOY.build_rc_candidate(b"#!/bin/sh\nexit 0\nexit 0\n")
         with self.assertRaises(DEPLOY.DeployError):
-            DEPLOY.build_rc_candidate(b"#!/bin/sh\n/data/u60/start-current.sh --unsafe\nexit 0\n")
+            DEPLOY.build_rc_candidate(
+                b"#!/bin/sh\n/data/u60/start-current.sh --unsafe\nexit 0\n"
+            )
 
     def test_authorized_keys_requires_two_independent_safe_public_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -248,7 +366,15 @@ class DeploymentBoundaryTests(unittest.TestCase):
             for line in path.read_text().splitlines()
             if not line.lstrip().startswith("#")
         )
-        for forbidden in ("usb_op", "/dev/block", "fw_setenv", "abctl", "uci ", "ubus ", "fota"):
+        for forbidden in (
+            "usb_op",
+            "/dev/block",
+            "fw_setenv",
+            "abctl",
+            "uci ",
+            "ubus ",
+            "fota",
+        ):
             self.assertNotIn(forbidden, combined.lower())
         dropbear = (ROOT / "device/b04-v1/run-dropbear.sh").read_text()
         self.assertIn("-F -E -s -g -j -k -m", dropbear)

@@ -24,6 +24,26 @@ assert len(value['pairing_nonce']) == 43
 assert value['spki_sha256'].startswith('sha256/')
 PY
 
+IP_PAYLOAD="$TEST_ROOT/ip-payload.json"
+printf '%s' "$GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >"$IP_PAYLOAD"
+python3 - "$IP_PAYLOAD" <<'PY'
+import json, sys
+value = json.load(open(sys.argv[1], encoding='utf-8'))
+assert value['base_url'] == 'https://192.168.0.1:9443'
+PY
+
+for rejected_url in \
+  'https://192.168.0.1:19443' \
+  'https://192.168.0.2:9443' \
+  'http://192.168.0.1:9443'; do
+  if printf '%s' "$GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+    "$BUNDLE" "$rejected_url" >/dev/null 2>&1; then
+    echo "unsafe pairing URL was accepted: $rejected_url" >&2
+    exit 1
+  fi
+done
+
 if command -v swift >/dev/null && [[ $(uname -s) == Darwin ]]; then
   QR="$TEST_ROOT/pairing.png"
   (umask 022; swift "$SCRIPT_DIR/render-pairing-qr.swift" "$QR" <"$PAYLOAD")

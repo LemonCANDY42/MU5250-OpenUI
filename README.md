@@ -9,7 +9,8 @@ HK B04 firmware.
 > symlink or boot hook. Its release checksum, TLS authentication boundary and
 > unchanged recovery/network invariants are accepted. Real Chrome WebCrypto
 > pairing and all ten read-only capabilities are accepted; physical-iPhone
-> build/install/launch is accepted, while CA trust, Secure Enclave pairing and
+> build/install/launch and owner-confirmed CA trust are accepted, while Secure
+> Enclave pairing and
 > each daily write still require their independent device gates.
 > The original 24-hour RSS-growth target was replaced by the owner's one-hour V1 gate.
 > The legacy setup, deployment and hardening entry points remain fail-closed.
@@ -51,7 +52,8 @@ authorize daily mutations or a stable install.
 - An owner-signed physical-device build has been installed and launched on the
   owner's iPhone using a local-only bundle-identifier override. The public
   project keeps automatic signing and contains no team or device identifier.
-  iPhone CA trust and Secure Enclave pairing are not accepted yet.
+  Owner-confirmed iPhone CA installation/full trust is accepted; Secure Enclave
+  pairing and a live device handshake are not accepted yet.
 - A host-only pairing tool combines `pair-open` JSON received on stdin with a
   verified public certificate bundle and renders a mode-`0600` QR outside the
   repository. A real one-time browser pairing window has been accepted without

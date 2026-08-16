@@ -52,6 +52,11 @@ python3 scripts/deploy-b04-v1.py canary \
   --release /Volumes/backups/U60-Pro/releases/<content-hash> \
   --ca-cert /path/to/owner-ca.pem
 
+# Physical-client gate: temporary LAN listener, still without release links or boot persistence.
+python3 scripts/deploy-b04-v1.py lan-canary \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --ca-cert /path/to/owner-ca.pem
+
 # Stable activation remains nonpersistent until clients and daily writes pass.
 python3 scripts/deploy-b04-v1.py activate \
   --release /Volumes/backups/U60-Pro/releases/<content-hash> \
@@ -68,6 +73,14 @@ python3 scripts/deploy-b04-v1.py verify-ssh \
 # Only after both services and both keys pass.
 python3 scripts/deploy-b04-v1.py boot-hook
 ```
+
+`lan-canary` is deliberately narrower than `activate`: it requires `current`
+and `previous` to remain absent, stops the loopback canary, starts the exact
+accepted release on `192.168.0.1:9443`, and proves the CA-verified `401`
+authentication boundary through USB ADB. It does not create a release symlink,
+boot hook, firewall rule or service. A physical client must join the U60's own
+Wi-Fi for this gate. Any failed TLS or evidence step stops the managed LAN
+agent and removes its host ADB forward.
 
 `activate` preserves the old `current` target as `previous`; a failed TLS health
 check automatically restores it when available. `rollback` is also explicit.
