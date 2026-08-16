@@ -582,6 +582,10 @@ def receipt_bytes(document: dict[str, Any]) -> bytes:
     return (json.dumps(document, indent=2, sort_keys=True) + "\n").encode()
 
 
+def receipt_mode_is_owner_only(mode: int) -> bool:
+    return mode & 0o600 == 0o600 and mode & 0o077 == 0
+
+
 def write_exclusive_receipt_at(parent_fd: int, filename: str, content: bytes) -> None:
     descriptor: int | None = None
     created = False
@@ -594,12 +598,13 @@ def write_exclusive_receipt_at(parent_fd: int, filename: str, content: bytes) ->
         )
         created = True
         metadata = os.fstat(descriptor)
+        mode = stat.S_IMODE(metadata.st_mode)
         if (
             not stat.S_ISREG(metadata.st_mode)
             or metadata.st_uid != os.getuid()
-            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or not receipt_mode_is_owner_only(mode)
         ):
-            raise BuildPublishError("local build receipt is not owner-only mode 0600")
+            raise BuildPublishError("local build receipt is not owner-only")
         offset = 0
         while offset < len(content):
             offset += os.write(descriptor, content[offset:])
@@ -908,6 +913,11 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("non-canonical Cargo build recipe was accepted")
+
+    for accepted_mode in (0o600, 0o700):
+        assert receipt_mode_is_owner_only(accepted_mode)
+    for rejected_mode in (0o400, 0o640, 0o660, 0o755):
+        assert not receipt_mode_is_owner_only(rejected_mode)
 
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)

@@ -35,7 +35,8 @@ toolchain containing the target standard library, then run:
 scripts/build-b04-agent.sh
 ```
 
-The command creates an exclusive mode-`0600` build receipt next to the binary,
+The command creates an exclusive owner-only build receipt next to the binary
+(`0600` locally; an SMB server may map it to owner-only `0700`),
 then verifies it before returning. The receipt binds the binary to the full Git
 commit and tree, the clean-build recipe, the hashes and versions of the actual
 Rust/Cargo/cargo-zigbuild/Python/Zig executables, and byte-verified records for
