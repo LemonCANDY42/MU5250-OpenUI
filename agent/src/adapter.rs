@@ -898,7 +898,7 @@ fn parse_sms_page(value: &Value, page: u16, per_page: u16) -> Result<SmsPage, St
             omitted_messages += 1;
             continue;
         };
-        let Some(sender) = optional_string(object.get("number")) else {
+        let Some(sender_raw) = optional_string(object.get("number")) else {
             omitted_messages += 1;
             continue;
         };
@@ -906,7 +906,7 @@ fn parse_sms_page(value: &Value, page: u16, per_page: u16) -> Result<SmsPage, St
             omitted_messages += 1;
             continue;
         };
-        let Some(content) = object.get("content").and_then(Value::as_str) else {
+        let Some(content_raw) = object.get("content").and_then(Value::as_str) else {
             omitted_messages += 1;
             continue;
         };
@@ -914,7 +914,19 @@ fn parse_sms_page(value: &Value, page: u16, per_page: u16) -> Result<SmsPage, St
             omitted_messages += 1;
             continue;
         };
-        if sender.len() > 64 || timestamp.len() > 64 {
+        if sender_raw.len() > 512 || content_raw.len() > 32_768 || timestamp.len() > 64 {
+            omitted_messages += 1;
+            continue;
+        }
+        let Ok(sender) = decode_ucs2_hex_if_present(&sender_raw) else {
+            omitted_messages += 1;
+            continue;
+        };
+        let Ok(content) = decode_ucs2_hex_if_present(content_raw) else {
+            omitted_messages += 1;
+            continue;
+        };
+        if sender.chars().count() > 64 {
             omitted_messages += 1;
             continue;
         }
@@ -936,9 +948,29 @@ fn parse_sms_page(value: &Value, page: u16, per_page: u16) -> Result<SmsPage, St
     })
 }
 
-fn truncate_utf8_bytes(value: &str, maximum: usize) -> (String, bool) {
+fn decode_ucs2_hex_if_present(value: &str) -> Result<String, ()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || !trimmed.len().is_multiple_of(4)
+        || !trimmed.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Ok(value.to_owned());
+    }
+    let units = trimmed
+        .as_bytes()
+        .chunks_exact(4)
+        .map(|chunk| {
+            std::str::from_utf8(chunk)
+                .map_err(|_| ())
+                .and_then(|hex| u16::from_str_radix(hex, 16).map_err(|_| ()))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    String::from_utf16(&units).map_err(|_| ())
+}
+
+fn truncate_utf8_bytes(value: String, maximum: usize) -> (String, bool) {
     if value.len() <= maximum {
-        return (value.to_owned(), false);
+        return (value, false);
     }
     let mut boundary = maximum;
     while !value.is_char_boundary(boundary) {
@@ -1313,6 +1345,18 @@ mod tests {
         assert_eq!(sms.messages[0].content, "hello");
         assert!(!sms.messages[0].content_truncated);
         assert_eq!(sms.omitted_messages, 0);
+
+        let decoded = parse_sms_page(
+            &json!({"messages":[{
+                "id":2, "number":"002B003100300030", "date":"now",
+                "content":"4F60597DD83DDE00", "tag":"1"
+            }]}),
+            0,
+            100,
+        )
+        .unwrap();
+        assert_eq!(decoded.messages[0].sender, "+100");
+        assert_eq!(decoded.messages[0].content, "你好😀");
     }
 
     #[test]
@@ -1325,6 +1369,17 @@ mod tests {
         let sms = parse_sms_page(
             &json!({"messages":[{
                 "id":0, "number":"+100", "date":"now", "content":"", "tag":"1"
+            }]}),
+            0,
+            100,
+        )
+        .unwrap();
+        assert!(sms.messages.is_empty());
+        assert_eq!(sms.omitted_messages, 1);
+
+        let sms = parse_sms_page(
+            &json!({"messages":[{
+                "id":1, "number":"002B0031", "date":"now", "content":"D800", "tag":"1"
             }]}),
             0,
             100,
