@@ -1,11 +1,58 @@
 # MU5250-OpenUI
 
 A custom control plane for the ZTE U60 Pro (MU5250) 5G modem: a Rust agent
-on the device exposing a JSON API (`http://192.168.0.1:9090`), a React
-dashboard served from the device (`http://192.168.0.1:8080`), and tooling to
-unlock, provision and update both.
+running on the device exposes a JSON API (`http://192.168.0.1:9090`), and a
+React dashboard served from the device (`http://192.168.0.1:8080`) turns it
+into a full-featured modem management UI — plus tooling to unlock, provision
+and update both.
 
 Credit: based on [jesther-ai/open-u60-pro](https://github.com/jesther-ai/open-u60-pro).
+
+## Architecture
+
+```
+Browser ── HTTP/JSON ──► React dashboard (:8080, uhttpd, /data/www)
+                              │
+                              │ bearer-token JSON API
+                              ▼
+                         zte-agent (:9090, Rust, tiny_http thread pool)
+                              │
+              ┌───────────────┼────────────────────────┐
+              ▼               ▼                        ▼
+        ubus / uci        AT ports              sysfs / procfs
+     (wifi, router,     (signal, SMS,        (thermals, battery,
+      clients, WAN)      cell/band lock)      charge control)
+```
+
+- **Agent (`agent/`)** — Rust HTTP backend, no async runtime, minimal deps
+  (`serde`, `tiny_http`, `sha2`, `libc`). Talks to ubus/uci, AT ports, sysfs
+  and device services. TTL caches decouple client poll rate from expensive
+  fork+exec subprocess reads; a single `ubus listen` event bus drives the
+  charge-limit enforcer. Auth via bearer tokens with sliding 1 h expiry,
+  rate-limited login, LAN-only bind. Destructive actions require
+  `X-Confirm: true`; the AT console is allowlisted to read-only commands.
+- **Dashboard (`web-app/`)** — React 19 + Vite + Tailwind SPA served by the
+  device itself. Lazy-loaded groups, light/dark theme, bottom tabs on phones
+  / sidebar on desktop. Visibility-aware, non-overlapping pollers with an
+  in-memory SWR cache; Home runs on one batched `/api/dashboard` request
+  every 3 s instead of nine separate polls.
+- **Contract** — the agent exposes exactly what the dashboard uses and
+  nothing else; `scripts/check-api-contract.py` fails CI if the route table,
+  the client bindings or the mock agent drift apart.
+
+## Dashboard features
+
+| Group | What you get |
+|---|---|
+| **Home** | live signal, modem mode, throughput, battery, connection, device info and data usage from a single batched poll |
+| **Signal** | per-carrier LTE/NR detail (PCI, ARFCN, RSRP/RSRQ/SINR), network mode, band lock, one-tap cell lock from live cells |
+| **Network** | clients by Wi-Fi/USB-C/Ethernet with link details, per-band Wi-Fi configuration, LAN/DHCP and DNS |
+| **Modem** | APN profiles with carrier presets, data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
+| **System** | thermals, battery health, charge control (stop/resume + limit enforcer), signal/connection loggers, AT console, on-demand process list, device/SIM info, USB mode + powerbank, power actions |
+
+Details: [docs/DASHBOARD.md](docs/DASHBOARD.md) (pages, source layout, local
+demo without hardware) and [docs/AGENT.md](docs/AGENT.md) (endpoint
+reference, 55 paths).
 
 ## Quick start
 
@@ -54,6 +101,15 @@ that keep it alive: **shell/ssh/adb only** — no boot hooks outside
 `scripts/research/` as quarantined. Everything else — including what the
 deploy path does and deliberately does not touch — is in
 [docs/SAFETY.md](docs/SAFETY.md).
+
+## License
+
+[MIT](LICENSE). Derived in part from
+[jesther-ai/open-u60-pro](https://github.com/jesther-ai/open-u60-pro)
+(MIT, Copyright (c) 2025-present Jesther Silvestre).
+
+Exception: `zte-script-ng.js` is a community reference script licensed
+separately under **AGPLv3+** — see its header.
 
 ## Source of truth
 
