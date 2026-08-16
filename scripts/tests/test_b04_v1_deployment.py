@@ -136,6 +136,16 @@ class ReleasePreparationTests(unittest.TestCase):
 
 
 class DeploymentBoundaryTests(unittest.TestCase):
+    def test_rc_metadata_accepts_only_exact_b04_baseline(self) -> None:
+        with mock.patch.object(DEPLOY, "adb_shell", return_value="775|0|0"):
+            self.assertEqual(
+                DEPLOY.read_rc_metadata(), {"mode": 0o775, "uid": 0, "gid": 0}
+            )
+        for rejected in ("755|0|0", "775|1|0", "775|0|1", "777|0|0"):
+            with mock.patch.object(DEPLOY, "adb_shell", return_value=rejected):
+                with self.assertRaises(DEPLOY.DeployError):
+                    DEPLOY.read_rc_metadata()
+
     def test_evidence_publication_is_hash_bound_and_completion_last(self) -> None:
         with tempfile.TemporaryDirectory(prefix="u60-evidence-test-") as temporary:
             root = Path(temporary)

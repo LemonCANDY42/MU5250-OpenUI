@@ -183,8 +183,8 @@ def read_rc_metadata() -> dict[str, int]:
         mode, uid, gid = int(fields[0], 8), int(fields[1]), int(fields[2])
     except ValueError as error:
         raise DeployError("rc.local metadata was not numeric") from error
-    if not 0o700 <= mode <= 0o755 or min(uid, gid) < 0:
-        raise DeployError("rc.local metadata is outside the accepted owner-writable mode")
+    if (mode, uid, gid) != (0o775, 0, 0):
+        raise DeployError("rc.local metadata differs from the accepted B04 root:root 0775 baseline")
     return {"mode": mode, "uid": uid, "gid": gid}
 
 
