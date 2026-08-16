@@ -21,17 +21,70 @@ public metadata, writes an owner-only manifest, and publishes
 `baseline.complete` last. It does not write to the device. A canary must not
 begin without an exactly verified completion marker.
 
-> **Historical upstream reference only. Do not follow this deployment flow on
-> the B04 V1 branch.** `setup.sh`, `deploy.sh`,
-> `deploy-dashboard.sh` and `scripts/zharden.sh` now exit before device access.
-> A replacement canary workflow is not yet implemented. The unlock/backup
-> discussion is retained as recovery research, not as authorization to restore
-> another configuration.
+## Reviewed B04 V1 deployment path
+
+The V1 path is implemented by three separate boundaries:
+
+- `scripts/prepare-b04-v1-release.py` creates one deterministic NAS release;
+  its directory name is the SHA-256 of `release.sha256` and every payload file
+  is physical, size-bounded and checksum-bound.
+- `device/b04-v1/` contains fixed BusyBox-compatible launchers for TLS canary,
+  stable agent and key-only Dropbear. Mutable PKI, auth state and SSH host/key
+  state remain outside the immutable release.
+- `scripts/deploy-b04-v1.py` performs one explicitly selected device action,
+  revalidates exact HK B04/root ADB plus Mac route/TUN and device USB invariants,
+  and publishes a secret-free completion record to the approved NAS.
+
+The reviewed sequence is:
+
+```sh
+# Build a release only from a clean Git tree and receipt-bound agent build.
+python3 scripts/prepare-b04-v1-release.py \
+  --agent-build /Volumes/backups/U60-Pro/B04-agent-build-<id> \
+  --dropbear /Volumes/backups/U60-Pro/toolchains/<build>/dropbearmulti \
+  --dropbear-sha256 <operator-pinned-sha256>
+
+# Each device mutation needs this one-command acknowledgement.
+export U60_B04_V1_DEPLOY=I_CONFIRMED_STAGED_V1_WITH_ROOT_ADB_RECOVERY
+
+# Loopback-only, nonpersistent canary first.
+python3 scripts/deploy-b04-v1.py canary \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --ca-cert /path/to/owner-ca.pem
+
+# Stable activation remains nonpersistent until clients and daily writes pass.
+python3 scripts/deploy-b04-v1.py activate \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --ca-cert /path/to/owner-ca.pem
+
+# SSH installation and verification are distinct gates.
+python3 scripts/deploy-b04-v1.py install-ssh \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --authorized-keys /path/to/exactly-two-public-keys
+python3 scripts/deploy-b04-v1.py verify-ssh \
+  --key-one /path/to/primary-private-key \
+  --key-two /path/to/recovery-private-key
+
+# Only after both services and both keys pass.
+python3 scripts/deploy-b04-v1.py boot-hook
+```
+
+`activate` preserves the old `current` target as `previous`; a failed TLS health
+check automatically restores it when available. `rollback` is also explicit.
+The boot hook is exactly one backgrounded `start-current.sh` line in
+`/etc/rc.local`, inserted before its single `exit 0` after byte backup and
+syntax validation. No firewall/init hook, UCI service, USB/FOTA change or
+partition action exists in this path. Logs rotate at 1 MiB with one prior file
+per service, keeping launcher logs below 6 MiB in total.
+
+The rest of this document is historical unlock/recovery context. Do not follow
+the old deployment commands below on the B04 V1 branch: `setup.sh`, `deploy.sh`,
+`deploy-dashboard.sh` and `scripts/zharden.sh` exit before device access.
 
 Everything needed to go from a locked U60 Pro to the full stack (agent +
 dashboard + SSH), and to keep it there. Read [SAFETY.md](SAFETY.md) first.
 
-## The whole flow at a glance
+## Historical flow at a glance
 
 The following block describes the disabled upstream flow:
 

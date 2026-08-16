@@ -130,7 +130,7 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   integrated platform neither exposes nor modifies it.
 - **eSIM**: no eUICC chip; not feasible.
 
-## No persistent deploy path
+## Reviewed V1 deploy path
 
 `setup.sh`, `deploy.sh`, `deploy-dashboard.sh` and `scripts/zharden.sh` are
 historical upstream scripts and now exit before device access. The old flow
@@ -144,15 +144,24 @@ would have:
 - add a second uhttpd instance on :8080 for the dashboard (uci `uhttpd.dashboard`)
 - disable FOTA auto-update (`zwrt_zte_dm set_update_mode`)
 
-None of those historical actions is authorized by the current source baseline.
-A separately reviewed manual canary now exists only under the new `/data/u60`
-namespace, bound to device loopback and reached through a temporary USB ADB
-forward. It does not modify or reuse the dormant `/data/zte-agent` and
-`/data/local/tmp/start_zte_agent.sh` paths, and it has no `rc.local`, init or
-firewall entry. Its baseline and start evidence are under the approved NAS
-backup share. The owner later reduced the initial observation to a one-hour fast
-gate; this is not equivalent evidence for the original 24-hour leak target and
-does not itself authorize a stable release symlink or boot persistence.
+Those historical actions remain disabled. The reviewed V1 path uses only
+`/data/u60/releases/<sha256>/`, `current`/`previous` atomic links and mutable
+`state`, `pki`, `ssh`, `runtime` and bounded `logs` directories. A canary binds
+only loopback `19443`; stable HTTPS binds only the management address at `9443`;
+Dropbear binds only that address at `2222` with password/PAM and forwarding
+compiled out plus runtime `-s -g -j -k`.
+
+`scripts/deploy-b04-v1.py` keeps release install, canary, stable activation,
+SSH, rollback and the single `rc.local` line as separate gates. It rechecks
+exact firmware, root ADB, Mac default route/TUN, device USB properties and
+`rc.local`, and writes the scoped result to the approved NAS. It does not touch
+the dormant `/data/zte-agent` paths. The boot entry is permitted only after a
+current release, stable agent PID, Dropbear PID and exactly two public keys are
+present; it adds no init/firewall/UCI hook. Root ADB is never removed.
+
+This implementation still requires live acceptance. The owner reduced the
+final observation to a one-hour active gate; that result must not be represented
+as the original 24-hour RSS-growth target.
 
 ## Known-good ubus surface
 

@@ -28,6 +28,7 @@ PYTHON_TOOLS = (
     "scripts/research/zstrings.py",
     "scripts/research/zwrite.py",
     "installer/app.py",
+    "scripts/deploy-b04-v1.py",
 )
 SHELL_TOOLS = (
     "setup.sh",
@@ -39,6 +40,7 @@ ACKNOWLEDGEMENT_VARIABLES = (
     "U60_B04_READ_ONLY_PROBE",
     "U60_B04_PRIVILEGED_RESEARCH",
     "U60_B04_CONFIG_RESTORE",
+    "U60_B04_V1_DEPLOY",
 )
 
 

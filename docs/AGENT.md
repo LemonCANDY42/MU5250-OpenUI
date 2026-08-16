@@ -151,5 +151,9 @@ prove those values. They are measured only during the later `19443` canary.
 
 Legacy `setup.sh`, `deploy.sh`, `deploy-dashboard.sh` and
 `scripts/zharden.sh` exit before any device access. Do not bypass those guards;
-the replacement deployer must implement backup manifests, content-addressed
-releases, health checks and rollback first.
+the reviewed replacement is `scripts/deploy-b04-v1.py`. It accepts only one
+content-addressed release from the approved NAS, verifies it again on-device,
+keeps canary/stable/SSH/boot persistence as separate commands, records scoped
+invariants and refuses any firmware other than exact HK B04 with root ADB.
+Source implementation is not real-device acceptance; each command retains its
+own live gate and evidence record.

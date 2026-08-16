@@ -43,3 +43,11 @@ def require_config_restore() -> None:
         "I_HAVE_A_FRESH_VERIFIED_BACKUP_AND_RECOVERY_CHANNEL",
         "configuration backup/restore workflow",
     )
+
+
+def require_v1_deploy() -> None:
+    _require(
+        "U60_B04_V1_DEPLOY",
+        "I_CONFIRMED_STAGED_V1_WITH_ROOT_ADB_RECOVERY",
+        "staged V1 device deployment",
+    )
