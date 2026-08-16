@@ -112,9 +112,10 @@ bash setup.sh
 ```
 
 - Prompts for the router admin password and the agent API password.
-- **Choose "build from source"** (the default). The pre-built download is
-  the upstream agent, which lacks this fork's endpoints and would leave
-  parts of the dashboard empty.
+- **Choose "build from source"** (the default, fully auditable). The
+  pre-built download comes from this repo's GitHub releases and matches
+  the dashboard — use it when installing the Rust toolchain isn't
+  practical.
 - If the device is locked (no SSH, no ADB) it runs the unlock first (see
   above). If ADB is already up or SSH works, it deploys straight away.
 - Pushes the agent to `/data/zte-agent`, creates the startup script with

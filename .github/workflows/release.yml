@@ -8,27 +8,98 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  agent:
+    runs-on: ubuntu-latest
+    container: messense/rust-musl-cross:aarch64-musl
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build zte-agent
+        run: cargo build --release --target aarch64-unknown-linux-musl -p zte-agent --locked
+
+      - name: Sanity-check binary
+        run: |
+          BIN=target/aarch64-unknown-linux-musl/release/zte-agent
+          aarch64-linux-musl-readelf -h "$BIN" | grep -E 'Class|Machine|Type'
+          ls -l "$BIN"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zte-agent
+          path: target/aarch64-unknown-linux-musl/release/zte-agent
+
+  dashboard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
         with:
-          targets: aarch64-unknown-linux-musl
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
 
-      - name: Install musl cross-compiler
+      - name: Build dashboard
+        working-directory: web-app
         run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu musl-tools
+          npm ci
+          npm run build
 
-      - name: Build zte-agent
-        env:
-          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: aarch64-linux-gnu-gcc
-        run: cargo build --release --target aarch64-unknown-linux-musl -p zte-agent
+      - name: Package dist
+        run: tar czf dashboard-dist.tar.gz -C web-app/dist .
 
-      - name: Upload binary to release
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
         with:
-          files: target/aarch64-unknown-linux-musl/release/zte-agent
+          name: dashboard-dist
+          path: dashboard-dist.tar.gz
+
+  publish:
+    needs: [agent, dashboard]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect assets and checksums
+        run: |
+          mkdir assets
+          cp artifacts/zte-agent/zte-agent assets/zte-agent
+          cp artifacts/dashboard-dist/dashboard-dist.tar.gz assets/
+          cd assets
+          sha256sum zte-agent dashboard-dist.tar.gz > sha256sums.txt
+          cat sha256sums.txt
+
+      - name: Release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          Pre-built artifacts for the ZTE U60 Pro (MU5250).
+
+          **Assets**
+
+          - `zte-agent` — agent binary (aarch64 musl). Deploy to `/data/zte-agent`,
+            or run `bash setup.sh` and choose the pre-built download.
+          - `dashboard-dist.tar.gz` — dashboard static build. Extract to `/data/www`,
+            then `cp /data/www/index.html /data/www/mobile.html` (ZTE uhttpd
+            mobile-redirect workaround).
+          - `sha256sums.txt` — SHA-256 checksums.
+
+          **Verify**
+
+          ```sh
+          sha256sum -c sha256sums.txt
+          ```
+          EOF
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="$GITHUB_REF_NAME"
+          ARGS=(--title "$TAG" --notes-file release-notes.md --generate-notes)
+          case "$TAG" in *-rc*) ARGS+=(--prerelease) ;; esac
+          gh release create "$TAG" "${ARGS[@]}" assets/*
