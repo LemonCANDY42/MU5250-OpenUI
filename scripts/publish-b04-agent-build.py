@@ -25,6 +25,11 @@ TARGET = "aarch64-unknown-linux-musl"
 BINARY = ROOT / "target" / TARGET / "release" / "zte-agent"
 RECEIPT = BINARY.with_name("B04-BUILD-RECEIPT.json")
 BUILD_MARKER = b"u60-b04-agent-build-complete-v1\n"
+EXPECTED_CARGO_CONFIG = (
+    b"[alias]\n"
+    b'build-b04 = "zigbuild --locked --release '
+    b'--target aarch64-unknown-linux-musl"\n'
+)
 EXPECTED_TOOL_VERSIONS = {
     "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
     "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
@@ -155,6 +160,19 @@ def git_identity() -> dict[str, Any]:
         "tree": tree,
         "source_date_epoch": int(source_date_epoch),
     }
+
+
+def validate_build_recipe_bytes(content: bytes) -> None:
+    if content != EXPECTED_CARGO_CONFIG:
+        raise BuildPublishError("repository Cargo build alias is not canonical")
+
+
+def validate_build_recipe() -> None:
+    config = ROOT / ".cargo" / "config.toml"
+    metadata = config.lstat()
+    if not stat.S_ISREG(metadata.st_mode) or config.is_symlink():
+        raise BuildPublishError("repository Cargo build alias is not a regular file")
+    validate_build_recipe_bytes(config.read_bytes())
 
 
 def validate_build_environment(git: dict[str, Any]) -> None:
@@ -604,6 +622,7 @@ def write_exclusive_receipt_at(parent_fd: int, filename: str, content: bytes) ->
 
 def build_and_write_receipt() -> str:
     git_before = git_identity()
+    validate_build_recipe()
     validate_build_environment(git_before)
     tools_before = tool_identities()
     sources_before = source_records(git_before["commit"])
@@ -880,6 +899,16 @@ def synthetic_elf(*, program_type: int = 1, machine: int = 183) -> bytes:
 
 
 def self_test() -> None:
+    validate_build_recipe_bytes(EXPECTED_CARGO_CONFIG)
+    try:
+        validate_build_recipe_bytes(
+            b"[target.aarch64-unknown-linux-musl]\nlinker = \"cc\"\n"
+        )
+    except BuildPublishError:
+        pass
+    else:
+        raise AssertionError("non-canonical Cargo build recipe was accepted")
+
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         valid_content = synthetic_elf() + bytes(262_144)

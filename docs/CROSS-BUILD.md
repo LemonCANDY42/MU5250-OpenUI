@@ -23,7 +23,9 @@ identities are rechecked as a set immediately before unlink. It uses the locked
 Cargo graph, disables incremental compilation, remaps the repository
 path and sets `SOURCE_DATE_EPOCH` from the current Git commit. The tracked Cargo
 alias deliberately contains no host-specific linker path; cargo-zigbuild owns
-the linker selection.
+the linker selection. The publisher validates that the repository-local alias
+is exactly the locked release-mode cargo-zigbuild recipe for the AArch64 musl
+target; a missing or modified alias fails before a receipt can be created.
 
 The Zig Python environment may be isolated outside Git. Point both `PATH` and
 `CARGO_ZIGBUILD_PYTHON_PATH` at that environment, while selecting a rustup
