@@ -1,8 +1,9 @@
 # Agent source baseline
 
-The B04 V1 agent is a host-tested typed contract. Its first read-only canary is
-device-tested; expanded reads and daily writes still require staged B04
-acceptance records before stable installation.
+The B04 V1 agent is a host-tested typed contract. Its final read-only canary,
+all ten capability reads and browser challenge pairing are device-tested;
+physical-iPhone pairing and daily writes still require staged B04 acceptance
+records before stable installation.
 
 ## Compiled public surface
 

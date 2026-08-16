@@ -79,9 +79,10 @@ loopback canary is evidence for a stage, not completion of V1.
    loopback-only `19443` canary passed the immediate TLS, password-auth and five
    read-only endpoint gate. The owner-accepted device-process one-hour checkpoint
    also passed. The listener serves one canonical, symlink-free web build only
-   when explicitly configured. V1 additionally requires real browser and
-   physical-iPhone CA trust, key pairing and handshake acceptance. The web and
-   iOS clients share generated `/v1` models and capability-driven UI. Daily
+   when explicitly configured. Real browser WebCrypto pairing, challenge login
+   and all ten read-only capabilities now have B04 acceptance. V1 additionally
+   requires physical-iPhone CA trust, key pairing and handshake acceptance. The
+   web and iOS clients share generated `/v1` models and capability-driven UI. Daily
    writes are SMS send, charging threshold/pause/resume, traffic-cycle reset and
    transactional Wi-Fi with a persisted roughly 120-second confirmation window,
    reboot-safe rollback, applied-state readback and a dedicated recovery test.
@@ -160,6 +161,11 @@ U60, and the live loopback canary completed a CA-verified TLS handshake. The iOS
 source performs system trust evaluation followed by an exact P-256 SPKI pin
 check, but no system/iPhone trust or real iPhone pairing acceptance exists yet;
 those remain distinct from the accepted command-line handshake.
+
+The browser boundary has separate real-device evidence: a non-exportable P-256
+credential survived an agent release replacement, completed a new single-use
+challenge login and loaded ten available B04 capabilities. This does not imply
+physical-iPhone Secure Enclave or Apple system-trust acceptance.
 
 Apple Passkey is a later, distinct WebAuthn layer. It requires an owner domain,
 Associated Domains and an AASA file. The NAS is not an authentication runtime
