@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Probe DDNS + LAN hostname setters: confirm they work, then charset-probe
 string fields for command-injection potential. ROUTER_PW env."""
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, json, time, hashlib, urllib.request, http.cookiejar, base64
 
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32

@@ -2,6 +2,10 @@
 """DECISIVE: dnsquery_server command-injection -> root RCE confirmation.
 Injects a marker into firewall uci config (root bypasses rpcd ACL), reads it
 back via web uci.get. ROUTER_PW env."""
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, json, time, hashlib, urllib.request, http.cookiejar
 
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32

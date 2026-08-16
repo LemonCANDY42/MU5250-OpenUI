@@ -3,6 +3,10 @@
 ROUTER_PW env. READ-ONLY (no login attempts against gated endpoints)."""
 import os, json, time, hashlib, urllib.request, http.cookiejar
 
+from _device_gate import require_read_only_probe
+
+require_read_only_probe()
+
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32
 T=lambda:int(time.time()*1000)
 _J=http.cookiejar.CookieJar(); OP=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_J))

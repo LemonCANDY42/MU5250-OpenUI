@@ -1,9 +1,107 @@
 # Deployment — unlock, install, update
 
+## Pre-canary recovery baseline
+
+Before the first device write, capture the retained root-ADB and boot-path
+baseline directly to the approved NAS share:
+
+```sh
+python3 scripts/capture-b04-canary-baseline.py \
+  --output-root /Volumes/backups/U60-Pro
+```
+
+The command refuses any firmware other than exact HK B04, a non-root or
+ambiguous ADB transport, any directory entry (including a dangling symlink) at
+`/data/u60`, a running `zte-agent`, a non-`en0` default route, TUN drift, or an
+unapproved NAS mount. Known dormant upstream artifacts at `/data/zte-agent` and
+`/data/local/tmp/start_zte_agent.sh` are inventoried by type, public metadata and
+SHA-256 when regular, then rechecked for drift; they are never executed,
+overwritten or removed. The command saves the current `/etc/rc.local` bytes and
+public metadata, writes an owner-only manifest, and publishes
+`baseline.complete` last. It does not write to the device. A canary must not
+begin without an exactly verified completion marker.
+
+## Reviewed B04 V1 deployment path
+
+The V1 path is implemented by three separate boundaries:
+
+- `scripts/prepare-b04-v1-release.py` creates one deterministic NAS release;
+  its directory name is the SHA-256 of `release.sha256` and every payload file
+  is physical, size-bounded and checksum-bound.
+- `device/b04-v1/` contains fixed BusyBox-compatible launchers for TLS canary,
+  stable agent and key-only Dropbear. Mutable PKI, auth state and SSH host/key
+  state remain outside the immutable release.
+- `scripts/deploy-b04-v1.py` performs one explicitly selected device action,
+  revalidates exact HK B04/root ADB plus Mac route/TUN and device USB invariants,
+  and publishes a secret-free completion record to the approved NAS.
+
+The reviewed sequence is:
+
+```sh
+# Build a release only from a clean Git tree and receipt-bound agent build.
+python3 scripts/prepare-b04-v1-release.py \
+  --agent-build /Volumes/backups/U60-Pro/B04-agent-build-<id> \
+  --dropbear /Volumes/backups/U60-Pro/toolchains/<build>/dropbearmulti \
+  --dropbear-sha256 <operator-pinned-sha256>
+
+# Each device mutation needs this one-command acknowledgement.
+export U60_B04_V1_DEPLOY=I_CONFIRMED_STAGED_V1_WITH_ROOT_ADB_RECOVERY
+
+# Loopback-only, nonpersistent canary first.
+python3 scripts/deploy-b04-v1.py canary \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --ca-cert /path/to/owner-ca.pem
+
+# Physical-client gate: temporary LAN listener, still without release links or boot persistence.
+python3 scripts/deploy-b04-v1.py lan-canary \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --ca-cert /path/to/owner-ca.pem
+
+# Stable activation remains nonpersistent until clients and daily writes pass.
+python3 scripts/deploy-b04-v1.py activate \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --ca-cert /path/to/owner-ca.pem
+
+# SSH installation and verification are distinct gates.
+python3 scripts/deploy-b04-v1.py install-ssh \
+  --release /Volumes/backups/U60-Pro/releases/<content-hash> \
+  --authorized-keys /path/to/exactly-two-public-keys
+python3 scripts/deploy-b04-v1.py verify-ssh \
+  --key-one /path/to/primary-private-key \
+  --key-two /path/to/recovery-private-key
+
+# Only after both services and both keys pass.
+python3 scripts/deploy-b04-v1.py boot-hook
+```
+
+`lan-canary` is deliberately narrower than `activate`: it requires `current`
+and `previous` to remain absent, stops the loopback canary, starts the exact
+accepted release on `192.168.0.1:9443`, and proves the CA-verified `401`
+authentication boundary with a device-local request invoked through USB ADB.
+This avoids changing a Mac route or TUN and does not create an ADB forward,
+release symlink,
+boot hook, firewall rule or service. A physical client must join the U60's own
+Wi-Fi for this gate. Any failed TLS or evidence step stops the managed LAN
+agent.
+
+`activate` preserves the old `current` target as `previous`; a failed TLS health
+check automatically restores it when available. `rollback` is also explicit.
+The boot hook is exactly one backgrounded `start-current.sh` line in
+`/etc/rc.local`, inserted before its single `exit 0` after byte backup and
+syntax validation. No firewall/init hook, UCI service, USB/FOTA change or
+partition action exists in this path. Logs rotate at 1 MiB with one prior file
+per service, keeping launcher logs below 6 MiB in total.
+
+The rest of this document is historical unlock/recovery context. Do not follow
+the old deployment commands below on the B04 V1 branch: `setup.sh`, `deploy.sh`,
+`deploy-dashboard.sh` and `scripts/zharden.sh` exit before device access.
+
 Everything needed to go from a locked U60 Pro to the full stack (agent +
 dashboard + SSH), and to keep it there. Read [SAFETY.md](SAFETY.md) first.
 
-## The whole flow at a glance
+## Historical flow at a glance
+
+The following block describes the disabled upstream flow:
 
 ```sh
 python3 scripts/zunlock.py     # 1. unlock → adbd        (locked firmware only)
@@ -20,7 +118,7 @@ End state (persists across reboots):
 | Stock web UI | `http://192.168.0.1:80` / `:443` | untouched |
 | Dashboard | `http://192.168.0.1:8080` | uhttpd `dashboard` instance → `/data/www` |
 | Agent API | `http://192.168.0.1:9090` | password = your choice at setup |
-| SSH | `ssh -p 2222 root@192.168.0.1` | key-only, `/data/bin/dropbear` |
+| SSH | `ssh -p 2222 root@192.168.0.1` | installed a key, but did not actually disable password login |
 | ADB | on demand | `echo 1 > /sys/class/android_usb/android0/usb_op` via SSH + reboot; reverts next reboot |
 
 ---
@@ -112,10 +210,9 @@ bash setup.sh
 ```
 
 - Prompts for the router admin password and the agent API password.
-- **Choose "build from source"** (the default, fully auditable). The
-  pre-built download comes from this repo's GitHub releases and matches
-  the dashboard — use it when installing the Rust toolchain isn't
-  practical.
+- **Choose "build from source"** (the default). The pre-built download is
+  the upstream agent, which lacks this fork's endpoints and would leave
+  parts of the dashboard empty.
 - If the device is locked (no SSH, no ADB) it runs the unlock first (see
   above). If ADB is already up or SSH works, it deploys straight away.
 - Pushes the agent to `/data/zte-agent`, creates the startup script with

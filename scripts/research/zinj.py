@@ -4,6 +4,10 @@
 1. baseline ping 127.0.0.1 (action "check") -> read /log/PingMessages
 2. injection ping "<ip>; id" -> read /log/PingMessages for command output
 """
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar
 
 GW=os.environ.get("GW","192.168.0.1"); PW=os.environ["ROUTER_PW"]; ANON="0"*32

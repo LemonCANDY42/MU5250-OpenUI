@@ -20,6 +20,9 @@
  */
 
 (function() {
+  throw new Error(
+    'ZTE-Script-NG is quarantined reference code and is disabled in the B04 V1 branch.'
+  );
   const VERSION = '2025-10-17';
 
   // globals

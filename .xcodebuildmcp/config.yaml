@@ -1,0 +1,9 @@
+schemaVersion: 1
+enabledWorkflows:
+  - simulator
+  - device
+sessionDefaults:
+  projectPath: clients/ios/OpenU60/OpenU60.xcodeproj
+  scheme: OpenU60
+  simulatorName: iPhone 17 Pro
+  useLatestOS: true

@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+echo "Refusing legacy dashboard deployment in the private B04 integration branch." >&2
+echo "The integrated agent will serve the version-matched dashboard over HTTPS." >&2
+exit 64
+
 # Default settings based on deploy.sh
 DEVICE="192.168.0.1"
 SSH_PORT=2222

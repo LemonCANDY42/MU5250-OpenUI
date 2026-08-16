@@ -1,102 +1,160 @@
-# Agent — `zte-agent`
+# Agent source baseline
 
-Rust HTTP backend that runs on the modem (`agent/`), talking to ubus, AT
-ports, sysfs/procfs and device services. `agent/src/server.rs` is the
-canonical routing table; this document summarizes it.
+The B04 V1 agent is a host-tested typed contract. Its final read-only canary,
+all ten capability reads and browser challenge pairing are device-tested;
+physical-iPhone pairing and daily writes still require staged B04 acceptance
+records before stable installation.
 
-- Binds `192.168.0.1:9090` (override `ZTE_AGENT_BIND`, `ZTE_AGENT_THREADS`)
-- Auth: `POST /api/auth/login` (password from `ZTE_AGENT_PASSWORD`, or an
-  optional 6-digit mobile PIN); bearer tokens with a sliding 1 h expiry so a
-  dashboard left open stays logged in, rate-limited login, LAN-only CORS
-- JSON envelope: `{ "ok": true, "data": … }` / `{ "ok": false, "error": … }`
-- Destructive actions (`/api/device/reboot|shutdown`) require the
-  `X-Confirm: true` header
+## Compiled public surface
 
-## Endpoint reference
+`openapi/u60-v1.yaml` is the contract authority. `agent/src/server.rs` routes
+ten read-only capabilities, five bounded daily operations and five versioned
+authentication paths:
 
-Every route below has a dashboard consumer, and every call the dashboard makes
-is a route below — `scripts/check-api-contract.py` enforces both directions
-(plus that the mock agent stays in step). 55 paths / 60 method+path pairs.
-
-| Family | Endpoints |
+| Endpoint | Meaning |
 |---|---|
-| Auth | `POST /api/auth/login` — bearer token, sliding 1 h expiry |
-| Batch | `GET /api/dashboard` — device, battery, cpu, memory, speed, data usage, signal, wan, wan6, thermal in one request. The app's heartbeat: Home, Signal and Modem/Data all read it instead of polling their own endpoints |
-| Status | `GET /api/device`, `/api/cpu`, `/api/memory`, `/api/system/top` |
-| Network | `GET /api/network/clients` |
-| Device | `GET /api/device/battery-info`, `/api/device/thermal/all`, `/api/device/battery/detail`, `/api/device/charger`; `POST /api/device/reboot`, `/api/device/shutdown` |
-| System | `POST /api/system/restart-agent`, `/api/system/kill-bloat` |
-| Wi-Fi | `GET /api/wifi/status`, `PUT /api/wifi/settings` |
-| Modem | `PUT /api/data-usage/reset-day`, `PUT /api/modem/network-mode` |
-| Cell/band lock | `POST /api/cell/lock/nr`, `/api/cell/lock/lte`, `/api/cell/lock/reset`, `/api/cell/band/nr`, `/api/cell/band/lte`, `/api/cell/band/reset` |
-| Router | `GET+PUT /api/router/dns`, `/api/router/lan`, `/api/router/apn/mode`; `GET+POST /api/router/apn/profiles`; `POST /api/router/apn/profiles/delete`, `/api/router/apn/profiles/activate` |
-| SMS | `POST /api/sms/list`, `/api/sms/send`, `/api/sms/delete`, `/api/sms/read` (delete falls back to direct SQLite for SIM-stored rows the firmware refuses) |
-| SIM | `GET /api/sim/info`, `/api/sim/imei` |
-| USB | `GET /api/usb/status`, `PUT /api/usb/mode`, `/api/usb/default`, `/api/usb/powerbank` |
-| Power | `GET+PUT /api/device/charge-control` — manual stop/resume + limit enforcer with hysteresis, event-driven off `BSP_CHARGER_EVENT` |
-| Extras | TTL clamping (`GET /api/ttl/status`, `PUT /api/ttl/set`, `DELETE /api/ttl/clear`), AT console (`POST /api/at/send`, `GET /api/at/port`), signal/connection CSV loggers (`/api/logger/*`) |
+| `GET /v1/device` | Normalized model, adapter target and best-effort firmware/hardware identity |
+| `GET /v1/capabilities` | `available`, `degraded` or `unsupported` state plus reason/recovery metadata |
+| `GET /v1/status/system` | Hostname, kernel, uptime and load average |
+| `GET /v1/status/battery` | Normalized capacity, voltage, current, temperature and state |
+| `GET /v1/status/thermal` | Validated readings from the fixed B04 sensor map |
+| `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
+| `GET /v1/status/cellular` | Bounded WAN connection and address state |
+| `GET /v1/status/traffic` | Current day, billing-cycle, power-on and total counters |
+| `GET /v1/status/wifi` | Two fixed B04 radio sections, security and station counts |
+| `GET /v1/lan/clients` | Bounded current DHCP lease list |
+| `GET /v1/sms` | Bounded latest SMS page |
+| `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
+| `GET/PUT /v1/charging` | Pause/resume or 50–95% automatic threshold with readback |
+| `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
+| `POST /v1/wifi/transaction` | Apply bounded Wi-Fi fields with 120-second rollback |
+| `POST /v1/wifi/transaction/confirm` | Commit the matching pending Wi-Fi transaction |
+| `POST /v1/auth/password/session` | Argon2id password login for a normal scoped session |
+| `POST /v1/auth/password/advanced` | Password re-entry for a non-sliding five-minute advanced session |
+| `POST /v1/auth/challenge` | Single-use P-256 signing challenge |
+| `POST /v1/auth/challenge/verify` | Raw WebCrypto or Apple DER P-256 ECDSA/SHA-256 verification and key session |
+| `POST /v1/auth/pair` | One-time maintenance nonce consumption and P-256 SPKI registration |
 
-## Architecture notes
+There are no routed `/api` paths. The old SHA login is gone. Read-only domain
+routes require `read`; daily operations require `daily`; advanced-session creation also
+requires an existing `admin` token before password re-entry. Sessions keep only
+SHA-256 token digests in memory.
 
-- **Transport**: `tiny_http` thread pool; no async runtime (small binary,
-  small footprint). The listener is supervised — tiny_http's accept thread
-  exits permanently on its first `accept()` error, so `server::start` watches
-  for that, drains the workers and rebuilds rather than sitting alive serving
-  nothing.
-- **Dependencies**: `serde`, `serde_json`, `tiny_http`, `sha2`, `libc`. No TLS
-  stack and no HTTP client — removing the DoH proxy, SMS forwarder and speed
-  test dropped `ureq`, and with it rustls/ring/ICU.
-- **Subprocess cost**: every `ubus`/`uci` read is a fork+exec, which dominates
-  the agent's CPU. `cache.rs` gives each dashboard source its own TTL (signal
-  2.5 s, thermal 10 s, wan/wan6 30 s, data usage 30 s, cycle dates 300 s), so
-  the client's poll rate is decoupled from the refresh rate and concurrent
-  clients collapse onto one refresh. `wifi_status` dumps whole configs with
-  `ubus::uci_show` instead of issuing one `uci get` per key.
-- **Event bus**: one `ubus listen` process dispatches to subscribers over
-  bounded channels (`BSP_CHARGER_EVENT` → charge enforcer).
-- **State files** (all under `/data/local/tmp/`): `charge_limit.json`,
-  `usb_config.json`, signal/connection CSV logs.
-- **Boot behavior**: `main.rs` runs a one-shot migration that undoes the
-  removed DoH proxy's dnsmasq rewiring (otherwise a device that had DoH
-  enabled would come back up forwarding DNS to a dead port), applies
-  `start_ttl.sh` if present, and re-applies persisted NCM only if explicitly
-  enabled — see [SAFETY.md](SAFETY.md) §2 for why the latter two are acceptable.
-- **Logging**: stdout/stderr go to syslog via `logger -t zte-agent`
-  (`logread -e zte-agent`), not a file on tmpfs.
+Every other legacy `/api` endpoint is deliberately dormant. In particular,
+there is no routed raw AT console, process killer, reboot/shutdown, Wi-Fi/APN
+mutation, cell/band lock, USB mutation, TTL write or generic vendor-call
+surface.
 
-## Safety constraints built into the agent
+## Adapter boundary
 
-- **AT console is allowlisted** (`server.rs`): read-only commands only;
-  `AT+CFUN`, `AT^…`, `AT+CMGD`, `AT$QCRMCALL`, `AT+CLCK`, `AT+CGDCONT=`,
-  `AT+CGACT=` are blocked.
-- **kill-bloat only kills daemons that are safe to kill** — never the
-  `zte_topsw_daemon.conf` sync-barrier set (see SAFETY.md).
-- **Destructive endpoints require `X-Confirm: true`** (`/api/device/reboot`,
-  `/api/device/shutdown`).
-- **Login is rate-limited**: 5 failures per client IP arms a 30 s lockout.
-- **LAN-only bind + LAN-origin CORS** by default.
-- ubus inputs passed through from HTTP are size/depth-validated
-  (`validate.rs`) before forwarding.
+`agent/src/adapter.rs` owns the B04-specific object names, proc/sysfs paths and
+parsing. Handlers receive only typed domain structures. Vendor JSON must never
+cross into `/v1`, and clients must never provide a vendor object, command, key
+or path.
 
-## USB modes
+Capability reporting is fail-closed:
 
-See [reference/usb-modes.md](reference/usb-modes.md) for the live-device
-findings: only ECM/RNDIS are exposed by the stock switch; NCM exists in
-configfs and is agent-managed (experimental, gated behind
-`confirm_experimental`), and the ubus `mode` field is not a reliable
-detector of the active composition.
+- a read that produces the complete normalized contract is `available`;
+- a partial but safe read is `degraded`, with a reason and maintenance action;
+- an absent B04 source is `unsupported`;
+- source support does not become real-device acceptance until its exact path has
+  passed the B04 probe gate.
 
-## Building
+## Host-only HTTPS and maintenance state
 
-```sh
-cargo build --release --target aarch64-unknown-linux-musl -p zte-agent
-```
+The only listener is `axum-server` backed by rustls `>=0.23.5, <0.24`,
+explicitly configured for ring and TLS 1.3. The default bind is
+`127.0.0.1:19443`. `serve`
+fails before opening agent state unless `U60_TLS_CERT_PEM` and
+`U60_TLS_KEY_PEM` name parseable certificate and leaf-key PEM files. The agent
+does not generate either file and has no plaintext fallback or permissive CORS;
+an explicit browser `Origin` must match the HTTPS `Host`.
 
-Cross-linker config lives in `.cargo/config.toml`
-(`aarch64-linux-musl-gcc`). `cargo test` runs the unit tests (auth lockout
-and token expiry, dashboard payload shapes, TTL cache, UCI value unquoting,
-USB boot guards, WiFi sanitizers).
+`zte-agent serve --web-root DIR` optionally enables the same TLS listener to
+serve the dashboard. The root and every accepted asset are canonicalized before
+state is opened, the root and its complete tree must contain no symlink, and
+only `index.html`, fixed top-level metadata assets and allowlisted files below
+`assets/` are loaded. Without `--web-root` no static response is available.
+Unknown `/v1` paths always retain the typed JSON 404 and are never captured by a
+web fallback. All responses carry a self-only CSP (including
+`frame-ancestors 'none'`), `nosniff`, `Referrer-Policy: no-referrer` and frame
+denial; there is still no CORS or plaintext listener.
 
-`python3 scripts/check-api-contract.py` asserts the agent route table, the
-dashboard's calls and the mock agent's fixtures all agree — run it after
-touching any of the three.
+Authentication state defaults to `/data/u60/state` and can be redirected with
+`U60_STATE_DIR` for host tests. Directories are mode `0700`; state files are
+published atomically at mode `0600`. An advisory `auth.lock` serializes the
+complete pairing and credential read-modify-write transactions across the live
+server and maintenance CLI. Password failure state is persisted under that lock,
+uses hashed client identifiers, expires after one hour and is capped at 128
+clients, so restarting the server cannot reset a current lockout. A detected
+backward wall-clock jump cannot extend volatile sessions or challenges because
+their deadlines use the process-independent monotonic clock. Pairing records
+bind the Linux boot UUID to a `CLOCK_BOOTTIME` deadline; reboot, a missing or
+mismatched boot identity, and monotonic rollback all fail closed.
+
+Audit persistence is intentionally best-effort after the authoritative auth
+state commit: an audit storage failure emits only redacted diagnostics and never
+turns a successfully committed password, pairing or credential mutation into a
+reported failure. Maintenance operations are CLI-only:
+
+- `zte-agent password-set` reads the password from stdin;
+- `zte-agent pair-open` emits one five-minute registration payload;
+- `zte-agent credential-list` lists non-secret metadata;
+- `zte-agent credential-revoke ID` revokes a client key.
+
+There is no network credential-list or revoke endpoint. Passwords, private keys
+and CA passphrases never enter command-line arguments or repository state. The
+separate [host-only PKI tooling](PKI.md) must be given an explicit
+out-of-repository directory, accepts the CA passphrase only through a file
+descriptor and is not a server or maintenance-CLI endpoint.
+
+The browser client generates ECDSA P-256 keys with the private key marked
+non-exportable, exports only the public SPKI and stores the CryptoKey pair plus
+credential ID/label in IndexedDB. It signs the exact base64url-decoded challenge
+message. Canonical DER output is normalized when unambiguous; because a valid
+DER sequence can itself be exactly 64 bytes, the server parses both raw and DER
+candidates and accepts only an encoding that verifies. Bearer tokens exist only
+in JavaScript memory, logout clears that memory, and the dashboard does not
+persist the manually entered password. Browser password-manager policy remains
+under browser/user control. This is local browser-key pairing, not Apple
+Passkey.
+
+## Contract checks
+
+`scripts/check-api-contract.py` verifies that:
+
+- every routed `/v1` path is in OpenAPI and vice versa;
+- every routed HTTP method is declared and every current typed runtime status is
+  represented;
+- no `/api` path is routed;
+- raw AT and process-killing surfaces are absent from server and dashboard;
+- OpenAPI contains no generic command or shell surface.
+
+`scripts/check-web-artifact.py` separately verifies that:
+
+- the built dashboard contains no legacy API path, plaintext URL, old agent
+  port or common persistent-token storage marker.
+
+Rust tests also pin Argon2id parameters, restart-safe progressive per-address
+lockout, session expiry/scope behavior, rollback-and-rebound clock behavior,
+challenge consumption and raw/DER signatures, pairing expiry/replay,
+cross-process pairing/credential serialization, degraded audit persistence,
+state modes, same-origin behavior, static-path rejection, security headers and
+HTTPS fail-closed startup. Vitest covers browser encoding, raw/DER signature
+normalization, non-exportable IndexedDB keys, pairing/challenge/login and
+in-memory-only token behavior.
+
+## Resource and deployment state
+
+The target is idle RSS at or below 12 MiB, average idle CPU below 1%, less than
+2 MiB RSS growth over 24 hours and bounded local logs. No source-only build can
+prove those values. They are measured only during the later `19443` canary.
+
+Legacy `setup.sh`, `deploy.sh`, `deploy-dashboard.sh` and
+`scripts/zharden.sh` exit before any device access. Do not bypass those guards;
+the reviewed replacement is `scripts/deploy-b04-v1.py`. It accepts only one
+content-addressed release from the approved NAS, verifies it again on-device,
+keeps canary/stable/SSH/boot persistence as separate commands, records scoped
+invariants and refuses any firmware other than exact HK B04 with root ADB.
+Source implementation is not real-device acceptance; each command retains its
+own live gate and evidence record.

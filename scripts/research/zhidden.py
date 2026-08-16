@@ -2,6 +2,10 @@
 """Try web_hidden_page_login with the factory sticker password, then if it
 succeeds, attempt zwrt_bsp.usb set {mode:debug} (the ADB restore call).
 ROUTER_PW env = current web pw; STICKER env = factory default to try as hidden pw."""
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar
 
 GW=os.environ.get("GW","192.168.0.1")

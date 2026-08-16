@@ -5,7 +5,8 @@
 # Idempotent: safe to re-run anytime; each step no-ops when already done.
 #
 # What it does (details in docs/DEPLOYMENT.md):
-#   1. installs dropbear SSH (port 2222, key auth) into /data
+#   1. historically installed Dropbear SSH on port 2222 and added a key, but
+#      did not disable password authentication
 #   2. cleans rc.local: keeps stock + agent/dropbear lines, removes usb_op
 #      write lines (so every boot = stock ECM tethering; adb on demand)
 #   3. adds the dashboard uhttpd instance on :8080
@@ -21,6 +22,10 @@
 #
 # Usage: bash scripts/zharden.sh [--gw 192.168.0.1]
 set -euo pipefail
+
+echo "Refusing legacy hardening in the B04 V1 branch." >&2
+echo "Key-only SSH must be validated as a separate canary while root ADB remains available." >&2
+exit 64
 
 GW="${1:-192.168.0.1}"; GW="${GW#--gw }"; GW="${GW#--gw=}"
 SSH_PORT=2222

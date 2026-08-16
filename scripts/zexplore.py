@@ -2,6 +2,10 @@
 """Explore uci readability + ping/traceroute diag state. Read-only. ROUTER_PW env."""
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar
 
+from _device_gate import require_read_only_probe
+
+require_read_only_probe()
+
 GW = os.environ.get("GW", "192.168.0.1")
 PW = os.environ["ROUTER_PW"]
 ANON = "0"*32

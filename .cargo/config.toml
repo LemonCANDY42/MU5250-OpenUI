@@ -1,2 +1,2 @@
-[target.aarch64-unknown-linux-musl]
-linker = "aarch64-linux-musl-gcc"
+[alias]
+build-b04 = "zigbuild --locked --release --target aarch64-unknown-linux-musl"

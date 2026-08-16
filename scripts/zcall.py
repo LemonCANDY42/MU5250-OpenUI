@@ -10,6 +10,10 @@ Usage:
 """
 import sys, os, json, time, hashlib, urllib.request, http.cookiejar
 
+from _device_gate import require_privileged_research
+
+require_privileged_research()
+
 GW = os.environ.get("GW", "192.168.0.1")
 BASE = f"http://{GW}"
 PW = os.environ.get("ROUTER_PW")

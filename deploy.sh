@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+echo "Refusing legacy in-place agent deployment in the private B04 integration branch." >&2
+echo "Use a content-addressed canary release only after its acceptance gate is implemented." >&2
+exit 64
+
 PASSWORD="${ZTE_AGENT_PASSWORD:-$(IFS= read -rsp 'Agent password: ' pw; printf '%s' "$pw")}"
 PIN="${ZTE_AGENT_PIN:-}"
 DEVICE="192.168.0.1"

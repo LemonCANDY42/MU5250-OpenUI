@@ -1,6 +1,10 @@
 #!/bin/bash
 set -e
 
+echo "Refusing legacy device installation in the private B04 integration branch." >&2
+echo "Use the staged canary workflow only after its backup, HTTPS and rollback gates are implemented." >&2
+exit 64
+
 # ── Colors ───────────────────────────────────────────────────────────
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 info()  { echo -e "${CYAN}[*]${NC} $1"; }
@@ -36,15 +40,16 @@ BINARY_CHANGED=false
 DOWNLOAD_URL="https://github.com/dklasens/MU5250-OpenUI/releases/latest/download/zte-agent"
 
 # ── Binary source menu ──────────────────────────────────────────────
-# Both options install this repo's agent. Option 1 downloads the pre-built
-# binary from this repo's GitHub releases (no dev tools needed); option 2
-# builds from source and stays the default so the binary is always auditable
-# and installable even when the release download is unreachable.
+# Build-from-source (2) is the default: this fork's agent has diverged from
+# upstream (batched /api/dashboard, charge control, powerbank, …) and the
+# dashboard in this repo expects those. Option 1 downloads the UPSTREAM
+# agent, which will leave parts of the new dashboard empty.
 echo ""
 echo -e "${CYAN}How would you like to get the zte-agent binary?${NC}"
-echo "  1) Download pre-built from this repo's GitHub releases (no dev tools"
-echo "     needed)"
-echo "  2) Build from source (recommended — auditable; requires Rust toolchain)"
+echo "  1) Download pre-built upstream from GitHub (no dev tools needed, but"
+echo "     may lack this fork's endpoints and leave parts of the dashboard empty)"
+echo "  2) Build from source (recommended — matches this fork's dashboard;"
+echo "     requires Rust toolchain)"
 echo ""
 echo -n "Choice [2]: "
 read -r BUILD_CHOICE

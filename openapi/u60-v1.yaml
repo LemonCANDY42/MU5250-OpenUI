@@ -1,0 +1,1387 @@
+openapi: 3.1.0
+info:
+  title: U60 Pro B04 Local API
+  version: 0.2.0
+  description: >-
+    HTTPS-only API for the owner-operated HK B04 platform. Authentication
+    state is local; vendor response objects remain behind the B04 adapter.
+security:
+  - bearerAuth: []
+paths:
+  /v1/auth/password/session:
+    post:
+      operationId: createPasswordSession
+      summary: Create a normal session with a configured management password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SessionCreated"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/OriginForbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/TemporarilyLocked"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/PasswordNotConfigured"
+  /v1/auth/password/advanced:
+    post:
+      operationId: createAdvancedSession
+      summary: Re-enter the password for a five-minute advanced session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SessionCreated"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "429":
+          $ref: "#/components/responses/TemporarilyLocked"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/PasswordNotConfigured"
+  /v1/auth/challenge:
+    post:
+      operationId: createCredentialChallenge
+      summary: Create a single-use P-256 signing challenge
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChallengeRequest"
+      responses:
+        "200":
+          description: Single-use challenge created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChallengeResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/OriginForbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+  /v1/auth/challenge/verify:
+    post:
+      operationId: verifyCredentialChallenge
+      summary: Consume a challenge and create a key session
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChallengeVerifyRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/SessionCreated"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/OriginForbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+  /v1/auth/pair:
+    post:
+      operationId: registerCredential
+      summary: Consume a maintenance-opened nonce and register one P-256 key
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PairRequest"
+      responses:
+        "200":
+          description: Credential registered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisteredCredentialResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/OriginForbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+  /v1/device:
+    get:
+      operationId: getDevice
+      summary: Read normalized device identity
+      responses:
+        "200":
+          description: Device identity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeviceResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+  /v1/capabilities:
+    get:
+      operationId: getCapabilities
+      summary: Read probed adapter capabilities
+      responses:
+        "200":
+          description: Capability report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilityResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+  /v1/status/system:
+    get:
+      operationId: getSystemStatus
+      summary: Read normalized system status
+      responses:
+        "200":
+          description: System status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SystemStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/status/battery:
+    get:
+      operationId: getBatteryStatus
+      summary: Read normalized battery status
+      responses:
+        "200":
+          description: Battery status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatteryStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/status/thermal:
+    get:
+      operationId: getThermalStatus
+      summary: Read normalized thermal status
+      responses:
+        "200":
+          description: Thermal status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThermalStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/status/signal:
+    get:
+      operationId: getSignalStatus
+      summary: Read normalized radio signal state
+      responses:
+        "200":
+          description: Radio signal state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SignalStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/status/cellular:
+    get:
+      operationId: getCellularStatus
+      summary: Read normalized cellular WAN state
+      responses:
+        "200":
+          description: Cellular WAN state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CellularStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/status/traffic:
+    get:
+      operationId: getTrafficStatus
+      summary: Read normalized cellular traffic counters and billing cycle
+      responses:
+        "200":
+          description: Traffic counters and cycle
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TrafficStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/status/wifi:
+    get:
+      operationId: getWifiStatus
+      summary: Read normalized Wi-Fi radio and primary-network state
+      responses:
+        "200":
+          description: Wi-Fi state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WifiStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/lan/clients:
+    get:
+      operationId: getLanClients
+      summary: Read the bounded current DHCP client list
+      responses:
+        "200":
+          description: LAN clients
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LanClientsResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/sms:
+    get:
+      operationId: getSmsList
+      summary: Read the latest bounded page of SMS messages
+      responses:
+        "200":
+          description: Latest SMS page
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsPageResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "501":
+          $ref: "#/components/responses/Unsupported"
+        "503":
+          $ref: "#/components/responses/SourceUnavailable"
+  /v1/sms/send:
+    post:
+      operationId: sendSms
+      summary: Send one strictly validated SMS through the fixed B04 WMS operation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsSendRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/WriteApplied"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
+  /v1/charging:
+    get:
+      operationId: getChargingStatus
+      summary: Read charging pause state and the optional automatic threshold
+      responses:
+        "200":
+          description: Charging state and policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChargingStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
+    put:
+      operationId: updateCharging
+      summary: Pause, resume, enable or disable the bounded charging threshold
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChargingRequest"
+      responses:
+        "200":
+          description: Applied charging state and policy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChargingStatusResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
+  /v1/traffic/cycle:
+    put:
+      operationId: updateTrafficCycle
+      summary: Set the bounded stock traffic-accounting cycle and verify readback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TrafficCycleRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/WriteApplied"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
+  /v1/wifi/transaction:
+    post:
+      operationId: beginWifiTransaction
+      summary: Apply bounded Wi-Fi credentials with an independent rollback deadline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WifiTransactionRequest"
+      responses:
+        "200":
+          description: Wi-Fi settings are pending explicit confirmation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WifiTransactionResponse"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/StateConflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
+  /v1/wifi/transaction/confirm:
+    post:
+      operationId: confirmWifiTransaction
+      summary: Confirm one still-current Wi-Fi transaction before its rollback deadline
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WifiConfirmRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/WriteApplied"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/StateConflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque-256-bit
+  responses:
+    SessionCreated:
+      description: Scoped bearer session created
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/SessionResponse"
+    InvalidRequest:
+      description: Request body failed strict validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    PayloadTooLarge:
+      description: Authentication request body exceeds 64 KiB
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    AuthenticationFailed:
+      description: Authentication failed without an existence or replay oracle
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    Forbidden:
+      description: The valid session lacks scope or the request origin is not same-origin
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    OriginForbidden:
+      description: An explicit browser origin is not same-origin
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    TemporarilyLocked:
+      description: Password authentication is temporarily locked for this client address
+      headers:
+        Retry-After:
+          description: Seconds until this client may retry
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    PasswordNotConfigured:
+      description: Password setup must be completed through the maintenance CLI
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    AuthInternalError:
+      description: Authentication state could not be accessed safely
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    SourceUnavailable:
+      description: Required read-only source is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    Unsupported:
+      description: Capability is unsupported on this runtime
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    WriteApplied:
+      description: The bounded daily operation completed and passed readback where applicable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/WriteResultResponse"
+    DailySourceUnavailable:
+      description: A fixed B04 daily-management source or recovery step is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DailyErrorResponse"
+    StateConflict:
+      description: The operation conflicts with a current or expired transaction state
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/DailyErrorResponse"
+  schemas:
+    PasswordRequest:
+      type: object
+      additionalProperties: false
+      required: [password]
+      properties:
+        password:
+          type: string
+          writeOnly: true
+    SessionResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/SessionGrant"
+    SessionGrant:
+      type: object
+      additionalProperties: false
+      required: [token, token_type, scopes, idle_expires_in_seconds, absolute_expires_in_seconds]
+      properties:
+        token:
+          type: string
+          minLength: 43
+          maxLength: 43
+        token_type:
+          const: Bearer
+        scopes:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/Scope"
+        idle_expires_in_seconds:
+          type: integer
+          minimum: 300
+          maximum: 3600
+        absolute_expires_in_seconds:
+          type: integer
+          minimum: 300
+          maximum: 43200
+    Scope:
+      type: string
+      enum: [read, daily, admin, advanced]
+    ChallengeRequest:
+      type: object
+      additionalProperties: false
+      required: [credential_id]
+      properties:
+        credential_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+    ChallengeResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/ChallengeGrant"
+    ChallengeGrant:
+      type: object
+      additionalProperties: false
+      required: [challenge_id, message, expires_in_seconds]
+      properties:
+        challenge_id:
+          type: string
+        message:
+          type: string
+          description: >-
+            Base64url domain-separated bytes to sign exactly as received with
+            P-256 ECDSA and SHA-256
+        expires_in_seconds:
+          type: integer
+          const: 120
+    ChallengeVerifyRequest:
+      type: object
+      additionalProperties: false
+      required: [credential_id, challenge_id, signature]
+      properties:
+        credential_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        challenge_id:
+          type: string
+          minLength: 1
+          maxLength: 64
+        signature:
+          type: string
+          description: >-
+            Base64url WebCrypto raw 64-byte or Apple DER P-256 ECDSA/SHA-256
+            signature
+    PairRequest:
+      type: object
+      additionalProperties: false
+      required: [pairing_nonce, label, public_key_spki]
+      properties:
+        pairing_nonce:
+          type: string
+          minLength: 43
+          maxLength: 43
+          writeOnly: true
+        label:
+          type: string
+          minLength: 1
+          maxLength: 64
+        public_key_spki:
+          type: string
+          description: Base64url P-256 SubjectPublicKeyInfo DER
+    RegisteredCredentialResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/RegisteredCredential"
+    RegisteredCredential:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+    AuthErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          const: false
+        error:
+          $ref: "#/components/schemas/AuthError"
+    AuthError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum:
+            - authentication_failed
+            - insufficient_scope
+            - temporarily_locked
+            - invalid_request
+            - password_not_configured
+            - origin_forbidden
+            - internal_error
+            - not_found
+        message:
+          type: string
+        retry_after_seconds:
+          type: integer
+          minimum: 1
+    DeviceResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/Device"
+    Device:
+      type: object
+      additionalProperties: false
+      required: [manufacturer, model, adapter, firmware_target]
+      properties:
+        manufacturer:
+          type: string
+        model:
+          type: string
+        adapter:
+          type: string
+        firmware_target:
+          type: string
+        firmware_version:
+          type: string
+        hardware_version:
+          type: string
+    CapabilityResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/CapabilityReport"
+    CapabilityReport:
+      type: object
+      additionalProperties: false
+      required: [adapter, firmware_target, capabilities]
+      properties:
+        adapter:
+          type: string
+        firmware_target:
+          type: string
+        capabilities:
+          type: array
+          items:
+            $ref: "#/components/schemas/Capability"
+    Capability:
+      type: object
+      additionalProperties: false
+      required: [id, status, recovery]
+      properties:
+        id:
+          type: string
+          enum:
+            - device_identity
+            - system_status
+            - battery_status
+            - thermal_status
+            - signal_status
+            - cellular_status
+            - traffic_status
+            - wifi_status
+            - lan_clients
+            - sms_list
+        status:
+          $ref: "#/components/schemas/CapabilityStatus"
+        reason:
+          type: string
+        recovery:
+          $ref: "#/components/schemas/RecoveryMetadata"
+    CapabilityStatus:
+      type: string
+      enum: [available, degraded, unsupported]
+    RecoveryMetadata:
+      type: object
+      additionalProperties: false
+      required: [required]
+      properties:
+        required:
+          type: boolean
+        action:
+          type: string
+    SystemStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/SystemStatus"
+    SystemStatus:
+      type: object
+      additionalProperties: false
+      required: [hostname, uptime_seconds, load_average, kernel]
+      properties:
+        hostname:
+          type: string
+        uptime_seconds:
+          type: integer
+          minimum: 0
+        load_average:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: number
+        kernel:
+          type: string
+    BatteryStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/BatteryStatus"
+    BatteryStatus:
+      type: object
+      additionalProperties: false
+      required: [state, capacity_percent, voltage_mv, current_ma, temperature_c]
+      properties:
+        state:
+          type: string
+        capacity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        voltage_mv:
+          type: integer
+        current_ma:
+          type: integer
+        temperature_c:
+          type: number
+    ThermalStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/ThermalStatus"
+    ThermalStatus:
+      type: object
+      additionalProperties: false
+      required: [sensors]
+      properties:
+        sensors:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThermalSensor"
+    ThermalSensor:
+      type: object
+      additionalProperties: false
+      required: [sensor, temperature_c]
+      properties:
+        sensor:
+          type: string
+        temperature_c:
+          type: number
+    SignalStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/SignalStatus"
+    SignalStatus:
+      type: object
+      additionalProperties: false
+      required: [network_type, bars, roaming]
+      properties:
+        network_type:
+          type: string
+        provider:
+          type: string
+        bars:
+          type: integer
+          minimum: 0
+          maximum: 5
+        roaming:
+          type: boolean
+        active_band:
+          type: string
+        lte:
+          $ref: "#/components/schemas/RadioSignal"
+        nr5g:
+          $ref: "#/components/schemas/RadioSignal"
+    RadioSignal:
+      type: object
+      additionalProperties: false
+      properties:
+        band:
+          type: string
+        channel:
+          type: integer
+          minimum: 0
+        pci:
+          type: integer
+          minimum: 0
+        cell_id:
+          type: integer
+          minimum: 0
+        bandwidth:
+          type: string
+        rsrp_dbm:
+          type: integer
+        rsrq_db:
+          type: integer
+        rssi_dbm:
+          type: integer
+        snr_db:
+          type: number
+    CellularStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/CellularStatus"
+    CellularStatus:
+      type: object
+      additionalProperties: false
+      required: [connected, uptime_seconds, protocol, ipv4_addresses, ipv6_addresses]
+      properties:
+        connected:
+          type: boolean
+        uptime_seconds:
+          type: integer
+          minimum: 0
+        protocol:
+          type: string
+        interface:
+          type: string
+        ipv4_addresses:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+        ipv6_addresses:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+    TrafficStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/TrafficStatus"
+    TrafficStatus:
+      type: object
+      additionalProperties: false
+      required: [day, cycle, since_power_on, total, reset_day, reset_enabled]
+      properties:
+        day:
+          $ref: "#/components/schemas/TrafficPeriod"
+        cycle:
+          $ref: "#/components/schemas/TrafficPeriod"
+        since_power_on:
+          $ref: "#/components/schemas/TrafficPeriod"
+        total:
+          $ref: "#/components/schemas/TrafficPeriod"
+        reset_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+        reset_enabled:
+          type: boolean
+    TrafficPeriod:
+      type: object
+      additionalProperties: false
+      required: [rx_bytes, tx_bytes, rx_packets, tx_packets, time_seconds]
+      properties:
+        rx_bytes:
+          type: integer
+          minimum: 0
+        tx_bytes:
+          type: integer
+          minimum: 0
+        rx_packets:
+          type: integer
+          minimum: 0
+        tx_packets:
+          type: integer
+          minimum: 0
+        time_seconds:
+          type: integer
+          minimum: 0
+    WifiStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/WifiStatus"
+    WifiStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled, bands]
+      properties:
+        enabled:
+          type: boolean
+        bands:
+          type: array
+          maxItems: 2
+          items:
+            $ref: "#/components/schemas/WifiBandStatus"
+    WifiBandStatus:
+      type: object
+      additionalProperties: false
+      required: [band, enabled, ssid, hidden, encryption, channel, bandwidth]
+      properties:
+        band:
+          type: string
+        enabled:
+          type: boolean
+        ssid:
+          type: string
+        hidden:
+          type: boolean
+        encryption:
+          type: string
+        channel:
+          type: string
+        bandwidth:
+          type: string
+        transmit_power_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        clients:
+          type: integer
+          minimum: 0
+    LanClientsResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/LanClients"
+    LanClients:
+      type: object
+      additionalProperties: false
+      required: [clients]
+      properties:
+        clients:
+          type: array
+          maxItems: 256
+          items:
+            $ref: "#/components/schemas/LanClient"
+    LanClient:
+      type: object
+      additionalProperties: false
+      required: [hostname, ipv4_address, mac_address, expires_seconds]
+      properties:
+        hostname:
+          type: string
+        ipv4_address:
+          type: string
+        mac_address:
+          type: string
+        expires_seconds:
+          type: integer
+          minimum: 0
+    SmsPageResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/SmsPage"
+    SmsPage:
+      type: object
+      additionalProperties: false
+      required: [page, per_page, messages, omitted_messages]
+      properties:
+        page:
+          type: integer
+          minimum: 0
+        per_page:
+          type: integer
+          minimum: 1
+          maximum: 100
+        messages:
+          type: array
+          maxItems: 100
+          items:
+            $ref: "#/components/schemas/SmsMessage"
+        omitted_messages:
+          type: integer
+          minimum: 0
+          maximum: 100
+    SmsMessage:
+      type: object
+      additionalProperties: false
+      required: [id, sender, timestamp, content, content_truncated, read]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        sender:
+          type: string
+          maxLength: 64
+        timestamp:
+          type: string
+          maxLength: 64
+        content:
+          type: string
+          maxLength: 4096
+        content_truncated:
+          type: boolean
+        read:
+          type: boolean
+    SmsSendRequest:
+      type: object
+      additionalProperties: false
+      required: [recipient, message]
+      properties:
+        recipient:
+          type: string
+          minLength: 1
+          maxLength: 32
+          pattern: '^[0-9+*#]+$'
+        message:
+          type: string
+          minLength: 1
+          maxLength: 160
+    ChargingStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/ChargingStatus"
+    ChargingStatus:
+      type: object
+      additionalProperties: false
+      required: [capacity_percent, paused, hysteresis_percent]
+      properties:
+        capacity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        paused:
+          type: boolean
+        automatic_limit_percent:
+          type: integer
+          minimum: 50
+          maximum: 95
+        hysteresis_percent:
+          type: integer
+          const: 5
+    ChargingRequest:
+      type: object
+      additionalProperties: false
+      required: [operation]
+      properties:
+        operation:
+          type: string
+          enum: [pause, resume, set_limit, disable_limit]
+        limit_percent:
+          type: integer
+          minimum: 50
+          maximum: 95
+    TrafficCycleRequest:
+      type: object
+      additionalProperties: false
+      required: [reset_day, enabled]
+      properties:
+        reset_day:
+          type: integer
+          minimum: 1
+          maximum: 31
+        enabled:
+          type: boolean
+    WifiTransactionRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        ssid_2g:
+          type: string
+          minLength: 1
+          maxLength: 32
+        passphrase_2g:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 64
+        hidden_2g:
+          type: boolean
+        ssid_5g:
+          type: string
+          minLength: 1
+          maxLength: 32
+        passphrase_5g:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 64
+        hidden_5g:
+          type: boolean
+    WifiConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [transaction_id]
+      properties:
+        transaction_id:
+          type: string
+          minLength: 24
+          maxLength: 24
+    WifiTransactionResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/WifiTransactionGrant"
+    WifiTransactionGrant:
+      type: object
+      additionalProperties: false
+      required: [transaction_id, confirm_within_seconds]
+      properties:
+        transaction_id:
+          type: string
+          minLength: 24
+          maxLength: 24
+        confirm_within_seconds:
+          type: integer
+          const: 120
+    WriteResultResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/WriteResult"
+    WriteResult:
+      type: object
+      additionalProperties: false
+      required: [result]
+      properties:
+        result:
+          type: string
+          enum: [accepted, applied, committed]
+    DailyErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          const: false
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [invalid_request, state_conflict, source_unavailable]
+            message:
+              type: string
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          const: false
+        error:
+          $ref: "#/components/schemas/AdapterError"
+    AdapterError:
+      type: object
+      additionalProperties: false
+      required: [code, message, recovery]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        recovery:
+          $ref: "#/components/schemas/RecoveryMetadata"
