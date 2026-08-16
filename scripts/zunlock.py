@@ -2,7 +2,10 @@
 """zunlock.py — restore ADB/root on a ZTE MU5250 (U60 Pro) running locked
 firmware (HK B04 and similar), via the config backup/restore path.
 
-Self-contained (Python 3 stdlib + openssl CLI + adb optional). No secrets are
+Self-contained (Python 3 stdlib + adb optional). Backup crypto uses the
+`cryptography` package when available (pure Python, no openssl binary
+needed — this is how the installer app runs on Windows) and falls back to
+the openssl CLI otherwise. No secrets are
 embedded: the backup-key suffix is provided by the user at runtime, and the
 USB-debug sysfs path is discovered from the device's own backup.
 
@@ -108,10 +111,65 @@ class Router:
 
 # ---------- backup package ----------
 
+class UnlockError(Exception):
+    """Fatal unlock failure (bad suffix, unexpected backup layout, ...)."""
+
+
+def _evp_bytes_to_key(password, salt, key_len=24, iv_len=8):
+    """openssl EVP_BytesToKey with SHA-256 (matches `openssl enc -md sha256`)."""
+    out, block = b"", b""
+    while len(out) < key_len + iv_len:
+        block = hashlib.sha256(block + password + salt).digest()
+        out += block
+    return out[:key_len], out[key_len:key_len + iv_len]
+
+
+def _py_crypt(data, password, encrypt):
+    """openssl-compatible `enc -des-ede3-cbc -md sha256` (Salted__ container).
+
+    Raises ValueError on decrypt with wrong password / corrupt input.
+    """
+    from cryptography.hazmat.primitives.ciphers import Cipher, modes
+    try:  # cryptography >= 43 location (avoids the deprecation warning)
+        from cryptography.hazmat.decrepit.ciphers.algorithms import TripleDES
+    except ImportError:
+        from cryptography.hazmat.primitives.ciphers.algorithms import TripleDES
+    if encrypt:
+        salt = os.urandom(8)
+        key, iv = _evp_bytes_to_key(password.encode(), salt)
+        pad = 8 - len(data) % 8
+        padded = data + bytes([pad]) * pad
+        op = Cipher(TripleDES(key), modes.CBC(iv)).encryptor()
+        return b"Salted__" + salt + op.update(padded) + op.finalize()
+    if data[:8] != b"Salted__" or len(data) < 24 or (len(data) - 16) % 8:
+        raise ValueError("not an openssl enc file")
+    key, iv = _evp_bytes_to_key(password.encode(), data[8:16])
+    op = Cipher(TripleDES(key), modes.CBC(iv)).decryptor()
+    padded = op.update(data[16:]) + op.finalize()
+    pad = padded[-1]
+    if not 1 <= pad <= 8 or padded[-pad:] != bytes([pad]) * pad:
+        raise ValueError("bad padding (wrong password)")
+    return padded[:-pad]
+
+
 def openssl(direction, src, dst, password):
-    subprocess.run(["openssl", "enc", "-des-ede3-cbc", f"-{direction}",
-                    "-md", "sha256", "-pass", f"pass:{password}",
-                    "-in", src, "-out", dst], check=True)
+    """Encrypt/decrypt with the `cryptography` package, else openssl CLI.
+
+    Raises subprocess.CalledProcessError on failure either way (callers
+    already handle that as "wrong suffix").
+    """
+    try:
+        data = open(src, "rb").read()
+        out = _py_crypt(data, password, encrypt=(direction == "e"))
+    except ImportError:
+        subprocess.run(["openssl", "enc", "-des-ede3-cbc", f"-{direction}",
+                        "-md", "sha256", "-pass", f"pass:{password}",
+                        "-in", src, "-out", dst], check=True)
+        return
+    except ValueError as e:
+        raise subprocess.CalledProcessError(1, ["openssl", direction]) from e
+    with open(dst, "wb") as f:
+        f.write(out)
 
 
 def read_outer(path):
@@ -123,7 +181,7 @@ def read_outer(path):
     return inner, members
 
 
-def patch_outer(src, dst):
+def patch_outer(src, dst, log=print):
     _, members = read_outer(src)
     out, rc = [], None
     for m, data in members:
@@ -132,18 +190,18 @@ def patch_outer(src, dst):
             continue
         out.append((m, data))
     if rc is None:
-        sys.exit(f"error: {RC_LOCAL} not found in backup (unexpected)")
+        raise UnlockError(f"{RC_LOCAL} not found in backup (unexpected)")
     m, data = rc
     text = data.decode("utf-8", "replace")
 
     # discover the usb-debug node from the device's own rc.local
     hits = re.findall(r"/sys/[^\s`\"']*usb_op[^\s`\"']*", text)
     if not hits:
-        sys.exit("error: no usb_op node found in stock rc.local — "
-                 "this firmware may differ; inspect the backup manually")
+        raise UnlockError("no usb_op node found in stock rc.local — "
+                          "this firmware may differ; inspect the backup manually")
     payload = f"echo 1 > {hits[0]}"
     if payload in text:
-        sys.exit("rc.local already contains the payload — nothing to do")
+        raise UnlockError("rc.local already contains the payload — nothing to do")
 
     lines = text.splitlines()
     for i, line in enumerate(lines):
@@ -155,7 +213,7 @@ def patch_outer(src, dst):
     new = ("\n".join(lines) + "\n").encode()
     m.size = len(new)
     out.append((m, new))
-    print(f"[+] payload after shebang: {payload}")
+    log(f"[+] payload after shebang: {payload}")
 
     ibuf = io.BytesIO()
     with tarfile.open(fileobj=ibuf, mode="w:gz") as t:
@@ -178,6 +236,87 @@ def patch_outer(src, dst):
 
 # ---------- main ----------
 
+def run_unlock(gw, pw, suffix, *, dry_run=False, yes=False, work=None,
+               log=print, confirm=None):
+    """Full unlock flow, callable from the installer app.
+
+    log(msg) receives progress lines; confirm() -> bool gates the
+    upload/restore (defaults to an interactive y/N prompt). Raises
+    UnlockError on any fatal problem. Returns the work directory.
+    """
+    work = work or tempfile.mkdtemp(prefix="zunlock-")
+    os.makedirs(work, exist_ok=True)
+    log(f"[*] work dir: {work}")
+
+    r = Router(gw, pw)
+    log("[*] logging in...")
+    try:
+        r.login()
+    except Exception as e:
+        raise UnlockError(f"router login failed (wrong admin password? "
+                          f"device unreachable?): {e}") from e
+    imei = r.call("zwrt_web", "device_info", {})[0]["result"][1]["imei"]
+    log(f"[+] device IMEI: {imei[:6]}*********")
+
+    log("[*] requesting fresh config backup...")
+    res = r.call("zwrt_mc.device.manager", "device_backup_proc",
+                 {"procType": "web"})
+    if res[0]["result"][0] != 0:
+        raise UnlockError(f"backup_proc failed: {res}")
+    time.sleep(2)
+    enc_orig = os.path.join(work, "back_parameter.orig")
+    with open(enc_orig, "wb") as f:
+        f.write(r.get("/backup/back_parameter"))
+    log(f"[+] backup downloaded: {os.path.getsize(enc_orig)} bytes")
+
+    password = imei + suffix
+    outer = os.path.join(work, "outer.tgz")
+    log("[*] decrypting (des-ede3-cbc/sha256)...")
+    try:
+        openssl("d", enc_orig, outer, password)
+    except subprocess.CalledProcessError:
+        raise UnlockError("decryption failed — wrong suffix for this "
+                          "device/firmware") from None
+
+    patched = os.path.join(work, "outer.patched.tgz")
+    patch_outer(outer, patched, log=log)
+    enc_new = os.path.join(work, "back_parameter.patched")
+    openssl("e", patched, enc_new, password)
+    data = open(enc_new, "rb").read()
+    sha = hashlib.sha256(data).hexdigest()
+    log(f"[+] patched package ready: {len(data)} bytes, sha256 {sha[:16]}...")
+
+    if dry_run:
+        log(f"[*] dry-run: stopping before upload. Artifacts in {work}")
+        return work
+
+    if not yes:
+        log("")
+        log("*** About to upload the patched backup and trigger restore.")
+        log("*** The device will apply settings and REBOOT (~90s offline).")
+        proceed = confirm() if confirm else \
+            input("Proceed? [y/N] ").strip().lower() == "y"
+        if not proceed:
+            raise UnlockError("aborted by user; artifacts kept in " + work)
+
+    log("[*] uploading...")
+    resp = r.upload(data)
+    log(f"[+] upload response: {resp}")
+    if resp.get("sha256sum") != sha:
+        raise UnlockError("sha256 mismatch after upload — aborting before restore")
+
+    log("[*] triggering restore + reboot...")
+    res = r.call("zwrt_mc.device.manager", "device_restore_proc",
+                 {"procType": "web"})
+    if res[0]["result"][0] != 0:
+        raise UnlockError(f"restore trigger failed: {res}")
+
+    log("")
+    log("[+] Restore triggered. The device is rebooting.")
+    log("    In ~60-90s adbd is up and the deploy steps can continue.")
+    return work
+
+
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -195,69 +334,16 @@ def main():
     suffix = args.suffix or os.environ.get("ZTE_BACKUP_SUFFIX") or \
         getpass.getpass("Backup-key suffix: ")
 
-    work = args.keep_work or tempfile.mkdtemp(prefix="zunlock-")
-    os.makedirs(work, exist_ok=True)
-    print(f"[*] work dir: {work}")
-
-    r = Router(args.gw, pw)
-    print("[*] logging in...")
-    r.login()
-    imei = r.call("zwrt_web", "device_info", {})[0]["result"][1]["imei"]
-    print(f"[+] device IMEI: {imei[:6]}*********")
-
-    print("[*] requesting fresh config backup...")
-    res = r.call("zwrt_mc.device.manager", "device_backup_proc",
-                 {"procType": "web"})
-    if res[0]["result"][0] != 0:
-        sys.exit(f"backup_proc failed: {res}")
-    time.sleep(2)
-    enc_orig = os.path.join(work, "back_parameter.orig")
-    with open(enc_orig, "wb") as f:
-        f.write(r.get("/backup/back_parameter"))
-    print(f"[+] backup downloaded: {os.path.getsize(enc_orig)} bytes")
-
-    password = imei + suffix
-    outer = os.path.join(work, "outer.tgz")
-    print("[*] decrypting (des-ede3-cbc/sha256)...")
     try:
-        openssl("d", enc_orig, outer, password)
-    except subprocess.CalledProcessError:
-        sys.exit("decryption failed — wrong suffix for this device/firmware")
-
-    patched = os.path.join(work, "outer.patched.tgz")
-    patch_outer(outer, patched)
-    enc_new = os.path.join(work, "back_parameter.patched")
-    openssl("e", patched, enc_new, password)
-    data = open(enc_new, "rb").read()
-    sha = hashlib.sha256(data).hexdigest()
-    print(f"[+] patched package ready: {len(data)} bytes, sha256 {sha[:16]}...")
-
-    if args.dry_run:
-        print("[*] --dry-run: stopping before upload. Artifacts in", work)
-        return
-
-    if not args.yes:
-        print("\n*** About to upload the patched backup and trigger restore.")
-        print("*** The device will apply settings and REBOOT (~90s offline).")
-        if input("Proceed? [y/N] ").strip().lower() != "y":
-            sys.exit("aborted; artifacts kept in " + work)
-
-    print("[*] uploading...")
-    resp = r.upload(data)
-    print(f"[+] upload response: {resp}")
-    if resp.get("sha256sum") != sha:
-        sys.exit("sha256 mismatch after upload — aborting before restore")
-
-    print("[*] triggering restore + reboot...")
-    res = r.call("zwrt_mc.device.manager", "device_restore_proc",
-                 {"procType": "web"})
-    if res[0]["result"][0] != 0:
-        sys.exit(f"restore trigger failed: {res}")
-
-    print("\n[+] Restore triggered. The device is rebooting.")
-    print("    In ~60–90s, run:  adb devices")
-    print("    You should see a device (serial 0123456789ABCDEF).")
-    print("    Then deploy your agent / dropbear as usual — see docs/DEPLOYMENT.md.")
+        run_unlock(args.gw, pw, suffix, dry_run=args.dry_run, yes=args.yes,
+                   work=args.keep_work)
+    except UnlockError as e:
+        sys.exit(str(e))
+    if not args.dry_run:
+        print("    Run:  adb devices")
+        print("    You should see a device (serial 0123456789ABCDEF).")
+        print("    Then deploy your agent / dropbear as usual — see "
+              "docs/DEPLOYMENT.md.")
 
 
 if __name__ == "__main__":

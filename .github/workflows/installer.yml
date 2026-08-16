@@ -1,0 +1,65 @@
+name: Installer
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  bundle:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            asset: mu5250-installer-macos.zip
+            pt: darwin
+          - os: ubuntu-latest
+            asset: mu5250-installer-linux.zip
+            pt: linux
+          - os: windows-latest
+            asset: mu5250-installer-windows.zip
+            pt: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r installer/requirements.txt
+
+      - name: Fetch platform-tools (adb)
+        shell: bash
+        run: |
+          curl -sfL "https://dl.google.com/android/repository/platform-tools-latest-${{ matrix.pt }}.zip" -o pt.zip
+          python -c "import zipfile; zipfile.ZipFile('pt.zip').extractall('installer/assets')"
+
+      - name: Bundle with PyInstaller
+        run: >
+          pyinstaller --onedir --noconsole --name mu5250-installer
+          --paths scripts
+          --hidden-import cryptography
+          --add-data "installer/assets/platform-tools:platform-tools"
+          installer/app.py
+
+      - name: Zip bundle
+        shell: bash
+        run: |
+          python -c "import shutil; shutil.make_archive('bundle', 'zip', 'dist', 'mu5250-installer')"
+          mv bundle.zip "${{ matrix.asset }}"
+
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for i in $(seq 1 30); do
+            gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 && break
+            sleep 10
+          done
+          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" --clobber

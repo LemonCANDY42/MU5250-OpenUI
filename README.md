@@ -96,6 +96,7 @@ zte-script-ng.js      community-vetted reference of safe ubus calls
 | [docs/AGENT.md](docs/AGENT.md) | agent architecture, endpoint reference, safety constraints |
 | [docs/DASHBOARD.md](docs/DASHBOARD.md) | dashboard pages, source layout, dev + local demo |
 | [docs/SAFETY.md](docs/SAFETY.md) | **read first** — brick-prevention rules, daemon sync barrier, recovery commands, safety audit |
+| [docs/EMULATION.md](docs/EMULATION.md) | boot the stock firmware in QEMU and test the agent/dashboard against it |
 | [docs/reference/](docs/reference/) | device reference material (rpcd ACL dump, USB mode findings) |
 
 ## Safety in one paragraph

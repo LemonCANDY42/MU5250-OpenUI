@@ -8,8 +8,13 @@ device_report.json
 ubus_probe_report.json
 node_modules/
 *.local.json
+firmware
 
 # Local-only secrets / investigation artifacts (never push)
 /adb-lock-investigation.md
 /back_parameter
 /loopdebug-capture/
+installer/assets/platform-tools/
+build/
+dist/
+*.spec
