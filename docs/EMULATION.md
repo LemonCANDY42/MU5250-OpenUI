@@ -82,7 +82,11 @@ Stubbed or absent (hardware-dependent):
 - `zwrt_bsp.thermal` — real daemon exits without `/sys/class/thermal/*`; stub
   returns `{"cpu_temp": 42}`. Battery/charger values come back as `-2`
   (firmware's own "unavailable" sentinel) since QEMU has no power-supply sysfs.
-- SMS send/receive — `zwrt_wms` registers but has no modem behind it.
+- The stock `zwrt_wms` still registers without modem hardware and remains
+  available for read-only comparison. Agent/dashboard SMS tests use the
+  separate emulator-only `zte_agent_emu_wms` object, selected through
+  `ZTE_AGENT_WMS_OBJECT`; it implements the same list/send/status/tag/delete
+  payloads without shadowing or changing the stock daemon.
 - Wi-Fi radios — no cfg80211 hardware in the VM.
 
 ## Stock web UI fidelity

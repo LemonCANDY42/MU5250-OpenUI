@@ -14,7 +14,7 @@ function normalizeConfiguredChannel(channel?: string) {
 
 function formatBandwidthMode(mode?: string) {
   if (!mode) return '\u2014'
-  if (mode.startsWith('HT')) return `${mode.replace('HT', '')} MHz`
+  if (/^(EHT|HE|VHT|HT)\d+$/.test(mode)) return `${mode.replace(/^(EHT|HE|VHT|HT)/, '')} MHz (${mode.match(/^(EHT|HE|VHT|HT)/)?.[0]})`
   return mode
 }
 
@@ -81,7 +81,7 @@ function BandCard({
     setPassword(band.password ?? '')
     setPasswordDirty(false)
     setChannel(normalizeConfiguredChannel(band.configuredChannel))
-    setHtmode((band.configuredBandwidth ?? '').startsWith('HT') ? (band.configuredBandwidth ?? '') : '')
+    setHtmode(band.configuredBandwidth ?? '')
     setTxpower('')
     setHidden(band.hidden)
   }, [band])
@@ -94,8 +94,8 @@ function BandCard({
         [`hidden_${suffix}`]: hidden ? '1' : '0',
       }
       if (passwordDirty) settings[`key_${suffix}`] = password
-      if (channel) settings[`channel_${suffix}`] = channel
-      if (htmode) settings[`htmode_${suffix}`] = htmode
+      if (channel && channel !== normalizeConfiguredChannel(band.configuredChannel)) settings[`channel_${suffix}`] = channel
+      if (htmode && htmode !== band.configuredBandwidth) settings[`htmode_${suffix}`] = htmode
       if (txpower) settings[`txpower_${suffix}`] = txpower
       await api.wifiSet(settings)
       toast('Saved — Wi-Fi may reconnect')
@@ -127,7 +127,7 @@ function BandCard({
     suffix === '2g'
       ? ['auto', '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', '11', '12', '13']
       : ['auto', '36', '40', '44', '48', '52', '56', '60', '64', '100', '104', '108', '112', '116', '120', '124', '128', '132', '136', '140', '144', '149', '153', '157', '161', '165']
-  const htmodes = suffix === '2g' ? ['HT20', 'HT40'] : ['HT20', 'HT40', 'HT80', 'HT160']
+  const htmodes = band.bandwidthOptions?.length ? band.bandwidthOptions : [band.configuredBandwidth].filter(Boolean) as string[]
   const configuredChannel = normalizeConfiguredChannel(band.configuredChannel)
   const insights = getBandInsights(suffix, band)
 
@@ -150,7 +150,7 @@ function BandCard({
                 setPassword(band.password ?? '')
                 setPasswordDirty(false)
                 setChannel(normalizeConfiguredChannel(band.configuredChannel))
-                setHtmode((band.configuredBandwidth ?? '').startsWith('HT') ? (band.configuredBandwidth ?? '') : '')
+                setHtmode(band.configuredBandwidth ?? '')
                 setTxpower('')
                 setHidden(band.hidden)
               }}
@@ -214,7 +214,7 @@ function BandCard({
                 <Select value={htmode} onChange={(e) => setHtmode(e.target.value)}>
                   {htmodes.map((m) => (
                     <option key={m} value={m}>
-                      {m.replace('HT', '')} MHz
+                      {formatBandwidthMode(m)}
                     </option>
                   ))}
                 </Select>
@@ -366,6 +366,11 @@ export default function WifiTab() {
         {wifi.wifi6_supported && (
           <div className="mt-3 border-t border-line/8 pt-3">
             <Chip tone={wifi.wifi6_enabled ? 'ok' : 'default'}>Wi-Fi 6 {wifi.wifi6_enabled ? 'enabled' : 'disabled'}</Chip>
+          </div>
+        )}
+        {wifi.wifi7_supported && (
+          <div className="mt-3 border-t border-line/8 pt-3">
+            <Chip tone="ok">Wi-Fi 7 / 802.11be supported</Chip>
           </div>
         )}
       </Card>

@@ -61,8 +61,9 @@ zte_topsw_jwxk_query, zte_topsw_tr069_sub, zte_mqtt_sdk_st,
 zte_topsw_dua, zte-topsw-tunnel
 ```
 
-The agent's `kill-bloat` endpoint (`agent/src/system.rs` `BLOAT_PROCESSES`)
-deliberately contains only the safe list. Do not add daemon.conf names to it
+The agent's `kill-bloat` endpoint (`agent/src/system.rs` `SAFE_OPTIONAL_DAEMONS`)
+contains only the safe list and subtracts the live daemon.conf barrier at
+runtime. An unreadable or empty barrier blocks the operation. Do not add daemon.conf names to it
 (killing `zte_topsw_wms` breaks SMS, `zte_topsw_sleep_faw` breaks wakelocks,
 and procd will respawn them anyway).
 
@@ -199,8 +200,8 @@ regained and this is deployed again.
 ## 4. v2.1 features ported, and what was deliberately NOT ported
 
 Ported (safe, gated): charge control (`zwrt_bsp.charger`, inverted semantics
-handled), USB powerbank (`zwrt_bsp.powerbank set`), SMS sqlite-delete
-fallback for SIM-stored messages, `/api/at/port`, WiFi dual UCI namespace
+handled), USB powerbank (`zwrt_bsp.powerbank set`), firmware WMS SMS translation
+with readiness gating (no direct database writes), `/api/at/port`, WiFi dual UCI namespace
 (`zte_mbb.wifi.*` + `wireless.zte_mbb.*`) with guest-time read.
 
 **Rejected from v2.1 (safety regressions):**

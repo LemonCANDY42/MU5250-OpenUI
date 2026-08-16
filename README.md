@@ -53,12 +53,33 @@ Browser ── HTTP/JSON ──► React dashboard (:8080, uhttpd, /data/www)
 | **Home** | live signal, modem mode, throughput, battery, connection, device info and data usage from a single batched poll |
 | **Signal** | per-carrier LTE/NR detail (PCI, ARFCN, RSRP/RSRQ/SINR), network mode, band lock, one-tap cell lock from live cells |
 | **Network** | clients by Wi-Fi/USB-C/Ethernet with link details, per-band Wi-Fi configuration, LAN/DHCP and DNS |
-| **Modem** | APN profiles with carrier presets, data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
+| **Modem** | manual APN profiles, data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
 | **System** | thermals, battery health, charge control (stop/resume + limit enforcer), signal/connection loggers, AT console, on-demand process list, device/SIM info, USB mode + powerbank, power actions |
 
 Details: [docs/DASHBOARD.md](docs/DASHBOARD.md) (pages, source layout, local
 demo without hardware) and [docs/AGENT.md](docs/AGENT.md) (endpoint
-reference, 55 paths).
+reference, 57 paths).
+
+## Emulated-device validation
+
+The agent/dashboard contracts and safety-sensitive settings are optimised and
+regression-tested against the stock MU5250 firmware running in QEMU. The
+guarded suite covers optional-service stopping, LAN/DHCP, network modes and
+LTE/NR bands, Wi-Fi 7 EHT bandwidth, unavailable sensor values, manual APNs,
+firmware WMS SMS operations and the read-only AT allowlist. Every mutating
+check restores its original emulated-device state.
+
+Run it after starting the emulator:
+
+```sh
+python3 scripts/test-emulator-fixes.py \
+  --base-url http://127.0.0.1:9090 \
+  --password emu-test-password
+```
+
+QEMU exercises the real firmware userland and UBUS contracts, but cannot
+replace final hardware checks for radios, sensors or the physical modem. See
+[docs/EMULATION.md](docs/EMULATION.md) for the exact fidelity boundaries.
 
 ## Quick start
 

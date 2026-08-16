@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -419,21 +419,56 @@ fn read_sysfs_u64(path: &str) -> Option<u64> {
 
 // -- Process monitor --
 
-/// Known bloat daemons (from daemon-cleanup.md).
-const BLOAT_DAEMONS: &[&str] = &[
-    "zte_topsw_tr069",
+/// Optional services documented as safe to stop in `docs/SAFETY.md`.
+///
+/// This allowlist is only the first safety gate.  At runtime we also parse the
+/// firmware's daemon synchronization barrier and exclude every process it
+/// names.  If that file cannot be read, stopping services fails closed.
+const SAFE_OPTIONAL_DAEMONS: &[&str] = &[
     "zte_topsw_tr069_sub",
-    "zte_topsw_fota_result",
     "zte_mqtt_sdk_st",
     "zte_topsw_diag",
     "zte_topsw_samba",
     "zte_topsw_nfc",
-    "zte_smart_manage",
     "zte_topsw_get_brand",
     "zte_topsw_jwxk_query",
     "zte-topsw-tunnel",
-    "zte_dua",
+    "zte_topsw_dua",
 ];
+
+const DAEMON_SYNC_CONFIG: &str = "/etc/config/zte_topsw_daemon.conf";
+
+fn parse_daemon_sync_config(content: &str) -> HashSet<String> {
+    content
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let columns: Vec<&str> = line.split_whitespace().collect();
+            if columns.first().copied() == Some("sync") && columns.len() >= 3 {
+                columns.last().map(|name| (*name).to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn protected_daemons(path: &str) -> Result<HashSet<String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("cannot verify firmware daemon safety barrier: {e}"))?;
+    let protected = parse_daemon_sync_config(&content);
+    if protected.is_empty() {
+        return Err("firmware daemon safety barrier contained no sync entries".to_string());
+    }
+    Ok(protected)
+}
+
+fn is_safe_optional_daemon(name: &str, protected: &HashSet<String>) -> bool {
+    SAFE_OPTIONAL_DAEMONS.contains(&name) && !protected.contains(name)
+}
 
 #[derive(Serialize, Clone)]
 pub struct ProcessEntry {
@@ -495,6 +530,9 @@ impl ProcessTracker {
     }
 
     fn sample_fresh(&self) -> ProcessListResult {
+        // An unreadable or malformed barrier deliberately produces no
+        // stop-eligible processes in the UI.
+        let protected = protected_daemons(DAEMON_SYNC_CONFIG).ok();
         let total_ticks = read_total_cpu_ticks();
         let mut prev = self.prev.safe_lock();
         let (prev_per_pid, prev_total) = &*prev;
@@ -580,7 +618,9 @@ impl ProcessTracker {
                 });
 
             let display_name = cmdline_name.as_deref().unwrap_or(&comm);
-            let is_bloat = BLOAT_DAEMONS.iter().any(|&b| display_name == b);
+            let is_bloat = protected
+                .as_ref()
+                .is_some_and(|names| is_safe_optional_daemon(display_name, names));
 
             let state_desc = match state_char.as_str() {
                 "R" => "running",
@@ -655,8 +695,10 @@ fn read_total_cpu_ticks() -> u64 {
     0
 }
 
-/// Kill bloat daemons. If `pids` is None, kill all running bloat.
-pub fn kill_bloat(pids: Option<&[u32]>) -> KillBloatResult {
+/// Gracefully stop optional daemons. If `pids` is None, stop every running
+/// allowlisted process. The firmware sync barrier is always authoritative.
+pub fn kill_bloat(pids: Option<&[u32]>) -> Result<KillBloatResult, String> {
+    let protected = protected_daemons(DAEMON_SYNC_CONFIG)?;
     let mut killed = Vec::new();
     let mut skipped = Vec::new();
     let mut freed_rss_kb: u64 = 0;
@@ -674,11 +716,11 @@ pub fn kill_bloat(pids: Option<&[u32]>) -> KillBloatResult {
             let proc_dir = match fs::read_dir("/proc") {
                 Ok(d) => d,
                 Err(_) => {
-                    return KillBloatResult {
+                    return Ok(KillBloatResult {
                         killed,
                         skipped,
                         freed_rss_kb,
-                    }
+                    })
                 }
             };
             proc_dir
@@ -686,7 +728,7 @@ pub fn kill_bloat(pids: Option<&[u32]>) -> KillBloatResult {
                 .filter_map(|entry| {
                     let pid: u32 = entry.file_name().to_string_lossy().parse().ok()?;
                     let (name, rss) = read_proc_name_rss(pid)?;
-                    if BLOAT_DAEMONS.iter().any(|&b| b == name) {
+                    if is_safe_optional_daemon(&name, &protected) {
                         Some((pid, name, rss))
                     } else {
                         None
@@ -697,11 +739,13 @@ pub fn kill_bloat(pids: Option<&[u32]>) -> KillBloatResult {
     };
 
     for (pid, name, rss_kb) in targets {
-        if !BLOAT_DAEMONS.iter().any(|&b| b == name) {
+        // Re-check the name read from /proc immediately before signalling it.
+        // This protects explicit PID requests and PID reuse races alike.
+        if !is_safe_optional_daemon(&name, &protected) {
             skipped.push(KilledProcess { pid, name });
             continue;
         }
-        let ret = unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        let ret = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
         if ret == 0 {
             freed_rss_kb += rss_kb;
             killed.push(KilledProcess { pid, name });
@@ -710,11 +754,11 @@ pub fn kill_bloat(pids: Option<&[u32]>) -> KillBloatResult {
         }
     }
 
-    KillBloatResult {
+    Ok(KillBloatResult {
         killed,
         skipped,
         freed_rss_kb,
-    }
+    })
 }
 
 fn read_proc_name_rss(pid: u32) -> Option<(String, u64)> {
@@ -819,5 +863,28 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["cpu_pct", "is_bloat", "name", "pid", "rss_kb", "state"]
         );
+    }
+
+    #[test]
+    fn daemon_sync_parser_only_accepts_active_sync_rows() {
+        let parsed = parse_daemon_sync_config(
+            "# comment\nsync ALL zte_router\n sync  ALL  zte_topsw_wms \nstart ALL ignored\n",
+        );
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed.contains("zte_router"));
+        assert!(parsed.contains("zte_topsw_wms"));
+    }
+
+    #[test]
+    fn optional_daemon_must_not_cross_firmware_barrier() {
+        let protected = HashSet::from([
+            "zte_topsw_diag".to_string(),
+            "zte_topsw_wms".to_string(),
+        ]);
+        assert!(!is_safe_optional_daemon("zte_topsw_diag", &protected));
+        assert!(!is_safe_optional_daemon("zte_topsw_wms", &protected));
+        assert!(is_safe_optional_daemon("zte_topsw_samba", &protected));
+        assert!(!is_safe_optional_daemon("zte_topsw_fota_result", &protected));
+        assert!(!is_safe_optional_daemon("zte_smart_manage", &protected));
     }
 }

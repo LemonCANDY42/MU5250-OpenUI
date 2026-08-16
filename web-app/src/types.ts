@@ -143,6 +143,8 @@ export interface WifiBand {
   bandwidth?: string
   configuredChannel?: string
   configuredBandwidth?: string
+  bandwidthOptions?: string[]
+  supportedStandards?: string
   actualChannel?: number
   actualBandwidth?: string
   password?: string
@@ -159,6 +161,7 @@ export interface WifiAll {
   master_enabled: boolean
   wifi6_supported: boolean
   wifi6_enabled?: boolean
+  wifi7_supported: boolean
 }
 
 export interface DnsConfig {
@@ -169,11 +172,19 @@ export interface DnsConfig {
 }
 
 export interface LanConfig {
-  ip: string
+  ipaddr: string
   netmask: string
+  dhcp_enabled: boolean
   dhcp_start: string
   dhcp_end: string
-  dhcp_lease: string
+  lease_seconds: number
+}
+
+export interface ModemCapabilities {
+  network_modes: { value: string; label: string }[]
+  lte_bands: number[]
+  nr_sa_bands: number[]
+  nr_nsa_band_lock_supported: boolean
 }
 
 export interface ThermalInfo {
@@ -181,6 +192,7 @@ export interface ThermalInfo {
 }
 
 export interface ThermalAll {
+  available: boolean
   cpu_0?: number
   cpu_1?: number
   cpu_2?: number
@@ -199,36 +211,41 @@ export interface ThermalAll {
 }
 
 export interface BatteryBspInfo {
-  online: boolean
-  low_power: boolean
-  using_hw_fg_chip: boolean
-  time_to_full_mins?: number
-  time_to_empty_mins?: number
+  available: boolean
+  online: boolean | null
+  low_power: boolean | null
+  using_hw_fg_chip: boolean | null
+  time_to_full_mins: number | null
+  time_to_empty_mins: number | null
 }
 
 export interface BatteryDetail {
-  capacity: number
-  status: string
-  voltage_mv: number
-  voltage_max_mv: number
-  voltage_ocv_mv: number
-  current_ma: number
-  power_mw: number
-  temperature_c: number
-  charge_type: string
-  health: string
-  cycle_count: number
-  charge_counter_mah: number
-  charge_full_mah: number
-  charge_full_design_mah: number
-  time_to_full_secs: number
-  time_to_empty_secs: number
+  available: boolean
+  capacity: number | null
+  status: string | null
+  voltage_mv: number | null
+  voltage_max_mv: number | null
+  voltage_ocv_mv: number | null
+  current_ma: number | null
+  power_mw: number | null
+  temperature_c: number | null
+  charge_type: string | null
+  health: string | null
+  cycle_count: number | null
+  charge_counter_mah: number | null
+  charge_full_mah: number | null
+  charge_full_design_mah: number | null
+  time_to_full_secs: number | null
+  time_to_empty_secs: number | null
 }
 
 export interface ChargeControlState {
-  charging_stopped: boolean
-  battery_status: string
-  capacity: number
+  available: boolean
+  battery_available: boolean
+  charger_available: boolean
+  charging_stopped: boolean | null
+  battery_status: string | null
+  capacity: number | null
   charge_limit_enabled: boolean
   charge_limit: number
   hysteresis: number
@@ -278,10 +295,18 @@ export interface SmsMessage {
   number: string
   content: string
   date?: string
-  /** 0=unread, 1=read, 2=sent, 3=draft */
+  /** Firmware tags: 0=received/read, 1=received/unread, 2=sent, 3=failed, 4=draft. */
   tag: number
-  /** 0=SIM, 1=NV device storage */
+  /** Firmware storage: 1=native/NV device storage. */
   mem_store?: number
+}
+
+export interface SmsCapabilities {
+  available: boolean
+  ready: boolean
+  object: string
+  storage?: string
+  reason?: string
 }
 
 /** One row of `GET /api/system/top` — mirrors agent/src/system.rs::ProcessEntry. */

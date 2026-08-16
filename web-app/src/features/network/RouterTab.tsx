@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../data/api'
 import type { DnsConfig, LanConfig } from '../../types'
-import { Button, Field, Input } from '../../ui/controls'
+import { Button, Field, Input, Toggle } from '../../ui/controls'
 import { toast, toastError } from '../../ui/feedback'
 import { Card } from '../../ui/primitives'
 
@@ -79,7 +79,14 @@ function DnsSection() {
 }
 
 function LanSection() {
-  const [lan, setLan] = useState<LanConfig>({ ip: '', netmask: '', dhcp_start: '', dhcp_end: '', dhcp_lease: '' })
+  const [lan, setLan] = useState<LanConfig>({
+    ipaddr: '',
+    netmask: '',
+    dhcp_enabled: true,
+    dhcp_start: '',
+    dhcp_end: '',
+    lease_seconds: 86400,
+  })
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -90,11 +97,12 @@ function LanSection() {
     setBusy(true)
     try {
       await api.lanSet({
-        lan_ipaddr: lan.ip,
-        lan_netmask: lan.netmask,
+        ipaddr: lan.ipaddr,
+        netmask: lan.netmask,
+        dhcp_enabled: lan.dhcp_enabled,
         dhcp_start: lan.dhcp_start,
         dhcp_end: lan.dhcp_end,
-        dhcp_lease_time: lan.dhcp_lease,
+        lease_seconds: lan.lease_seconds,
       })
       toast('LAN settings saved')
     } catch (e) {
@@ -108,20 +116,35 @@ function LanSection() {
     <Card title="LAN / DHCP">
       <div className="grid grid-cols-1 gap-2.5 lg:grid-cols-2">
         <Field label="LAN IP">
-          <Input value={lan.ip} onChange={(e) => setLan((l) => ({ ...l, ip: e.target.value }))} inputMode="numeric" />
+          <Input value={lan.ipaddr} onChange={(e) => setLan((l) => ({ ...l, ipaddr: e.target.value }))} inputMode="numeric" />
         </Field>
         <Field label="Netmask">
           <Input value={lan.netmask} onChange={(e) => setLan((l) => ({ ...l, netmask: e.target.value }))} inputMode="numeric" />
         </Field>
         <Field label="DHCP start">
-          <Input value={lan.dhcp_start} onChange={(e) => setLan((l) => ({ ...l, dhcp_start: e.target.value }))} inputMode="numeric" />
+          <Input disabled={!lan.dhcp_enabled} value={lan.dhcp_start} onChange={(e) => setLan((l) => ({ ...l, dhcp_start: e.target.value }))} inputMode="numeric" />
         </Field>
         <Field label="DHCP end">
-          <Input value={lan.dhcp_end} onChange={(e) => setLan((l) => ({ ...l, dhcp_end: e.target.value }))} inputMode="numeric" />
+          <Input disabled={!lan.dhcp_enabled} value={lan.dhcp_end} onChange={(e) => setLan((l) => ({ ...l, dhcp_end: e.target.value }))} inputMode="numeric" />
         </Field>
-        <Field label="Lease time (seconds)">
-          <Input value={lan.dhcp_lease} onChange={(e) => setLan((l) => ({ ...l, dhcp_lease: e.target.value }))} inputMode="numeric" />
+        <Field label="Lease time (hours)" hint="The firmware stores this value in seconds.">
+          <Input
+            type="number"
+            min={1}
+            max={168}
+            disabled={!lan.dhcp_enabled}
+            value={lan.lease_seconds / 3600}
+            onChange={(e) => setLan((l) => ({ ...l, lease_seconds: Math.round(Number(e.target.value) * 3600) }))}
+            inputMode="numeric"
+          />
         </Field>
+      </div>
+      <div className="mt-3 flex items-center justify-between rounded-lg bg-surface2/60 px-3 py-2.5">
+        <div>
+          <p className="text-[13px] font-semibold text-ink">DHCP server</p>
+          <p className="text-[11px] text-ink3">Assign addresses to LAN and Wi-Fi clients</p>
+        </div>
+        <Toggle checked={lan.dhcp_enabled} onChange={(dhcp_enabled) => setLan((l) => ({ ...l, dhcp_enabled }))} label="DHCP server" />
       </div>
       <div className="mt-3.5">
         <Button variant="primary" onClick={save} loading={busy}>

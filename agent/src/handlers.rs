@@ -302,8 +302,10 @@ pub fn system_kill_bloat(_state: &AppState, body: &[u8]) -> (u16, Value) {
         );
     };
 
-    let result = system::kill_bloat(pids.as_deref());
-    (200, json!({"ok": true, "data": result}))
+    match system::kill_bloat(pids.as_deref()) {
+        Ok(result) => (200, json!({"ok": true, "data": result})),
+        Err(error) => (503, json!({"ok": false, "error": error})),
+    }
 }
 
 /// GET /api/dashboard — batch endpoint aggregating all dashboard data.

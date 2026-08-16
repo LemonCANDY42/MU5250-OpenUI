@@ -3,7 +3,7 @@ import { api } from '../../data/api'
 import { usePoll } from '../../data/poll'
 import { formatBytes, formatDuration } from '../../format'
 import type { LoggerDownload, LoggerStatus, ProcessListResult } from '../../types'
-import { IRefresh } from '../../icons'
+import { IInfo, IRefresh } from '../../icons'
 import { Button, Field, Select } from '../../ui/controls'
 import { confirm, toast, toastError } from '../../ui/feedback'
 import { Card, Empty, Meter } from '../../ui/primitives'
@@ -201,9 +201,27 @@ function AtConsole() {
   }
 
   return (
-    <Card title="AT console">
+    <Card
+      title={
+        <span className="inline-flex items-center gap-1.5">
+          AT console
+          <span
+            className="inline-flex cursor-help text-warn"
+            title="AT commands talk directly to the modem. Incorrect write commands can disable connectivity or leave persistent modem settings behind."
+            aria-label="AT command safety information"
+          >
+            <IInfo size={14} />
+          </span>
+        </span>
+      }
+    >
+      <div role="alert" className="mb-3 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-[12px] text-warn">
+        <strong>Safety warning:</strong> AT commands bypass the normal settings APIs and talk directly to the modem.
+        Only use documented read-only queries; commands that write, reset, reboot, or alter radio state can interrupt service
+        or persist after the agent exits.
+      </div>
       <p className="mb-3 text-[12px] text-ink2">
-        Send AT commands to the modem. Read-only allowlist enforced by the agent.
+        The agent accepts only its read-only command allowlist.
         {port !== undefined && (
           <span className={port ? 'text-ok' : 'text-warn'}>{port ? ` Port: ${port}` : ' No AT port detected.'}</span>
         )}
@@ -275,9 +293,9 @@ function Processes() {
   async function killBloat() {
     if (!data) return
     const ok = await confirm({
-      title: `Kill ${data.bloat_count} bloat daemon${data.bloat_count === 1 ? '' : 's'}?`,
-      body: `Frees roughly ${formatBytes(data.bloat_rss_kb * 1024)} of RAM. These are ZTE telemetry and management daemons the agent treats as safe to kill; the firmware may restart some of them.`,
-      confirmLabel: 'Kill daemons',
+      title: `Stop ${data.bloat_count} optional service${data.bloat_count === 1 ? '' : 's'}?`,
+      body: `Frees roughly ${formatBytes(data.bloat_rss_kb * 1024)} of RAM. The agent re-checks the live firmware boot barrier, excludes every protected daemon, and sends only a graceful termination signal. The firmware may restart some services.`,
+      confirmLabel: 'Stop services',
       danger: true,
     })
     if (!ok) return
@@ -286,12 +304,12 @@ function Processes() {
       const result = await api.killBloat()
       toast(
         result.killed.length > 0
-          ? `Killed ${result.killed.length} daemon${result.killed.length === 1 ? '' : 's'}, freed ${formatBytes(result.freed_rss_kb * 1024)}`
-          : 'No bloat daemons were running',
+          ? `Stopped ${result.killed.length} optional service${result.killed.length === 1 ? '' : 's'}, freed ${formatBytes(result.freed_rss_kb * 1024)}`
+          : 'No optional services were running',
       )
       await load()
     } catch (e) {
-      toastError(e, 'Failed to kill bloat daemons')
+      toastError(e, 'Failed to stop optional services')
     } finally {
       setKilling(false)
     }
@@ -318,7 +336,7 @@ function Processes() {
           <div className="px-4 pb-3">
             <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-surface2/70 px-3 py-2.5">
               <div className="min-w-0">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Bloat daemons</p>
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-ink3">Optional services</p>
                 <p className="tnum mt-0.5 text-[13px] text-ink2">
                   {data.bloat_count} of {data.total_count} processes ·{' '}
                   <span className="font-semibold text-ink">{formatBytes(data.bloat_rss_kb * 1024)}</span> RAM ·{' '}
@@ -332,7 +350,7 @@ function Processes() {
                 loading={killing}
                 disabled={data.bloat_count === 0}
               >
-                Kill bloat daemons
+                Stop optional services
               </Button>
             </div>
           </div>

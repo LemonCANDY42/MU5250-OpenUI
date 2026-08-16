@@ -211,10 +211,13 @@ impl ChargeLimitEnforcer {
             return;
         }
 
-        let capacity: u8 = fs::read_to_string(SYSFS_CAPACITY)
+        let Some(capacity): Option<u8> = fs::read_to_string(SYSFS_CAPACITY)
             .ok()
             .and_then(|s| s.trim().parse().ok())
-            .unwrap_or(0);
+        else {
+            eprintln!("[charge_policy] capacity unavailable — skipping charger mutation");
+            return;
+        };
 
         if capacity >= limit && !stopped {
             set_charging(false);
