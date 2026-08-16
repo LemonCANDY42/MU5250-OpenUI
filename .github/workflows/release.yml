@@ -21,11 +21,14 @@ jobs:
       - name: Install zig
         run: |
           pipx install ziglang
+          PIPX_BIN="$(pipx environment --value PIPX_BIN_DIR)"
+          ls -l "$PIPX_BIN"
           # ziglang >= 0.16 ships the binary as python-zig; cargo-zigbuild expects zig
-          if [ ! -e "$HOME/.local/bin/zig" ] && [ -e "$HOME/.local/bin/python-zig" ]; then
-            ln -s "$HOME/.local/bin/python-zig" "$HOME/.local/bin/zig"
+          if [ ! -e "$PIPX_BIN/zig" ] && [ -e "$PIPX_BIN/python-zig" ]; then
+            ln -s "$PIPX_BIN/python-zig" "$PIPX_BIN/zig"
           fi
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "$PIPX_BIN" >> "$GITHUB_PATH"
+          "$PIPX_BIN/zig" version
 
       - uses: taiki-e/install-action@v2
         with:
