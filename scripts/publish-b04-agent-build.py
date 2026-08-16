@@ -1025,17 +1025,25 @@ def self_test() -> None:
         writable_directory.mkdir(mode=0o700)
         os.chmod(writable_directory, 0o770)
         (writable_directory / "binary").write_bytes(b"must survive writable dir")
+        writable_mode = stat.S_IMODE(writable_directory.stat().st_mode)
         writable_directory_fd = os.open(
             writable_directory,
             os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
         )
         try:
-            try:
-                purge_owned_regular_outputs_at(writable_directory_fd, ("binary",))
-            except BuildPublishError:
-                pass
+            if writable_mode & 0o022:
+                try:
+                    purge_owned_regular_outputs_at(
+                        writable_directory_fd, ("binary",)
+                    )
+                except BuildPublishError:
+                    pass
+                else:
+                    raise AssertionError(
+                        "group-writable purge directory was accepted"
+                    )
             else:
-                raise AssertionError("group-writable purge directory was accepted")
+                assert writable_mode & 0o077 == 0
             assert (writable_directory / "binary").read_bytes() == (
                 b"must survive writable dir"
             )
@@ -1106,7 +1114,12 @@ def self_test() -> None:
             write_build_marker(result_fd)
             assert build_marker_is_valid(result_fd)
             os.chmod(result / "build.complete", 0o640)
-            assert not build_marker_is_valid(result_fd)
+            marker_mode = stat.S_IMODE((result / "build.complete").stat().st_mode)
+            if marker_mode in NAS.PRIVATE_FILE_MODES:
+                assert marker_mode & 0o077 == 0
+                assert build_marker_is_valid(result_fd)
+            else:
+                assert not build_marker_is_valid(result_fd)
         finally:
             os.close(result_fd)
     print("B04 agent build publisher self-test passed")
