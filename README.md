@@ -8,6 +8,12 @@ and update both.
 
 Credit: based on [jesther-ai/open-u60-pro](https://github.com/jesther-ai/open-u60-pro).
 
+<img width="2730" height="1708" alt="Dashboard-Home" src="https://github.com/user-attachments/assets/ed8594a8-af21-4b97-a898-531c7bb6c03a" />
+<img width="2734" height="1708" alt="Signal" src="https://github.com/user-attachments/assets/793c3797-b8d7-4933-bf28-b7c3a4650f72" />
+<img width="2730" height="1706" alt="BandLock" src="https://github.com/user-attachments/assets/0f911d00-9604-44a8-b0fb-b20cd9fa10c5" />
+
+
+
 ## Architecture
 
 ```
