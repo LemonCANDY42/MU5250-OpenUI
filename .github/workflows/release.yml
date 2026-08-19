@@ -105,9 +105,10 @@ jobs:
 
           - `zte-agent` — agent binary (aarch64 musl). Deploy to `/data/zte-agent`,
             or run `bash setup.sh` and choose the pre-built download.
-          - `dashboard-dist.tar.gz` — dashboard static build. Extract to `/data/www`,
-            then `cp /data/www/index.html /data/www/mobile.html` (ZTE uhttpd
-            mobile-redirect workaround).
+          - `dashboard-dist.tar.gz` — dashboard static build consumed by the
+            native installer. For terminal deployment, run `scripts/zharden.sh`
+            once to install the isolated dashboard server, then use
+            `deploy-dashboard.sh`; do not add a second ZTE uhttpd UCI instance.
           - `sha256sums.txt` — SHA-256 checksums.
 
           **Verify**

@@ -1,5 +1,5 @@
 [workspace]
-members = ["agent"]
+members = ["agent", "installer/src-tauri"]
 resolver = "2"
 
 [profile.release]

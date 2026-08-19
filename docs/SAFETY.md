@@ -132,10 +132,14 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
 
 - push `/data/zte-agent` + `/data/local/tmp/start_zte_agent.sh`
 - push dashboard static files to `/data/www`
+- create `/data/www` before starting the dashboard listener, then restart and
+  verify the isolated upstream uhttpd process after deployment
 - append `sh /data/local/tmp/start_*.sh` lines to `/etc/rc.local`
   (idempotent, grep-guarded, syntax-checked with `sh -n`)
 - install dropbear to `/data/bin` (zharden) with key auth on port 2222
-- add a second uhttpd instance on :8080 for the dashboard (uci `uhttpd.dashboard`)
+- install the pinned, checksum-verified upstream OpenWrt uhttpd binary as
+  `/data/bin/dashboard-uhttpd`, removing the unreliable legacy second UCI
+  instance before starting it on :8080
 - disable FOTA auto-update (`zwrt_zte_dm set_update_mode`)
 
 Anything beyond this list is a red flag during review.
@@ -164,8 +168,8 @@ regained and this is deployed again.
 |---|---|---|
 | `setup.sh` | unlock (via zunlock.py) + agent push, startup script, rc.local line | idempotent, grep-guarded rc.local edits; safe |
 | `deploy.sh` | ssh-only binary push + restart | safe |
-| `deploy-dashboard.sh` | builds `web-app`, tars to `/data/www` | safe (data partition only) |
-| `scripts/zharden.sh` | dropbear to `/data`, rc.local cleanup, uhttpd :8080, FOTA off | v2 removed the firewall-include bootstrap — the last boot-critical hook; safe now |
+| `deploy-dashboard.sh` | builds `web-app`, tars to `/data/www`, restarts/verifies isolated dashboard uhttpd | safe (data partition only) |
+| `scripts/zharden.sh` | Dropbear + isolated upstream uhttpd to `/data`, rc.local cleanup, checked :8080 setup, FOTA off | pinned package hashes; v2 removed the firewall-include bootstrap — the last boot-critical hook |
 | `scripts/zunlock.py` / `zbackup.py` | config backup patch + restore (the unlock itself) | highest-risk by nature, but gated: `--dry-run`, explicit confirm, sha256 upload verification, payload auto-discovered from the device's own rc.local |
 
 ## 2. Agent boot-time behavior — acceptable, documented
@@ -180,7 +184,7 @@ regained and this is deployed again.
   reboot. Acceptable.
 - All agent state files live under `/data/local/tmp/` (writable data
   partition). The agent never writes `/etc`, `/zteoverlay`, or raw
-  partitions, except via `uci commit wireless`/`dhcp`/`uhttpd` and the
+  partitions, except via `uci commit wireless`/`dhcp` and the
   documented rc.local lines.
 
 ## 3. Findings acted on (2026-08-09)
