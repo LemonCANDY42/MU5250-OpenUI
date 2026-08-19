@@ -1,4 +1,0 @@
-cryptography>=42
-
-# packaging only (not needed to run from source):
-pyinstaller>=6.0

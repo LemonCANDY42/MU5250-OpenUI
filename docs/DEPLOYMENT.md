@@ -3,6 +3,22 @@
 Everything needed to go from a locked U60 Pro to the full stack (agent +
 dashboard + SSH), and to keep it there. Read [SAFETY.md](SAFETY.md) first.
 
+For the shell flow, install Python 3, openssl and adb. Building the agent from
+source additionally needs the Rust cross-compilation toolchain described
+below. Building the dashboard requires Node.js `^20.19.0 || >=22.12.0` and
+npm; Node 18 is not supported by the locked Vite version. The native Tauri
+installer downloads prebuilt assets and end users need neither Rust nor Node.js.
+
+## Native Windows/macOS installer
+
+For a terminal-free installation, download **Open U60 Pro Installer** from the
+project's GitHub Releases. The Windows `.msi`/setup `.exe` and macOS `.dmg`
+builds bundle ADB and guide the user through detection, unlock, installation,
+repair, or update. The app filters unrelated ADB devices, prompts when multiple
+MU5250 modems are present, and invalidates its plan when the modem address
+changes. See [`../installer/README.md`](../installer/README.md) for the complete
+behavior, source-build instructions, diagnostics, and signing notes.
+
 ## The whole flow at a glance
 
 ```sh
@@ -18,7 +34,7 @@ End state (persists across reboots):
 |---|---|---|
 | USB-C tethering | USB-C, ECM (stock composition) | survives reboots (no usb_op write) |
 | Stock web UI | `http://192.168.0.1:80` / `:443` | untouched |
-| Dashboard | `http://192.168.0.1:8080` | uhttpd `dashboard` instance → `/data/www` |
+| Dashboard | `http://192.168.0.1:8080` | isolated `/data/bin/dashboard-uhttpd` → `/data/www` |
 | Agent API | `http://192.168.0.1:9090` | password = your choice at setup |
 | SSH | `ssh -p 2222 root@192.168.0.1` | key-only, `/data/bin/dropbear` |
 | ADB | on demand | `echo 1 > /sys/class/android_usb/android0/usb_op` via SSH + reboot; reverts next reboot |
@@ -120,6 +136,9 @@ bash setup.sh
   above). If ADB is already up or SSH works, it deploys straight away.
 - Pushes the agent to `/data/zte-agent`, creates the startup script with
   your password, adds the rc.local line, starts and verifies it.
+- When ADB is the management channel, verification runs the firmware's
+  `/usr/bin/curl` on the device against `192.168.0.1:9090`. An ADB TCP forward
+  is not used because the agent intentionally does not listen on loopback.
 
 ## 3. Hardening — `scripts/zharden.sh`
 
@@ -130,8 +149,15 @@ bash scripts/zharden.sh
 Idempotent — safe to re-run anytime. Installs dropbear to `/data/bin`
 (opkg is unusable on this firmware), generates host keys, wires SSH into
 rc.local, **removes the usb_op payload line** (so every boot returns to
-stock ECM tethering), adds the dashboard uhttpd instance on :8080, and
-disables FOTA auto-update.
+stock ECM tethering), installs an isolated dashboard server on :8080, and
+disables FOTA auto-update. Remote ADB operations are checked with an explicit
+status sentinel. The server is the pinned upstream OpenWrt uhttpd binary at
+`/data/bin/dashboard-uhttpd`; its package checksum is verified before
+installation. This avoids the ZTE-patched binary's singleton `zwrt_uhttpd`
+ubus object, which can make a second UCI instance exit even though the init
+script returned success. The script removes any legacy `uhttpd.dashboard`
+section, restarts the stock UI, then verifies the independent listener using a
+known health file.
 
 ## 4. Dashboard — `deploy-dashboard.sh`
 
@@ -139,9 +165,19 @@ disables FOTA auto-update.
 bash deploy-dashboard.sh
 ```
 
-Builds `web-app` (Vite) and streams `dist/` to `/data/www` over an SSH tar
-pipe (the device has no sftp/scp). Also copies `index.html` → `mobile.html`
-so ZTE's patched uhttpd serves the SPA to phone user-agents.
+Checks the installed Node.js version, runs `npm ci`, builds `web-app` (Vite),
+and streams `dist/` to `/data/www` over an SSH tar pipe (the device has no
+sftp/scp). It also copies `index.html` → `mobile.html`, restarts only the
+isolated dashboard server, and verifies the served SPA before reporting
+success. Run `scripts/zharden.sh` once first to install that server.
+
+If the script reports an unsupported Node.js version, install Node 20.19.x or
+22.12+ (Node 22 LTS is recommended), confirm with `node --version`, and rerun.
+If dashboard verification fails, inspect the service with:
+
+```sh
+ssh -p 2222 root@192.168.0.1 'sh /data/local/tmp/start_dashboard.sh; cat /tmp/dashboard-uhttpd.log; /usr/bin/curl -v http://127.0.0.1:8080/'
+```
 
 ## Updating later
 

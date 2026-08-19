@@ -8,6 +8,8 @@ device_report.json
 ubus_probe_report.json
 node_modules/
 .venv/
+__pycache__/
+*.py[cod]
 *.local.json
 firmware
 
@@ -16,6 +18,7 @@ firmware
 /back_parameter
 /loopdebug-capture/
 installer/assets/platform-tools/
+installer/src-tauri/gen/schemas/
 build/
 dist/
 *.spec

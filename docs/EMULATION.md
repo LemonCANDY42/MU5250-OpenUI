@@ -19,6 +19,8 @@ Once up:
 | What | Where |
 |---|---|
 | zte-agent API (emulated) | `http://127.0.0.1:9090` (password `emu-test-password`) |
+| Desktop installer target | gateway `127.0.0.1` (SSH is forwarded on `:2222`) |
+| Installed dashboard | `http://127.0.0.1:8080` |
 | Project dashboard | `cd web-app && npm run dev` → `http://127.0.0.1:5173` (auto-targets `:9090`) |
 | Stock ZTE web UI | `http://127.0.0.1:9080` (see "Stock web UI fidelity" below) |
 | Guest serial shell | `cd firmware/emulation && python3 console.py run "ubus list"` |
@@ -61,6 +63,33 @@ vite dev :5173 ──► 127.0.0.1:9090 ──► zte-agent (aarch64 musl)
   Installed exactly like a real deploy (`/data/zte-agent`,
   `/data/local/tmp/start_zte_agent.sh`) except `ZTE_AGENT_BIND=0.0.0.0:9090`
   so QEMU user-mode hostfwd can reach it.
+- **Installer test bridge**: the payload installs the same OpenWrt Dropbear
+  package used on the modem, authorizes the host's default Ed25519 key, and
+  forwards host port `2222` to the guest. The guest also owns
+  `192.168.0.1`, so an installer-managed agent using its production-only LAN
+  bind remains reachable through the host forwards.
+
+## Testing the desktop installer
+
+Boot the emulator first, then open the native installer (or run it in Tauri
+development mode):
+
+```sh
+bash scripts/emulate.sh
+cd installer && npm run tauri dev
+```
+
+Use gateway `127.0.0.1`, click **Detect device**, and enter
+`emu-test-password` in both agent-password fields. Detection should report an
+SSH connection and plan an **Update**. Running it exercises release download,
+checksum verification, SSH transfer, agent restart/login, Dropbear hardening,
+isolated dashboard-server setup, dashboard deployment, progress reporting,
+and the success dialog against the disposable VM.
+
+The unlock/backup-restore route is intentionally not emulated: it depends on
+the stock router web API and would test a mock of the riskiest operation rather
+than the real behavior. Test that route on supported hardware; use the VM for
+the already-provisioned Update/Repair path.
 
 ## What works / what doesn't
 

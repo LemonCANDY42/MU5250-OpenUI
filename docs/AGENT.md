@@ -4,7 +4,10 @@ Rust HTTP backend that runs on the modem (`agent/`), talking to ubus, AT
 ports, sysfs/procfs and device services. `agent/src/server.rs` is the
 canonical routing table; this document summarizes it.
 
-- Binds `192.168.0.1:9090` (override `ZTE_AGENT_BIND`, `ZTE_AGENT_THREADS`)
+- Binds `192.168.0.1:9090` (override `ZTE_AGENT_BIND`, `ZTE_AGENT_THREADS`).
+  Because it does not listen on device loopback, ADB setup verification runs
+  an on-device curl against this LAN address; forwarding to `tcp:9090` and
+  changing the HTTP Host header would not reach the listener.
 - Auth: `POST /api/auth/login` (password from `ZTE_AGENT_PASSWORD`, or an
   optional 6-digit mobile PIN); bearer tokens with a sliding 1 h expiry so a
   dashboard left open stays logged in, rate-limited login, LAN-only CORS

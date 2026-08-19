@@ -332,6 +332,31 @@ rpush() {
     fi
 }
 
+# Authenticate through the active management channel. In ADB mode the agent
+# is deliberately bound to the LAN address, while `adb forward tcp:...`
+# connects to the device loopback interface. Curl the LAN address from the
+# device instead of widening the bind or relying on a Host-header override.
+agent_login() {
+    local login_body response
+    login_body=$(AGENT_PASSWORD="$AGENT_PASSWORD" python3 -c \
+        'import json,os; print(json.dumps({"password": os.environ["AGENT_PASSWORD"]}))')
+
+    if [ "$USE_SSH" = true ]; then
+        response=$(curl --fail --silent --show-error \
+            --connect-timeout 5 --max-time 10 \
+            "http://$GATEWAY:$AGENT_PORT/api/auth/login" \
+            -H 'Content-Type: application/json' \
+            --data-binary "$login_body") || return 1
+    else
+        response=$(printf '%s' "$login_body" | adb shell \
+            "/usr/bin/curl --fail --silent --show-error --connect-timeout 5 --max-time 10 -H 'Content-Type: application/json' --data-binary @- http://$GATEWAY:$AGENT_PORT/api/auth/login") \
+            || return 1
+    fi
+
+    printf '%s' "$response" | python3 -c \
+        'import json,sys; token=(json.load(sys.stdin).get("data") or {}).get("token"); raise SystemExit(1) if not token else print(token)'
+}
+
 # ── Step 3: Get zte-agent binary ─────────────────────────────────────
 if [ "$BUILD_CHOICE" = "1" ]; then
     info "Downloading zte-agent from GitHub releases..."
@@ -407,9 +432,10 @@ fi
 # ── Step 7: Start agent ─────────────────────────────────────────────
 info "Checking agent status..."
 AGENT_RUNNING=false
-curl -sf "http://$GATEWAY:$AGENT_PORT/api/auth/login" \
-    -H 'Content-Type: application/json' \
-    -d "{\"password\":\"$AGENT_PASSWORD\"}" >/dev/null 2>&1 && AGENT_RUNNING=true
+TOKEN=""
+if TOKEN=$(agent_login 2>/dev/null); then
+    AGENT_RUNNING=true
+fi
 
 if [ "$BINARY_CHANGED" = true ] || [ "$AGENT_RUNNING" = false ]; then
     info "Starting zte-agent..."
@@ -430,23 +456,7 @@ fi
 info "Verifying agent is running..."
 sleep 2
 
-if [ "$USE_SSH" = true ]; then
-    VERIFY_URL="http://$GATEWAY:$AGENT_PORT/api/auth/login"
-else
-    adb forward tcp:19090 tcp:$AGENT_PORT
-    VERIFY_URL="http://127.0.0.1:19090/api/auth/login"
-fi
-
-TOKEN=$(curl -sf "$VERIFY_URL" \
-    -H 'Content-Type: application/json' \
-    -d "{\"password\":\"$AGENT_PASSWORD\"}" \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin)["data"]["token"])')
-
-if [ "$USE_SSH" != true ]; then
-    adb forward --remove tcp:19090 2>/dev/null || true
-fi
-
-if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+if ! TOKEN=$(agent_login); then
     fail "Agent started but login verification failed."
 fi
 ok "Agent is running and authenticated."
@@ -456,7 +466,7 @@ ok "Agent is running and authenticated."
 # opkg is unusable on this firmware and the old in-setup install pinned a
 # stale package URL and a wrong dropbear path. zharden.sh extracts dropbear
 # to /data, generates host keys and wires up rc.local correctly (and also
-# adds the dashboard uhttpd instance + turns FOTA auto-update off).
+# adds the isolated dashboard server + turns FOTA auto-update off).
 if [ "$USE_SSH" = true ]; then
     ok "SSH already configured."
 else

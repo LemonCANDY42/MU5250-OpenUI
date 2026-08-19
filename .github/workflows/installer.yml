@@ -1,65 +1,179 @@
-name: Installer
+name: Desktop installer
 
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish packages to (leave blank for a build-only preflight)
+        required: false
+        type: string
 
 permissions:
   contents: write
 
 jobs:
-  bundle:
+  publish:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            asset: mu5250-installer-macos.zip
-            pt: darwin
-          - os: ubuntu-latest
-            asset: mu5250-installer-linux.zip
-            pt: linux
-          - os: windows-latest
-            asset: mu5250-installer-windows.zip
-            pt: windows
-    runs-on: ${{ matrix.os }}
+          - name: macos-arm64
+            platform: macos-latest
+            platform_tools: darwin
+            archive_arch: aarch64
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles dmg
+          - name: macos-x64
+            platform: macos-latest
+            platform_tools: darwin
+            archive_arch: x86_64
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles dmg
+          - name: windows-x64
+            platform: windows-latest
+            platform_tools: windows
+            args: --bundles msi,nsis
+    runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v7
         with:
-          python-version: "3.12"
+          node-version: 22
+          cache: npm
+          cache-dependency-path: installer/package-lock.json
 
-      - name: Install deps
-        run: pip install -r installer/requirements.txt
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ startsWith(matrix.platform, 'macos') && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
 
-      - name: Fetch platform-tools (adb)
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: '. -> target'
+
+      - name: Install frontend dependencies
+        working-directory: installer
+        run: npm ci
+
+      - name: Fetch bundled Android platform-tools
         shell: bash
         run: |
-          curl -sfL "https://dl.google.com/android/repository/platform-tools-latest-${{ matrix.pt }}.zip" -o pt.zip
-          python -c "import zipfile; zipfile.ZipFile('pt.zip').extractall('installer/assets')"
+          curl -sfL "https://dl.google.com/android/repository/platform-tools-latest-${{ matrix.platform_tools }}.zip" -o platform-tools.zip
+          python -c "import zipfile; zipfile.ZipFile('platform-tools.zip').extractall('installer/assets')"
+          test -f "installer/assets/platform-tools/adb" || test -f "installer/assets/platform-tools/adb.exe"
+          if [ -f "installer/assets/platform-tools/adb" ]; then chmod 755 "installer/assets/platform-tools/adb"; fi
 
-      - name: Bundle with PyInstaller
-        run: >
-          pyinstaller --onedir --noconsole --name mu5250-installer
-          --paths scripts
-          --hidden-import cryptography
-          --add-data "installer/assets/platform-tools:platform-tools"
-          installer/app.py
-
-      - name: Zip bundle
+      - name: Import Apple Developer ID certificate
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         shell: bash
         run: |
-          python -c "import shutil; shutil.make_archive('bundle', 'zip', 'dist', 'mu5250-installer')"
-          mv bundle.zip "${{ matrix.asset }}"
+          if [ -z "$APPLE_CERTIFICATE" ]; then
+            echo "No Developer ID certificate configured; using ad-hoc signing"
+            exit 0
+          fi
+          printf '%s' "$APPLE_CERTIFICATE" | openssl base64 -d -A -out "$RUNNER_TEMP/developer-id.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          security default-keychain -s "$RUNNER_TEMP/build.keychain"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          security set-keychain-settings -t 3600 -u "$RUNNER_TEMP/build.keychain"
+          security import "$RUNNER_TEMP/developer-id.p12" -k "$RUNNER_TEMP/build.keychain" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$RUNNER_TEMP/build.keychain"
+          CERT_ID="$(security find-identity -v -p codesigning "$RUNNER_TEMP/build.keychain" | awk -F'"' '/Developer ID Application/{print $2; exit}')"
+          test -n "$CERT_ID"
+          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
 
-      - name: Upload to release
+      - name: Configure Apple notarization
+        if: runner.os == 'macOS'
+        env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARIZATION_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          NOTARIZATION_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          if [ -z "$NOTARIZATION_APPLE_ID" ] || [ -z "$NOTARIZATION_APPLE_PASSWORD" ] || [ -z "$NOTARIZATION_APPLE_TEAM_ID" ]; then
+            echo "Complete Apple notarization credentials are not configured; skipping notarization"
+            exit 0
+          fi
+          printf 'APPLE_ID=%s\n' "$NOTARIZATION_APPLE_ID" >> "$GITHUB_ENV"
+          printf 'APPLE_PASSWORD=%s\n' "$NOTARIZATION_APPLE_PASSWORD" >> "$GITHUB_ENV"
+          printf 'APPLE_TEAM_ID=%s\n' "$NOTARIZATION_APPLE_TEAM_ID" >> "$GITHUB_ENV"
+
+      - name: Wait for the application release
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
-          for i in $(seq 1 30); do
-            gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 && break
+          for attempt in $(seq 1 120); do
+            gh release view "$RELEASE_TAG" >/dev/null 2>&1 && exit 0
             sleep 10
           done
-          gh release upload "${GITHUB_REF_NAME}" "${{ matrix.asset }}" --clobber
+          echo "Release $RELEASE_TAG was not created in time" >&2
+          exit 1
+
+      - name: Build native installer
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
+        uses: tauri-apps/tauri-action@v1
+        with:
+          projectPath: installer
+          args: ${{ matrix.args }}
+
+      - name: Build and publish native installer
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: installer
+          tagName: ${{ inputs.release_tag || github.ref_name }}
+          args: ${{ matrix.args }}
+
+      - name: Package macOS app bundle as ZIP
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          DMG_PATH="$(find target -type f -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          MOUNT_POINT="$RUNNER_TEMP/open-u60-pro-dmg-${{ matrix.archive_arch }}"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_POINT" "$DMG_PATH"
+          trap 'hdiutil detach "$MOUNT_POINT"' EXIT
+          APP_PATH="$MOUNT_POINT/Open U60 Pro Installer.app"
+          test -d "$APP_PATH"
+          codesign --verify --deep --strict "$APP_PATH"
+          VERSION="$(node -p "require('./installer/package.json').version")"
+          ARCHIVE="Open-U60-Pro-Installer_${VERSION}_${{ matrix.archive_arch }}.app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ARCHIVE"
+          VERIFY_DIR="$RUNNER_TEMP/open-u60-pro-zip-check-${{ matrix.archive_arch }}"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k "$ARCHIVE" "$VERIFY_DIR"
+          codesign --verify --deep --strict "$VERIFY_DIR/Open U60 Pro Installer.app"
+          shasum -a 256 "$ARCHIVE"
+          echo "MACOS_ZIP=$ARCHIVE" >> "$GITHUB_ENV"
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT
+
+      - name: Upload manually triggered package
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-u60-pro-${{ matrix.name }}
+          path: |
+            target/**/bundle/**/*
+            Open-U60-Pro-Installer_*.app.zip
+          if-no-files-found: error
+
+      - name: Add macOS app ZIP to release
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" "$MACOS_ZIP" --clobber
