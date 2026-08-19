@@ -31,6 +31,13 @@
     "category": "Utility",
     "shortDescription": "Install and maintain Open U60 Pro",
     "longDescription": "Guided installer for the Open U60 Pro agent, SSH access and dashboard on the ZTE MU5250.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
     "resources": {
       "../assets/platform-tools/": "platform-tools/"
     },

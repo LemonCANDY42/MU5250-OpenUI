@@ -116,21 +116,18 @@ jobs:
           tagName: ${{ github.ref_name }}
           args: ${{ matrix.args }}
 
-      - name: Build macOS app bundle for ZIP
-        if: runner.os == 'macOS'
-        working-directory: installer
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-        run: npm run tauri build -- --target ${{ matrix.target }} --bundles app
-
       - name: Package macOS app bundle as ZIP
         if: runner.os == 'macOS'
         shell: bash
         run: |
-          APP_PATH="$(find target -type d -name 'Open U60 Pro Installer.app' -print -quit)"
-          test -n "$APP_PATH"
+          DMG_PATH="$(find target -type f -name '*.dmg' -print -quit)"
+          test -n "$DMG_PATH"
+          MOUNT_POINT="$RUNNER_TEMP/open-u60-pro-dmg-${{ matrix.archive_arch }}"
+          mkdir -p "$MOUNT_POINT"
+          hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT_POINT" "$DMG_PATH"
+          trap 'hdiutil detach "$MOUNT_POINT"' EXIT
+          APP_PATH="$MOUNT_POINT/Open U60 Pro Installer.app"
+          test -d "$APP_PATH"
           codesign --verify --deep --strict "$APP_PATH"
           VERSION="$(node -p "require('./installer/package.json').version")"
           ARCHIVE="Open-U60-Pro-Installer_${VERSION}_${{ matrix.archive_arch }}.app.zip"
@@ -141,6 +138,8 @@ jobs:
           codesign --verify --deep --strict "$VERIFY_DIR/Open U60 Pro Installer.app"
           shasum -a 256 "$ARCHIVE"
           echo "MACOS_ZIP=$ARCHIVE" >> "$GITHUB_ENV"
+          hdiutil detach "$MOUNT_POINT"
+          trap - EXIT
 
       - name: Upload manually triggered package
         if: github.event_name == 'workflow_dispatch'
