@@ -4,6 +4,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish packages to (leave blank for a build-only preflight)
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -83,37 +88,51 @@ jobs:
           test -n "$CERT_ID"
           echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
 
+      - name: Configure Apple notarization
+        if: runner.os == 'macOS'
+        env:
+          NOTARIZATION_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARIZATION_APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          NOTARIZATION_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        shell: bash
+        run: |
+          if [ -z "$NOTARIZATION_APPLE_ID" ] || [ -z "$NOTARIZATION_APPLE_PASSWORD" ] || [ -z "$NOTARIZATION_APPLE_TEAM_ID" ]; then
+            echo "Complete Apple notarization credentials are not configured; skipping notarization"
+            exit 0
+          fi
+          printf 'APPLE_ID=%s\n' "$NOTARIZATION_APPLE_ID" >> "$GITHUB_ENV"
+          printf 'APPLE_PASSWORD=%s\n' "$NOTARIZATION_APPLE_PASSWORD" >> "$GITHUB_ENV"
+          printf 'APPLE_TEAM_ID=%s\n' "$NOTARIZATION_APPLE_TEAM_ID" >> "$GITHUB_ENV"
+
       - name: Wait for the application release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
         run: |
           for attempt in $(seq 1 120); do
-            gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 && exit 0
+            gh release view "$RELEASE_TAG" >/dev/null 2>&1 && exit 0
             sleep 10
           done
-          echo "Release $GITHUB_REF_NAME was not created in time" >&2
+          echo "Release $RELEASE_TAG was not created in time" >&2
           exit 1
 
       - name: Build native installer
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
         uses: tauri-apps/tauri-action@v1
         with:
           projectPath: installer
           args: ${{ matrix.args }}
 
       - name: Build and publish native installer
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || inputs.release_tag != ''
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         with:
           projectPath: installer
-          tagName: ${{ github.ref_name }}
+          tagName: ${{ inputs.release_tag || github.ref_name }}
           args: ${{ matrix.args }}
 
       - name: Package macOS app bundle as ZIP
@@ -142,7 +161,7 @@ jobs:
           trap - EXIT
 
       - name: Upload manually triggered package
-        if: github.event_name == 'workflow_dispatch'
+        if: github.event_name == 'workflow_dispatch' && inputs.release_tag == ''
         uses: actions/upload-artifact@v4
         with:
           name: open-u60-pro-${{ matrix.name }}
@@ -152,8 +171,9 @@ jobs:
           if-no-files-found: error
 
       - name: Add macOS app ZIP to release
-        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/')
+        if: runner.os == 'macOS' && (startsWith(github.ref, 'refs/tags/') || inputs.release_tag != '')
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$GITHUB_REF_NAME" "$MACOS_ZIP" --clobber
+          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" "$MACOS_ZIP" --clobber
