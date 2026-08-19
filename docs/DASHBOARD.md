@@ -1,7 +1,9 @@
 # Dashboard
 
-React 19 + Vite + Tailwind SPA served from the device itself (uhttpd,
-port 8080, files in `/data/www`), talking to the agent on port 9090.
+React 19 + Vite + Tailwind SPA served from the device itself (isolated
+upstream OpenWrt uhttpd on port 8080, files in `/data/www`), talking to the
+agent on port 9090. It is kept separate from ZTE's patched stock-UI uhttpd,
+whose singleton ubus object makes a second UCI instance unreliable.
 
 ## Layout
 
@@ -54,15 +56,22 @@ web-app/src/
 
 ## Develop
 
+Requires Node.js `^20.19.0 || >=22.12.0` and npm. Node 18 is unsupported by
+the locked Vite toolchain.
+
 ```sh
 cd web-app
-npm install
+npm ci
 npm run dev       # local dev server (expects agent at <hostname>:9090)
 npm run build     # tsc + vite build -> dist/
 npm run lint
 ```
 
-Deploy to the device: `./deploy-dashboard.sh` from the repo root.
+Deploy to the device with `./deploy-dashboard.sh` from the repo root. The
+script checks Node/npm, runs `npm ci`, builds and uploads the SPA, restarts the
+isolated dashboard server, and verifies the page from the device before
+reporting success. Run `scripts/zharden.sh` first if that server is not yet
+installed.
 
 ### Local demo without the device
 

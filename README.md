@@ -17,7 +17,7 @@ Credit: based on [jesther-ai/open-u60-pro](https://github.com/jesther-ai/open-u6
 ## Architecture
 
 ```
-Browser ── HTTP/JSON ──► React dashboard (:8080, uhttpd, /data/www)
+Browser ── HTTP/JSON ──► React dashboard (:8080, isolated uhttpd, /data/www)
                               │
                               │ bearer-token JSON API
                               ▼
@@ -79,11 +79,25 @@ python3 scripts/test-emulator-fixes.py \
 
 QEMU exercises the real firmware userland and UBUS contracts, but cannot
 replace final hardware checks for radios, sensors or the physical modem. See
-[docs/EMULATION.md](docs/EMULATION.md) for the exact fidelity boundaries.
+[docs/EMULATION.md](docs/EMULATION.md) for the exact fidelity boundaries and
+the native desktop-installer test using gateway `127.0.0.1`.
 
 ## Quick start
 
+### Desktop installer (recommended)
+
+Windows and macOS users can install, repair, or update the complete stack with
+the native **Open U60 Pro Installer** from GitHub Releases. It has a guided
+interface, bundles ADB, selects only compatible ZTE MU5250 devices, and requires
+no terminal or language runtimes. See [`installer/README.md`](installer/README.md).
+
+### Terminal flow
+
 Locked firmware (HK B04+, CN B28+) — the full sequence:
+
+The source dashboard build requires Node.js `^20.19.0 || >=22.12.0` and npm;
+`deploy-dashboard.sh` installs the locked dependencies with `npm ci`. The
+native desktop installer uses prebuilt assets and does not require Node.js.
 
 ```sh
 python3 scripts/zunlock.py     # 1. unlock → adbd (config backup/restore route)
