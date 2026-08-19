@@ -119,6 +119,10 @@ Intel. Each macOS build is attached as both a DMG and a `ditto`-created app ZIP
 whose extracted code signature is verified in CI. ADB and its Windows DLLs are
 bundled into each application.
 
+A manual workflow run with an empty **release_tag** is a build-only preflight.
+Supplying an existing tag publishes or replaces that release's desktop assets;
+this provides a retry path without moving an already-published Git tag.
+
 macOS builds use ad-hoc signing when signing secrets are absent, which keeps
 local/test downloads intact. Production releases should configure:
 
