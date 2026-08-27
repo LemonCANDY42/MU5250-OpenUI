@@ -173,6 +173,19 @@ credential survived an agent release replacement, completed a new single-use
 challenge login and loaded ten available B04 capabilities. Browser and iPhone
 credentials remain separate client-held keys.
 
+The server process contains one non-API diagnostic worker for a single seven-day
+observation. It uses the existing single-thread Tokio runtime, samples fixed
+`/proc` and `/data` sources every ten minutes, and writes owner-only state plus a
+bounded JSONL stream under `/data/u60/state`. A persisted start/deadline and
+completion marker make it one-shot across service and device restarts. Power-off
+gaps count as elapsed calendar time but produce no synthetic data. Device reboot
+correlation uses a private hash of the kernel boot identity; neither the identity
+nor its hash enters the log. Two post-deadline observations protect against one
+forward clock jump, while rollback clears a premature deadline candidate. A
+1 MiB ceiling is an independent fail-closed stop condition. The worker never
+invokes B04 configuration operations and its failure cannot stop the HTTPS
+control plane.
+
 Apple Passkey is a later, distinct WebAuthn layer. It requires an owner domain,
 Associated Domains and an AASA file. The NAS is not an authentication runtime
 dependency. Until those requirements exist, local Secure Enclave pairing must

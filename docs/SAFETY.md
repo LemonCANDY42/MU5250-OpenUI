@@ -163,6 +163,17 @@ This implementation still requires live acceptance. The owner reduced the
 final observation to a one-hour active gate; that result must not be represented
 as the original 24-hour RSS-growth target.
 
+The compiled secure service additionally has one bounded, read-only stability
+recorder. It samples fixed kernel/process counters every ten minutes, performs
+no vendor call or device mutation, and stores only sanitized aggregate records
+in `/data/u60/state/stability-monitor-v1.jsonl`. The file is mode `0600`, has a
+1 MiB hard limit and permanently stops after the first seven-day window (or
+earlier if the limit is reached). Its atomic state file preserves the original
+deadline across agent replacement, restart and device reboot. Corrupt/missing
+authoritative state with a nonempty log disables the recorder rather than
+silently starting a new observation. This persistence does not install a boot
+hook and does not weaken the separate stable-install gate.
+
 ## Known-good ubus surface
 
 `zte-script-ng.js` (repo root) is the community-vetted reference of ubus

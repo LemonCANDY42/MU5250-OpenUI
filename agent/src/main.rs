@@ -5,11 +5,12 @@ mod b04_io;
 mod daily;
 mod handlers;
 mod server;
+mod stability_monitor;
 mod state_store;
 mod util;
 
 use std::io::Read;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 
 use auth::{AuthFailure, AuthService};
@@ -83,11 +84,19 @@ async fn serve(web_root: Option<PathBuf>) -> Result<(), String> {
         .parse::<SocketAddr>()
         .map_err(|error| format!("invalid U60_BIND: {error}"))?;
     let web_root = web_root.map(server::StaticWebRoot::load).transpose()?;
+    let listener = TcpListener::bind(bind)
+        .map_err(|error| format!("HTTPS listener failed to bind: {error}"))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("HTTPS listener failed to enter nonblocking mode: {error}"))?;
     let store = StateStore::open(state_root())?;
     let auth = AuthService::open(store.clone())?;
-    let daily = daily::DailyService::open(store)?;
+    let daily = daily::DailyService::open(store.clone())?;
+    if let Err(error) = stability_monitor::start(store) {
+        eprintln!("[stability-monitor] disabled: {error}");
+    }
     let state = AppState::with_daily(auth, daily);
-    server::start(bind, state, tls, web_root)
+    server::start(listener, state, tls, web_root)
         .await
         .map_err(|error| format!("HTTPS listener failed: {error}"))
 }

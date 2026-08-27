@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
-use std::net::SocketAddr;
+use std::net::{SocketAddr, TcpListener};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -250,12 +250,12 @@ pub fn load_tls_config(
 }
 
 pub async fn start(
-    bind: SocketAddr,
+    listener: TcpListener,
     state: AppState,
     tls: RustlsConfig,
     web_root: Option<StaticWebRoot>,
 ) -> Result<(), std::io::Error> {
-    axum_server::bind_rustls(bind, tls)
+    axum_server::from_tcp_rustls(listener, tls)?
         .serve(
             router_with_web_root(state, web_root)
                 .into_make_service_with_connect_info::<SocketAddr>(),
@@ -921,7 +921,7 @@ mod tests {
         let production = source.split("#[cfg(test)]").next().unwrap();
         assert!(!production.contains("Server::http"));
         assert!(!production.contains("axum_server::bind("));
-        assert!(production.contains("axum_server::bind_rustls"));
+        assert!(production.contains("axum_server::from_tcp_rustls"));
         let manifest = include_str!("../Cargo.toml");
         assert!(!manifest.contains("tiny_http"));
         assert!(manifest.contains("rustls = { version = \">=0.23.5, <0.24\""));

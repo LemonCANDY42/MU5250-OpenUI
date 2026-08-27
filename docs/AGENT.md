@@ -136,6 +136,26 @@ reported failure. Maintenance operations are CLI-only:
 - `zte-agent credential-list` lists non-secret metadata;
 - `zte-agent credential-revoke ID` revokes a client key.
 
+The secure service also owns one deliberately finite stability observation.
+Its first successful listener bind creates `stability-monitor-v1.json` and
+appends one sanitized `stability-monitor-v1.jsonl` sample every ten minutes.
+Both live under `U60_STATE_DIR`, are owner-only, and contain only aggregate
+agent CPU/RSS/thread counts, system memory, `/data` capacity, uptime,
+service-restart and device-reboot indicators. The raw boot UUID is never logged
+or exposed; only a SHA-256 fingerprint is retained in private state so a later
+start can report a reboot. There is no network endpoint for this diagnostic
+data.
+
+The observation is anchored to one fixed seven-day wall-clock window and never
+starts over. Shutdown time remains part of that window, no missing samples are
+fabricated, and the first service start after shutdown records the restart and
+any detected reboot. A backward or implausible wall clock cannot complete the
+observation. Reaching the deadline requires two samples ten minutes apart; the
+completion marker is then persisted and all later starts remain silent. The
+JSONL file has a 1 MiB hard ceiling and reaching it also writes a permanent
+completion marker. Normal samples are appended without a per-record filesystem
+sync; state is atomically synced only at lifecycle boundaries.
+
 There is no network credential-list or revoke endpoint. Passwords, private keys
 and CA passphrases never enter command-line arguments or repository state. The
 separate [host-only PKI tooling](PKI.md) must be given an explicit
@@ -183,6 +203,8 @@ in-memory-only token behavior.
 The target is idle RSS at or below 12 MiB, average idle CPU below 1%, less than
 2 MiB RSS growth over 24 hours and bounded local logs. No source-only build can
 prove those values. They are measured only during the later `19443` canary.
+The one-shot monitor described above supplies longer-running evidence only after
+that release is explicitly deployed; adding it to source is not device evidence.
 
 Legacy `setup.sh`, `deploy.sh`, `deploy-dashboard.sh` and
 `scripts/zharden.sh` exit before any device access. Do not bypass those guards;

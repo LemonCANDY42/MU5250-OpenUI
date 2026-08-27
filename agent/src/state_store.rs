@@ -113,6 +113,10 @@ impl StateStore {
         Ok(StateLock { _file: file })
     }
 
+    pub(crate) fn root_path(&self) -> &Path {
+        &self.root
+    }
+
     fn write_atomic(&self, name: &str, bytes: &[u8]) -> Result<(), String> {
         let destination = self.path(name)?;
         let mut random = [0u8; 8];

@@ -18,7 +18,7 @@ rand_core = { version = "0.6.4", features = ["getrandom"] }
 rustls = { version = ">=0.23.5, <0.24", default-features = false, features = ["ring", "std"] }
 rustls-pemfile = "2.2.0"
 subtle = "2.6.1"
-tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "signal"] }
+tokio = { version = "1.48.0", default-features = false, features = ["macros", "rt", "signal", "time"] }
 wait-timeout = "0.2.1"
 
 [dev-dependencies]

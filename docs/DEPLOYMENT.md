@@ -112,6 +112,17 @@ syntax validation. No firewall/init hook, UCI service, USB/FOTA change or
 partition action exists in this path. Logs rotate at 1 MiB with one prior file
 per service, keeping launcher logs below 6 MiB in total.
 
+A release containing the built-in stability monitor starts its one and only
+seven-day window when that release first starts successfully. Its private state
+and JSONL log live in `/data/u60/state`, outside immutable release directories,
+so release replacement and service restart do not reset the window. Device-off
+time is intentionally counted and is represented as a sampling gap; reboot is
+recorded when the service next runs. Automatic post-reboot sampling exists only
+after the separately gated stable activation and minimal boot hook are accepted.
+A LAN canary is nonpersistent and therefore cannot by itself prove reboot
+resumption. The monitor adds no deploy authorization and must not be used to
+bypass any canary, recovery, SSH or boot gate.
+
 The rest of this document is historical unlock/recovery context. Do not follow
 the old deployment commands below on the B04 V1 branch: `setup.sh`, `deploy.sh`,
 `deploy-dashboard.sh` and `scripts/zharden.sh` exit before device access.
