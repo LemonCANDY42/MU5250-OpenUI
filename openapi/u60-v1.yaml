@@ -797,6 +797,8 @@ components:
           type: string
         capabilities:
           type: array
+          maxItems: 10
+          uniqueItems: true
           items:
             $ref: "#/components/schemas/Capability"
     Capability:

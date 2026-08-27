@@ -132,6 +132,7 @@
 "LAN clients" = "LAN clients";
 "Messages" = "Messages";
 "Monitoring" = "Monitoring";
+"Refresh now" = "Refresh now";
 "Arrange dashboard" = "Arrange dashboard";
 "Done" = "Done";
 "Refresh frequency" = "Refresh frequency";
@@ -181,7 +182,6 @@
 "MLO" = "MLO";
 "Band steering" = "Band steering";
 "This iPhone signal" = "This iPhone signal";
-"Not exposed by the iOS public API" = "Not exposed by the iOS public API";
 "Not currently observed by the U60" = "Not currently observed by the U60";
 "Not supported on this B04" = "Not supported on this B04";
 "Inactive" = "Inactive";

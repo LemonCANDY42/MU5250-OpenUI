@@ -199,7 +199,14 @@ private struct WifiControlView: View {
                             ? (wifi.features.bandSteeringEnabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                             : String(localized: "Unavailable")
                     )
-                    LabeledContent("This iPhone signal", value: String(localized: "Not exposed by the iOS public API"))
+                    if let link = wifi.currentClientLink {
+                        LabeledContent("This iPhone signal", value: "\(link.signalDbm) dBm · \(link.band)")
+                        Text("Measured by the U60 for this authenticated client.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        LabeledContent("This iPhone signal", value: String(localized: "Not currently observed by the U60"))
+                    }
                 }
                 ForEach(Array(wifi.bands.enumerated()), id: \.offset) { _, band in
                     Section(band.band) {

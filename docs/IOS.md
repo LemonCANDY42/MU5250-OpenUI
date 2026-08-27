@@ -64,8 +64,14 @@ not mixed with editable values. The authenticated dashboard uses collapsible
 cards and a dedicated reorder sheet; unavailable cards retain their normal
 position and remain reorderable instead of being appended as unowned errors.
 Card content is clipped to the rounded card boundary throughout collapse
-animations, and refresh keeps a stable toolbar layout by pulsing the existing
-monitoring icon instead of inserting and removing a separate progress item.
+animations, and refresh keeps a stable toolbar layout by pulsing a fixed refresh
+button instead of inserting and removing a separate progress item. After the
+capability report is available, the ten fixed read-only capability IDs are
+deduplicated and read within one bounded request window, while charging status
+loads alongside the dashboard. A weak link
+therefore incurs one bounded request window instead of accumulating one timeout
+per status card. The monitoring menu remains separate from the explicit refresh
+button.
 Card order, collapsed state, monitoring interval, graph range and per-series
 chart visibility are remembered in device-local Keychain state. Manual refresh
 remains the default to minimize device and radio load, with explicit five-second,
@@ -98,8 +104,10 @@ Apple's public accessory-network API does not expose the current iPhone Wi-Fi
 RSSI. The dashboard instead uses optional request context and labels RSSI and
 link rates as U60 router observations only when the HTTPS peer uniquely matches
 a DHCP lease and station. The RSSI appears in Signal strength while link rates
-remain in Wi-Fi information. Missing or ambiguous correlation leaves the fields
-absent without failing Wi-Fi status. Radio aggregation, selection and
+remain in Wi-Fi information. The Wi-Fi control status page uses that same
+router-observed value and labels it as such; missing or ambiguous correlation
+states that the U60 is not currently observing the client rather than implying
+that no signal source exists. Missing context never fails Wi-Fi status. Radio aggregation, selection and
 read-only cell-lock summaries are optional so new clients remain compatible
 with earlier V1 agents. The battery card similarly shows optional validated
 health, cycle, learned/design capacity and applicable kernel-estimate fields.

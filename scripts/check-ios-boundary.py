@@ -124,6 +124,7 @@ for forbidden in (
     "SecTrustSetAnchorCertificates",
     "UserDefaults",
     "@AppStorage",
+    "Not exposed by the iOS public API",
 ):
     if forbidden in source:
         fail(f"compiled source contains forbidden marker {forbidden!r}")
@@ -138,6 +139,8 @@ required_source_fragments = (
     "completionHandler(nil)",
     "kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
     "SessionVault",
+    "DashboardRequestScheduler.run(capabilityIDs)",
+    "async let snapshot = service.dashboard()",
 )
 for fragment in required_source_fragments:
     if fragment not in source:

@@ -307,9 +307,9 @@ final class AppModel {
     private func loadDashboard(
         using service: AgentService
     ) async throws -> (snapshot: DashboardSnapshot, charging: Components.Schemas.ChargingStatus?) {
-        let snapshot = try await service.dashboard()
-        let charging = try? await service.chargingStatus()
-        return (snapshot, charging)
+        async let snapshot = service.dashboard()
+        async let charging: Components.Schemas.ChargingStatus? = try? await service.chargingStatus()
+        return try await (snapshot, charging)
     }
 
     private func applyDashboard(

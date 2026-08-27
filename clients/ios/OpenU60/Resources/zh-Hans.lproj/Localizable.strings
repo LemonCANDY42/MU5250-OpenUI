@@ -133,6 +133,7 @@
 "LAN clients" = "局域网设备";
 "Messages" = "短信";
 "Monitoring" = "状态监测";
+"Refresh now" = "立即刷新";
 "Arrange dashboard" = "排列仪表盘";
 "Done" = "完成";
 "Refresh frequency" = "刷新频率";
@@ -181,7 +182,6 @@
 "MLO" = "MLO";
 "Band steering" = "频段引导";
 "This iPhone signal" = "本机 Wi‑Fi 信号";
-"Not exposed by the iOS public API" = "iOS 公共接口不提供";
 "Not currently observed by the U60" = "U60 当前未观测到";
 "Not supported on this B04" = "此 B04 不支持";
 "Inactive" = "未启用";

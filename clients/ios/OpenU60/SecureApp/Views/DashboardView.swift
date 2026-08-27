@@ -167,9 +167,19 @@ struct DashboardView: View {
                             Text("Monitoring")
                         } icon: {
                             Image(systemName: "clock.arrow.circlepath")
+                        }
+                    }
+                    Button {
+                        Task { await model.refresh() }
+                    } label: {
+                        Label {
+                            Text("Refresh now")
+                        } icon: {
+                            Image(systemName: "arrow.clockwise")
                                 .symbolEffect(.pulse, options: .repeating, isActive: model.isWorking)
                         }
                     }
+                    .disabled(model.isWorking)
                     Button {
                         showsLayoutEditor = true
                     } label: {

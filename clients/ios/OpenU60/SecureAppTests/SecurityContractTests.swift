@@ -31,6 +31,59 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(ConnectionIssue.classify(AgentServiceError.invalidResponse))
     }
 
+    func testDashboardCapabilityPlanDeduplicatesAndSkipsUnsupportedEntries() throws {
+        let report = try JSONDecoder().decode(
+            Components.Schemas.CapabilityReport.self,
+            from: Data(
+                #"{"adapter":"b04","firmware_target":"hk_b04","capabilities":[{"id":"wifi_status","status":"available","recovery":{"required":false}},{"id":"wifi_status","status":"degraded","recovery":{"required":false}},{"id":"battery_status","status":"unsupported","recovery":{"required":false}},{"id":"signal_status","status":"available","recovery":{"required":false}}]}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(
+            AgentService.dashboardCapabilityIDs(from: report.capabilities),
+            [.wifiStatus, .signalStatus]
+        )
+    }
+
+    func testDashboardRequestSchedulerOverlapsWorkWithinFixedLimit() async throws {
+        let probe = ConcurrentOperationProbe()
+        let values = Array(0 ..< 12)
+        let results = try await DashboardRequestScheduler.run(values) { value in
+            await probe.begin()
+            do {
+                try await Task.sleep(for: .milliseconds(20))
+                await probe.end()
+                return value
+            } catch {
+                await probe.end()
+                throw error
+            }
+        }
+
+        XCTAssertEqual(results.sorted(), values)
+        let maximumActive = await probe.maximumActive
+        XCTAssertGreaterThan(maximumActive, 1)
+        XCTAssertLessThanOrEqual(maximumActive, DashboardRequestScheduler.maximumConcurrentRequests)
+    }
+
+    func testDashboardRequestSchedulerPropagatesCancellation() async throws {
+        let task = Task {
+            try await DashboardRequestScheduler.run(Array(0 ..< 8)) { value in
+                try await Task.sleep(for: .seconds(30))
+                return value
+            }
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Cancelled dashboard requests must not complete successfully")
+        } catch {
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
     func testWrappedWifiFeaturesDecodeFailureReportsAgentReleaseMismatch() throws {
         let key = try XCTUnwrap(TestCodingKey(stringValue: "features"))
         let decodingError = DecodingError.keyNotFound(
@@ -527,6 +580,20 @@ private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender 
     func cancel(_: URLAuthenticationChallenge) {}
     func performDefaultHandling(for _: URLAuthenticationChallenge) {}
     func rejectProtectionSpaceAndContinue(with _: URLAuthenticationChallenge) {}
+}
+
+private actor ConcurrentOperationProbe {
+    private var active = 0
+    private(set) var maximumActive = 0
+
+    func begin() {
+        active += 1
+        maximumActive = max(maximumActive, active)
+    }
+
+    func end() {
+        active -= 1
+    }
 }
 
 private final class MemorySecretStore: SecretStore, @unchecked Sendable {

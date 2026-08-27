@@ -38,6 +38,55 @@ struct WifiTransactionEdits: Sendable {
     var guestActiveTimeMinutes: Int? = nil
 }
 
+private enum DashboardCapabilityResult: Sendable {
+    case device(Components.Schemas.Device)
+    case system(Components.Schemas.SystemStatus)
+    case battery(Components.Schemas.BatteryStatus)
+    case thermal(Components.Schemas.ThermalStatus)
+    case signal(Components.Schemas.SignalStatus)
+    case cellular(Components.Schemas.CellularStatus)
+    case traffic(Components.Schemas.TrafficStatus)
+    case wifi(Components.Schemas.WifiStatus)
+    case lanClients(Components.Schemas.LanClients)
+    case sms(Components.Schemas.SmsPage)
+    case failure(key: String, message: String)
+}
+
+enum DashboardRequestScheduler {
+    static let maximumConcurrentRequests = 10
+
+    static func run<Input: Sendable, Output: Sendable>(
+        _ inputs: [Input],
+        operation: @Sendable @escaping (Input) async throws -> Output
+    ) async throws -> [Output] {
+        guard !inputs.isEmpty else { return [] }
+
+        return try await withThrowingTaskGroup(of: Output.self) { group in
+            var iterator = inputs.makeIterator()
+            let initialCount = min(maximumConcurrentRequests, inputs.count)
+            for _ in 0 ..< initialCount {
+                guard let input = iterator.next() else { break }
+                group.addTask {
+                    try Task.checkCancellation()
+                    return try await operation(input)
+                }
+            }
+
+            var results: [Output] = []
+            while let result = try await group.next() {
+                results.append(result)
+                if let input = iterator.next() {
+                    group.addTask {
+                        try Task.checkCancellation()
+                        return try await operation(input)
+                    }
+                }
+            }
+            return results
+        }
+    }
+}
+
 final class AgentService: Sendable {
     private let client: Client
     private let vault: SessionVault
@@ -53,6 +102,7 @@ final class AgentService: Sendable {
         configuration.urlCache = nil
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.httpShouldSetCookies = false
+        configuration.httpMaximumConnectionsPerHost = DashboardRequestScheduler.maximumConcurrentRequests
         let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let transport = URLSessionTransport(configuration: .init(session: session, httpBodyProcessingMode: .buffered))
         client = Client(
@@ -132,85 +182,24 @@ final class AgentService: Sendable {
         var sms: Components.Schemas.SmsPage?
         var failures: [String: String] = [:]
 
-        for capability in report.capabilities where capability.status != .unsupported {
-            do {
-                switch capability.id {
-                case .deviceIdentity:
-                    let output = try await client.getDevice()
-                    if case let .ok(response) = output {
-                        device = try response.body.json.data
-                    } else {
-                        failures["device_identity"] = String(localized: "Unavailable")
-                    }
-                case .systemStatus:
-                    let output = try await client.getSystemStatus()
-                    if case let .ok(response) = output {
-                        system = try response.body.json.data
-                    } else {
-                        failures["system_status"] = String(localized: "Unavailable")
-                    }
-                case .batteryStatus:
-                    let output = try await client.getBatteryStatus()
-                    if case let .ok(response) = output {
-                        battery = try response.body.json.data
-                    } else {
-                        failures["battery_status"] = String(localized: "Unavailable")
-                    }
-                case .thermalStatus:
-                    let output = try await client.getThermalStatus()
-                    if case let .ok(response) = output {
-                        thermal = try response.body.json.data
-                    } else {
-                        failures["thermal_status"] = String(localized: "Unavailable")
-                    }
-                case .signalStatus:
-                    let output = try await client.getSignalStatus()
-                    if case let .ok(response) = output {
-                        signal = try response.body.json.data
-                    } else {
-                        failures["signal_status"] = String(localized: "Unavailable")
-                    }
-                case .cellularStatus:
-                    let output = try await client.getCellularStatus()
-                    if case let .ok(response) = output {
-                        cellular = try response.body.json.data
-                    } else {
-                        failures["cellular_status"] = String(localized: "Unavailable")
-                    }
-                case .trafficStatus:
-                    let output = try await client.getTrafficStatus()
-                    if case let .ok(response) = output {
-                        traffic = try response.body.json.data
-                    } else {
-                        failures["traffic_status"] = String(localized: "Unavailable")
-                    }
-                case .wifiStatus:
-                    let output = try await client.getWifiStatus()
-                    if case let .ok(response) = output {
-                        wifi = try response.body.json.data
-                    } else {
-                        failures["wifi_status"] = String(localized: "Unavailable")
-                    }
-                case .lanClients:
-                    let output = try await client.getLanClients()
-                    if case let .ok(response) = output {
-                        lanClients = try response.body.json.data
-                    } else {
-                        failures["lan_clients"] = String(localized: "Unavailable")
-                    }
-                case .smsList:
-                    let output = try await client.getSmsList()
-                    if case let .ok(response) = output {
-                        sms = try response.body.json.data
-                    } else {
-                        failures["sms_list"] = String(localized: "Unavailable")
-                    }
-                }
-            } catch {
-                failures[dashboardFailureKey(for: capability.id)] = Self.dashboardFailureMessage(
-                    for: capability.id,
-                    error: error
-                )
+        let capabilityIDs = Self.dashboardCapabilityIDs(from: report.capabilities)
+        let results = try await DashboardRequestScheduler.run(capabilityIDs) { [self] capability in
+            try await fetchDashboardCapability(capability)
+        }
+
+        for result in results {
+            switch result {
+            case let .device(value): device = value
+            case let .system(value): system = value
+            case let .battery(value): battery = value
+            case let .thermal(value): thermal = value
+            case let .signal(value): signal = value
+            case let .cellular(value): cellular = value
+            case let .traffic(value): traffic = value
+            case let .wifi(value): wifi = value
+            case let .lanClients(value): lanClients = value
+            case let .sms(value): sms = value
+            case let .failure(key, message): failures[key] = message
             }
         }
         return DashboardSnapshot(
@@ -227,6 +216,87 @@ final class AgentService: Sendable {
             sms: sms,
             failures: failures
         )
+    }
+
+    static func dashboardCapabilityIDs(
+        from capabilities: [Components.Schemas.Capability]
+    ) -> [Components.Schemas.Capability.IdPayload] {
+        var seen = Set<String>()
+        return capabilities.compactMap { capability in
+            guard capability.status != .unsupported,
+                  seen.insert(capability.id.rawValue).inserted
+            else { return nil }
+            return capability.id
+        }
+    }
+
+    private func fetchDashboardCapability(
+        _ capability: Components.Schemas.Capability.IdPayload
+    ) async throws -> DashboardCapabilityResult {
+        do {
+            switch capability {
+            case .deviceIdentity:
+                let output = try await client.getDevice()
+                if case let .ok(response) = output {
+                    return .device(try response.body.json.data)
+                }
+            case .systemStatus:
+                let output = try await client.getSystemStatus()
+                if case let .ok(response) = output {
+                    return .system(try response.body.json.data)
+                }
+            case .batteryStatus:
+                let output = try await client.getBatteryStatus()
+                if case let .ok(response) = output {
+                    return .battery(try response.body.json.data)
+                }
+            case .thermalStatus:
+                let output = try await client.getThermalStatus()
+                if case let .ok(response) = output {
+                    return .thermal(try response.body.json.data)
+                }
+            case .signalStatus:
+                let output = try await client.getSignalStatus()
+                if case let .ok(response) = output {
+                    return .signal(try response.body.json.data)
+                }
+            case .cellularStatus:
+                let output = try await client.getCellularStatus()
+                if case let .ok(response) = output {
+                    return .cellular(try response.body.json.data)
+                }
+            case .trafficStatus:
+                let output = try await client.getTrafficStatus()
+                if case let .ok(response) = output {
+                    return .traffic(try response.body.json.data)
+                }
+            case .wifiStatus:
+                let output = try await client.getWifiStatus()
+                if case let .ok(response) = output {
+                    return .wifi(try response.body.json.data)
+                }
+            case .lanClients:
+                let output = try await client.getLanClients()
+                if case let .ok(response) = output {
+                    return .lanClients(try response.body.json.data)
+                }
+            case .smsList:
+                let output = try await client.getSmsList()
+                if case let .ok(response) = output {
+                    return .sms(try response.body.json.data)
+                }
+            }
+            return .failure(
+                key: dashboardFailureKey(for: capability),
+                message: String(localized: "Unavailable")
+            )
+        } catch {
+            try Task.checkCancellation()
+            return .failure(
+                key: dashboardFailureKey(for: capability),
+                message: Self.dashboardFailureMessage(for: capability, error: error)
+            )
+        }
     }
 
     private func dashboardFailureKey(for capability: Components.Schemas.Capability.IdPayload) -> String {
