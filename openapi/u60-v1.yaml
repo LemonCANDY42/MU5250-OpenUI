@@ -1100,6 +1100,27 @@ components:
           maxItems: 2
           items:
             $ref: "#/components/schemas/WifiBandStatus"
+        guest:
+          $ref: "#/components/schemas/WifiGuestStatus"
+    WifiGuestStatus:
+      type: object
+      additionalProperties: false
+      required: [enabled_2g, enabled_5g, ssid, hidden, isolation, active_time_minutes]
+      properties:
+        enabled_2g:
+          type: boolean
+        enabled_5g:
+          type: boolean
+        ssid:
+          type: string
+        hidden:
+          type: boolean
+        isolation:
+          type: boolean
+        active_time_minutes:
+          type: integer
+          minimum: 0
+          maximum: 1440
     WifiBandStatus:
       type: object
       additionalProperties: false
@@ -1290,6 +1311,17 @@ components:
           maxLength: 64
         hidden_2g:
           type: boolean
+        channel_2g:
+          type: string
+          description: auto/0 or a channel in the fixed B04 allowlist
+        bandwidth_2g:
+          type: string
+          description: value in the fixed B04 2.4 GHz bandwidth allowlist
+        transmit_power_2g:
+          type: integer
+          minimum: 10
+          maximum: 100
+          multipleOf: 10
         ssid_5g:
           type: string
           minLength: 1
@@ -1301,6 +1333,38 @@ components:
           maxLength: 64
         hidden_5g:
           type: boolean
+        channel_5g:
+          type: string
+          description: auto/0 or a channel in the fixed B04 allowlist
+        bandwidth_5g:
+          type: string
+          description: value in the fixed B04 5 GHz bandwidth allowlist
+        transmit_power_5g:
+          type: integer
+          minimum: 10
+          maximum: 100
+          multipleOf: 10
+        guest_enabled_2g:
+          type: boolean
+        guest_enabled_5g:
+          type: boolean
+        guest_ssid:
+          type: string
+          minLength: 1
+          maxLength: 32
+        guest_passphrase:
+          type: string
+          writeOnly: true
+          minLength: 8
+          maxLength: 64
+        guest_hidden:
+          type: boolean
+        guest_isolation:
+          type: boolean
+        guest_active_time_minutes:
+          type: integer
+          minimum: 0
+          maximum: 1440
     WifiConfirmRequest:
       type: object
       additionalProperties: false

@@ -34,6 +34,25 @@ uses the certificate-covered IP while the phone is joined directly to the U60
 Wi-Fi, avoiding an unproven local-DNS dependency. `u60.local` remains the
 preferred stable name and future RP-aligned endpoint.
 
+## Native control hierarchy and localization
+
+The authenticated Control tab uses native SwiftUI navigation rather than one
+flat mutation form. Its landing page summarizes charging, Wi-Fi, traffic-cycle
+and SMS state; each operation owns a separate detail screen and confirmation
+flow. The Wi-Fi screen mirrors the useful hierarchy of the imported MIT client
+while keeping the V1 safety boundary: typed primary and guest fields only,
+fixed channel/bandwidth/transmit-power choices, no raw UCI/ubus surface, no
+prefilled password, and a visible two-minute reconnect confirmation backed by
+the independent device rollback worker. B04 exposes Wi-Fi 7 through its EHT
+radio mode but no independent switch source, so the client reports that state
+without presenting a nonfunctional toggle.
+
+English and Simplified Chinese resources cover this control hierarchy and its
+confirmation, warning and recovery text. SwiftUI literals use the string table;
+dynamic network names and device values remain data rather than localization
+keys. One root-level error presenter owns operation failures so nested control
+views cannot race to dismiss the same alert.
+
 ## Local key and password fallback
 
 On a physical iPhone the app creates a P-256 signing key in Secure Enclave and
@@ -88,12 +107,36 @@ scripts/pairing/make-pairing-qr.sh \
   /absolute/path/outside-the-repository/u60-pairing.png
 ```
 
+If the device clock differs from the Mac clock, capture `HOST_EPOCH` on the
+owner Mac immediately before capturing `DEVICE_EPOCH` on the device. Capture
+the device epoch and obtain the `pair-open` grant in the same USB-root-ADB
+maintenance sequence, then pass both clock samples together. The grant remains
+on stdin; the nonce must not be put in an argument or log:
+
+```sh
+scripts/pairing/make-pairing-qr.sh \
+  /absolute/path/to/verified-device-bundle \
+  https://192.168.0.1:9443 \
+  /absolute/path/outside-the-repository/u60-pairing.png \
+  "$HOST_EPOCH" \
+  "$DEVICE_EPOCH"
+```
+
+The paired clock path subtracts host time elapsed since the samples and a small
+safety margin from the device window. The QR therefore carries a conservative
+local display deadline that can expire before the device grant. The backend's
+boot-bound monotonic pairing window remains authoritative.
+
 The tool requires the signed-bundle completion marker, reads only its public
 SPKI pin, refuses output inside the repository, writes the QR at mode `0600`
 through exclusive no-follow publication in a physically resolved output
-directory, and never puts the nonce in an argument. The QR expires with the agent window.
-The signed bundle must still pass `scripts/pki/verify-bundle.sh`; the QR tool is
-not a substitute for certificate verification.
+directory, and never puts the nonce in an argument. The QR has a locally
+bounded display lifetime of at most five minutes; the
+backend's pairing window remains authoritative.
+
+Before invoking the QR tool, the owner must verify the signed bundle with
+`scripts/pki/verify-bundle.sh CSR_DIR BUNDLE_DIR CA_CERT`; the QR tool is not a
+substitute for certificate verification.
 
 ## Current evidence boundary
 

@@ -4,10 +4,11 @@ Safety-first control-plane work for one owner-operated ZTE U60 Pro (MU5250) on
 HK B04 firmware.
 
 > **Do not install this branch persistently or enable write capabilities until
-> the remaining V1 gates are recorded.** One content-addressed, loopback-only
-> B04 canary is running through a temporary USB ADB forward. It has no stable
-> symlink or boot hook. Its release checksum, TLS authentication boundary and
-> unchanged recovery/network invariants are accepted. Real Chrome WebCrypto
+> the remaining V1 gates are recorded.** The accepted nonpersistent LAN canary
+> is running on the U60 management address, with no `current`/`previous` link
+> or boot hook. Its release checksum, TLS authentication boundary and unchanged
+> recovery/network invariants were freshly revalidated before restart. Real
+> Chrome WebCrypto
 > pairing and all ten read-only capabilities are accepted; physical-iPhone
 > build/install/launch and owner-confirmed CA trust are accepted, while Secure
 > Enclave pairing and
@@ -70,15 +71,16 @@ The daily write source is host-tested but has not yet passed the per-operation
 B04 backup, applied-state and rollback gates. Until those records exist, the
 running device canary remains read-only.
 
-## Current read-only canary
+## Accepted read-only canary release
 
-The active canary is release
+The current LAN-canary release is
 `9b334dd65f32d8ef375d04026c197e467d6f42a44c7cf53df4c5803e49e58fb9`,
 whose identifier binds its complete checksum list. It is installed under the
-immutable `/data/u60/releases/` store and bound only to `127.0.0.1:19443`.
+immutable `/data/u60/releases/` store and bound only to `192.168.0.1:9443`.
 `current` and `previous` are still absent, so it is not a stable installation.
-The Mac reaches it only through `adb forward tcp:19443 tcp:19443`; it is not
-referenced by `rc.local`, init, firewall or a new system service.
+The current agent is a nonpersistent LAN process; it will not restart after a
+reboot. The release is not referenced by `rc.local`, init, firewall or a new
+system service.
 
 Immediate acceptance proved the full device-side release checksum, TLS owner-CA
 verification with unauthenticated `401`, root ADB retention and unchanged exact

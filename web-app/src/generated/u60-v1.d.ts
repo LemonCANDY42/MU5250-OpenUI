@@ -578,6 +578,15 @@ export interface components {
                 components["schemas"]["WifiBandStatus"],
                 components["schemas"]["WifiBandStatus"]
             ];
+            readonly guest?: components["schemas"]["WifiGuestStatus"];
+        };
+        readonly WifiGuestStatus: {
+            readonly enabled_2g: boolean;
+            readonly enabled_5g: boolean;
+            readonly ssid: string;
+            readonly hidden: boolean;
+            readonly isolation: boolean;
+            readonly active_time_minutes: number;
         };
         readonly WifiBandStatus: {
             readonly band: string;
@@ -652,9 +661,26 @@ export interface components {
             readonly ssid_2g?: string;
             readonly passphrase_2g?: string;
             readonly hidden_2g?: boolean;
+            /** @description auto/0 or a channel in the fixed B04 allowlist */
+            readonly channel_2g?: string;
+            /** @description value in the fixed B04 2.4 GHz bandwidth allowlist */
+            readonly bandwidth_2g?: string;
+            readonly transmit_power_2g?: number;
             readonly ssid_5g?: string;
             readonly passphrase_5g?: string;
             readonly hidden_5g?: boolean;
+            /** @description auto/0 or a channel in the fixed B04 allowlist */
+            readonly channel_5g?: string;
+            /** @description value in the fixed B04 5 GHz bandwidth allowlist */
+            readonly bandwidth_5g?: string;
+            readonly transmit_power_5g?: number;
+            readonly guest_enabled_2g?: boolean;
+            readonly guest_enabled_5g?: boolean;
+            readonly guest_ssid?: string;
+            readonly guest_passphrase?: string;
+            readonly guest_hidden?: boolean;
+            readonly guest_isolation?: boolean;
+            readonly guest_active_time_minutes?: number;
         };
         readonly WifiConfirmRequest: {
             readonly transaction_id: string;

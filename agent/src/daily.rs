@@ -25,6 +25,8 @@ const DAILY_AUDIT_LOCK: &str = "daily-audit.lock";
 const WIFI_CONFIRM_SECONDS: u64 = 120;
 const CHARGE_HYSTERESIS_PERCENT: u8 = 5;
 const CHARGE_POLL_SECONDS: u64 = 30;
+const CHARGE_READBACK_ATTEMPTS: usize = 8;
+const CHARGE_READBACK_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_DAILY_AUDIT_EVENTS: usize = 128;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -32,7 +34,7 @@ pub struct WriteResult {
     pub result: &'static str,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SmsSendRequest {
     pub recipient: String,
@@ -72,7 +74,7 @@ pub struct TrafficCycleRequest {
     pub enabled: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WifiTransactionRequest {
     #[serde(default)]
@@ -82,11 +84,37 @@ pub struct WifiTransactionRequest {
     #[serde(default)]
     pub hidden_2g: Option<bool>,
     #[serde(default)]
+    pub channel_2g: Option<String>,
+    #[serde(default)]
+    pub bandwidth_2g: Option<String>,
+    #[serde(default)]
+    pub transmit_power_2g: Option<u8>,
+    #[serde(default)]
     pub ssid_5g: Option<String>,
     #[serde(default)]
     pub passphrase_5g: Option<String>,
     #[serde(default)]
     pub hidden_5g: Option<bool>,
+    #[serde(default)]
+    pub channel_5g: Option<String>,
+    #[serde(default)]
+    pub bandwidth_5g: Option<String>,
+    #[serde(default)]
+    pub transmit_power_5g: Option<u8>,
+    #[serde(default)]
+    pub guest_enabled_2g: Option<bool>,
+    #[serde(default)]
+    pub guest_enabled_5g: Option<bool>,
+    #[serde(default)]
+    pub guest_ssid: Option<String>,
+    #[serde(default)]
+    pub guest_passphrase: Option<String>,
+    #[serde(default)]
+    pub guest_hidden: Option<bool>,
+    #[serde(default)]
+    pub guest_isolation: Option<bool>,
+    #[serde(default)]
+    pub guest_active_time_minutes: Option<u16>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -426,10 +454,20 @@ impl DailyService {
 
     fn set_charge_paused(&self, paused: bool) -> Result<(), String> {
         self.io.ubus_write(UbusWrite::ChargePaused(paused))?;
-        if charger_paused(self.io.as_ref())? != paused {
-            return Err("charging control readback did not match the requested state".into());
+        let mut last_error = None;
+        for attempt in 0..CHARGE_READBACK_ATTEMPTS {
+            match charger_paused(self.io.as_ref()) {
+                Ok(current) if current == paused => return Ok(()),
+                Ok(_) => last_error = None,
+                Err(error) => last_error = Some(error),
+            }
+            if attempt + 1 < CHARGE_READBACK_ATTEMPTS {
+                thread::sleep(CHARGE_READBACK_INTERVAL);
+            }
         }
-        Ok(())
+        Err(last_error.unwrap_or_else(|| {
+            "charging control readback did not match the requested state".into()
+        }))
     }
 
     fn restore_charge_state(&self, policy: &ChargePolicy, paused: bool) -> Result<(), String> {
@@ -532,7 +570,129 @@ fn wifi_values_from_request(
             values.insert(field, if value { "1" } else { "0" }.into());
         }
     }
+    for (field, value, five_ghz) in [
+        (WifiField::Channel2g, request.channel_2g, false),
+        (WifiField::Channel5g, request.channel_5g, true),
+    ] {
+        if let Some(value) = value {
+            values.insert(field, validate_channel(&value, five_ghz)?);
+        }
+    }
+    for (field, value, five_ghz) in [
+        (WifiField::Bandwidth2g, request.bandwidth_2g, false),
+        (WifiField::Bandwidth5g, request.bandwidth_5g, true),
+    ] {
+        if let Some(value) = value {
+            validate_bandwidth(&value, five_ghz)?;
+            values.insert(field, value);
+        }
+    }
+    for (field, value) in [
+        (WifiField::TransmitPower2g, request.transmit_power_2g),
+        (WifiField::TransmitPower5g, request.transmit_power_5g),
+    ] {
+        if let Some(value) = value {
+            if !matches!(value, 10 | 20 | 30 | 40 | 50 | 60 | 70 | 80 | 90 | 100) {
+                return Err("transmit power must be 10 to 100 percent in 10 percent steps".into());
+            }
+            values.insert(field, value.to_string());
+        }
+    }
+    for (field, value) in [
+        (WifiField::GuestDisabled2g, request.guest_enabled_2g),
+        (WifiField::GuestDisabled5g, request.guest_enabled_5g),
+    ] {
+        if let Some(enabled) = value {
+            values.insert(field, if enabled { "0" } else { "1" }.into());
+        }
+    }
+    if let Some(value) = request.guest_ssid {
+        validate_ssid(&value)?;
+        values.insert(WifiField::GuestSsid2g, value.clone());
+        values.insert(WifiField::GuestSsid5g, value);
+    }
+    if let Some(value) = request.guest_passphrase {
+        validate_passphrase(&value)?;
+        values.insert(WifiField::GuestPassphrase2g, value.clone());
+        values.insert(WifiField::GuestPassphrase5g, value);
+    }
+    for (fields, value) in [
+        (
+            [WifiField::GuestHidden2g, WifiField::GuestHidden5g],
+            request.guest_hidden,
+        ),
+        (
+            [WifiField::GuestIsolation2g, WifiField::GuestIsolation5g],
+            request.guest_isolation,
+        ),
+    ] {
+        if let Some(value) = value {
+            for field in fields {
+                values.insert(field, if value { "1" } else { "0" }.into());
+            }
+        }
+    }
+    if let Some(value) = request.guest_active_time_minutes {
+        if !matches!(value, 0 | 30 | 60 | 120 | 240 | 480 | 720 | 1440) {
+            return Err("guest active time is not one of the supported durations".into());
+        }
+        for field in [WifiField::GuestActiveTime2g, WifiField::GuestActiveTime5g] {
+            values.insert(field, value.to_string());
+        }
+    }
     Ok(values)
+}
+
+fn validate_channel(value: &str, five_ghz: bool) -> Result<String, String> {
+    let normalized = if value == "auto" { "0" } else { value };
+    let valid = if five_ghz {
+        matches!(
+            normalized,
+            "0" | "36"
+                | "40"
+                | "44"
+                | "48"
+                | "52"
+                | "56"
+                | "60"
+                | "64"
+                | "100"
+                | "104"
+                | "108"
+                | "112"
+                | "116"
+                | "120"
+                | "124"
+                | "128"
+                | "132"
+                | "136"
+                | "140"
+                | "149"
+                | "153"
+                | "157"
+                | "161"
+                | "165"
+        )
+    } else {
+        matches!(
+            normalized,
+            "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12" | "13"
+        )
+    };
+    valid
+        .then(|| normalized.to_owned())
+        .ok_or_else(|| "channel is not in the fixed B04 allowlist".into())
+}
+
+fn validate_bandwidth(value: &str, five_ghz: bool) -> Result<(), String> {
+    let valid = if five_ghz {
+        matches!(value, "auto" | "EHT20" | "EHT40" | "EHT80" | "EHT160")
+    } else {
+        matches!(value, "auto" | "EHT20" | "EHT40" | "EHT20_40")
+    };
+    valid
+        .then_some(())
+        .ok_or_else(|| "bandwidth is not in the fixed B04 allowlist".into())
 }
 
 fn validate_ssid(value: &str) -> Result<(), String> {
@@ -736,7 +896,7 @@ fn unix_now() -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use serde_json::json;
@@ -751,6 +911,8 @@ mod tests {
         cycle: Mutex<(u8, bool)>,
         fail_next_charge_readback: AtomicBool,
         corrupt_charge_readback: AtomicBool,
+        stale_charge_readbacks: AtomicUsize,
+        stale_after_next_charge_write: AtomicUsize,
         fail_next_cycle_readback: AtomicBool,
         corrupt_cycle_readback: AtomicBool,
     }
@@ -762,15 +924,35 @@ mod tests {
                     (WifiField::Ssid2g, "old-2g".into()),
                     (WifiField::Passphrase2g, "oldpass88".into()),
                     (WifiField::Hidden2g, "0".into()),
+                    (WifiField::Channel2g, "0".into()),
+                    (WifiField::Bandwidth2g, "EHT20_40".into()),
+                    (WifiField::TransmitPower2g, "30".into()),
                     (WifiField::Ssid5g, "old-5g".into()),
                     (WifiField::Passphrase5g, "oldpass55".into()),
                     (WifiField::Hidden5g, "0".into()),
+                    (WifiField::Channel5g, "0".into()),
+                    (WifiField::Bandwidth5g, "EHT160".into()),
+                    (WifiField::TransmitPower5g, "50".into()),
+                    (WifiField::GuestDisabled2g, "1".into()),
+                    (WifiField::GuestSsid2g, "guest".into()),
+                    (WifiField::GuestPassphrase2g, "guestpass88".into()),
+                    (WifiField::GuestHidden2g, "0".into()),
+                    (WifiField::GuestIsolation2g, "0".into()),
+                    (WifiField::GuestActiveTime2g, "0".into()),
+                    (WifiField::GuestDisabled5g, "1".into()),
+                    (WifiField::GuestSsid5g, "guest".into()),
+                    (WifiField::GuestPassphrase5g, "guestpass88".into()),
+                    (WifiField::GuestHidden5g, "0".into()),
+                    (WifiField::GuestIsolation5g, "0".into()),
+                    (WifiField::GuestActiveTime5g, "0".into()),
                 ])),
                 paused: Mutex::new(false),
                 capacity: Mutex::new(80),
                 cycle: Mutex::new((1, false)),
                 fail_next_charge_readback: AtomicBool::new(false),
                 corrupt_charge_readback: AtomicBool::new(false),
+                stale_charge_readbacks: AtomicUsize::new(0),
+                stale_after_next_charge_write: AtomicUsize::new(0),
                 fail_next_cycle_readback: AtomicBool::new(false),
                 corrupt_cycle_readback: AtomicBool::new(false),
             }
@@ -784,6 +966,17 @@ mod tests {
                 UbusRead::ChargerStatus => {
                     if self.corrupt_charge_readback.swap(false, Ordering::SeqCst) {
                         return Ok(json!({"direct_power_supply_mode": "unknown"}));
+                    }
+                    if self
+                        .stale_charge_readbacks
+                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
+                            value.checked_sub(1)
+                        })
+                        .is_ok()
+                    {
+                        return Ok(json!({
+                            "direct_power_supply_mode": if *self.paused.lock().unwrap() { "disable" } else { "enable" }
+                        }));
                     }
                     Ok(json!({
                         "direct_power_supply_mode": if *self.paused.lock().unwrap() { "enable" } else { "disable" }
@@ -805,6 +998,10 @@ mod tests {
                 UbusWrite::SmsSend { .. } => Ok(json!({})),
                 UbusWrite::ChargePaused(value) => {
                     *self.paused.lock().unwrap() = value;
+                    let stale = self.stale_after_next_charge_write.swap(0, Ordering::SeqCst);
+                    if stale > 0 {
+                        self.stale_charge_readbacks.store(stale, Ordering::SeqCst);
+                    }
                     if self.fail_next_charge_readback.swap(false, Ordering::SeqCst) {
                         self.corrupt_charge_readback.store(true, Ordering::SeqCst);
                     }
@@ -865,6 +1062,49 @@ mod tests {
         assert!(validate_ssid("bad\nssid").is_err());
         assert!(validate_passphrase("safe passphrase").is_ok());
         assert!(validate_passphrase("short").is_err());
+        assert_eq!(validate_channel("auto", false).unwrap(), "0");
+        assert!(validate_channel("165", true).is_ok());
+        assert!(validate_channel("14", false).is_err());
+        assert!(validate_bandwidth("EHT160", true).is_ok());
+        assert!(validate_bandwidth("EHT160", false).is_err());
+    }
+
+    #[test]
+    fn extended_wifi_fields_are_strict_and_transactional() {
+        let values = wifi_values_from_request(WifiTransactionRequest {
+            channel_2g: Some("auto".into()),
+            bandwidth_2g: Some("EHT20_40".into()),
+            transmit_power_5g: Some(50),
+            guest_enabled_2g: Some(true),
+            guest_ssid: Some("Owner Guest".into()),
+            guest_isolation: Some(true),
+            guest_active_time_minutes: Some(120),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(values[&WifiField::Channel2g], "0");
+        assert_eq!(values[&WifiField::Bandwidth2g], "EHT20_40");
+        assert_eq!(values[&WifiField::TransmitPower5g], "50");
+        assert_eq!(values[&WifiField::GuestDisabled2g], "0");
+        assert_eq!(values[&WifiField::GuestSsid5g], "Owner Guest");
+        assert_eq!(values[&WifiField::GuestIsolation5g], "1");
+        assert_eq!(values[&WifiField::GuestActiveTime2g], "120");
+
+        assert!(wifi_values_from_request(WifiTransactionRequest {
+            bandwidth_2g: Some("EHT160".into()),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(wifi_values_from_request(WifiTransactionRequest {
+            transmit_power_5g: Some(55),
+            ..Default::default()
+        })
+        .is_err());
+        assert!(wifi_values_from_request(WifiTransactionRequest {
+            guest_active_time_minutes: Some(90),
+            ..Default::default()
+        })
+        .is_err());
     }
 
     #[test]
@@ -891,7 +1131,8 @@ mod tests {
     #[test]
     fn charge_and_traffic_restore_previous_state_after_bad_readback() {
         let (_temp, io, service) = service();
-        io.fail_next_charge_readback.store(true, Ordering::SeqCst);
+        io.stale_after_next_charge_write
+            .store(CHARGE_READBACK_ATTEMPTS, Ordering::SeqCst);
         let charge_error = service
             .charging_update(ChargingRequest {
                 operation: ChargingOperation::Pause,
@@ -911,6 +1152,20 @@ mod tests {
             .unwrap_err();
         assert!(cycle_error.contains("rolled back"));
         assert_eq!(*io.cycle.lock().unwrap(), (1, false));
+    }
+
+    #[test]
+    fn charging_write_accepts_delayed_b04_readback() {
+        let (_temp, io, service) = service();
+        io.stale_after_next_charge_write.store(2, Ordering::SeqCst);
+        let status = service
+            .charging_update(ChargingRequest {
+                operation: ChargingOperation::Pause,
+                limit_percent: None,
+            })
+            .unwrap();
+        assert!(status.paused);
+        assert!(*io.paused.lock().unwrap());
     }
 
     #[test]

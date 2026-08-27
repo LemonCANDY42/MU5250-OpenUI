@@ -15,14 +15,139 @@ GRANT=$(printf '{"pairing_nonce":"%s","expires_at":%s,"registration_path":"/v1/a
 PAYLOAD="$TEST_ROOT/payload.json"
 printf '%s' "$GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
   "$BUNDLE" 'https://u60.local:19443' >"$PAYLOAD"
-python3 - "$PAYLOAD" <<'PY'
-import json, sys
+python3 - "$PAYLOAD" "$EXPIRES" <<'PY'
+import datetime as dt
+import json
+import sys
+
 value = json.load(open(sys.argv[1], encoding='utf-8'))
 assert value['version'] == 1
 assert value['base_url'] == 'https://u60.local:19443'
 assert len(value['pairing_nonce']) == 43
 assert value['spki_sha256'].startswith('sha256/')
+expires_at = dt.datetime.fromisoformat(value['expires_at'].replace('Z', '+00:00'))
+assert expires_at.timestamp() == int(sys.argv[2])
 PY
+
+LOCAL_NOW=$(date +%s)
+HOST_NOW=$LOCAL_NOW
+DEVICE_NOW=$(( LOCAL_NOW + 8 * 60 * 60 ))
+DEVICE_EXPIRES=$(( DEVICE_NOW + 240 ))
+SKEW_GRANT=$(printf '{"pairing_nonce":"%s","expires_at":%s,"registration_path":"/v1/auth/pair"}\n' \
+  "$NONCE" "$DEVICE_EXPIRES")
+SKEW_PAYLOAD="$TEST_ROOT/skew-payload.json"
+printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now "$HOST_NOW" --device-now "$DEVICE_NOW" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >"$SKEW_PAYLOAD"
+python3 - "$SKEW_PAYLOAD" "$HOST_NOW" <<'PY'
+import datetime as dt
+import json
+import sys
+import time
+
+value = json.load(open(sys.argv[1], encoding='utf-8'))
+expires_at = dt.datetime.fromisoformat(value['expires_at'].replace('Z', '+00:00'))
+assert expires_at.timestamp() == int(sys.argv[2]) + 238
+assert 0 < expires_at.timestamp() - time.time() <= 300
+PY
+
+if printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >/dev/null 2>&1; then
+  echo 'clock-skewed grant was accepted without explicit device epoch' >&2
+  exit 1
+fi
+if printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --device-now "$DEVICE_NOW" "$BUNDLE" 'https://192.168.0.1:9443' \
+  >/dev/null 2>&1; then
+  echo 'device clock sample was accepted without its host sample' >&2
+  exit 1
+fi
+if printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now "$HOST_NOW" "$BUNDLE" 'https://192.168.0.1:9443' \
+  >/dev/null 2>&1; then
+  echo 'host clock sample was accepted without its device sample' >&2
+  exit 1
+fi
+
+BOOL_EXPIRY_GRANT=$(printf '{"pairing_nonce":"%s","expires_at":true,"registration_path":"/v1/auth/pair"}\n' \
+  "$NONCE")
+if printf '%s' "$BOOL_EXPIRY_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now "$HOST_NOW" --device-now "$DEVICE_NOW" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >/dev/null 2>&1; then
+  echo 'boolean pairing expiry was accepted as an integer' >&2
+  exit 1
+fi
+
+FUTURE_HOST_NOW=$(( $(date +%s) + 60 ))
+if printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now "$FUTURE_HOST_NOW" --device-now "$DEVICE_NOW" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >/dev/null 2>&1; then
+  echo 'future host clock sample was accepted' >&2
+  exit 1
+fi
+
+DELAYED_HOST_NOW=$(( HOST_NOW - 10 ))
+DELAYED_DEVICE_NOW=$(( DEVICE_NOW - 10 ))
+DELAYED_DEVICE_EXPIRES=$(( DELAYED_DEVICE_NOW + 240 ))
+DELAYED_GRANT=$(printf '{"pairing_nonce":"%s","expires_at":%s,"registration_path":"/v1/auth/pair"}\n' \
+  "$NONCE" "$DELAYED_DEVICE_EXPIRES")
+DELAYED_PAYLOAD="$TEST_ROOT/delayed-payload.json"
+printf '%s' "$DELAYED_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now "$DELAYED_HOST_NOW" --device-now "$DELAYED_DEVICE_NOW" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >"$DELAYED_PAYLOAD"
+python3 - "$SKEW_PAYLOAD" "$DELAYED_PAYLOAD" <<'PY'
+import datetime as dt
+import json
+import sys
+
+def expiry(path):
+    value = json.load(open(path, encoding='utf-8'))
+    return dt.datetime.fromisoformat(value['expires_at'].replace('Z', '+00:00')).timestamp()
+
+assert expiry(sys.argv[2]) == expiry(sys.argv[1]) - 10
+PY
+
+if printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now "$HOST_NOW" --device-now '1.5' \
+  "$BUNDLE" 'https://192.168.0.1:9443' >/dev/null 2>&1; then
+  echo 'non-integer device epoch was accepted' >&2
+  exit 1
+fi
+if printf '%s' "$SKEW_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  --host-now '1.5' --device-now "$DEVICE_NOW" \
+  "$BUNDLE" 'https://192.168.0.1:9443' >/dev/null 2>&1; then
+  echo 'non-integer host epoch was accepted' >&2
+  exit 1
+fi
+if printf '%s' "$SKEW_GRANT" | "$SCRIPT_DIR/make-pairing-qr.sh" \
+  "$BUNDLE" 'https://192.168.0.1:9443' "$TEST_ROOT/single-sample.png" \
+  "$DEVICE_NOW" \
+  >/dev/null 2>&1; then
+  echo 'QR helper accepted only one clock sample' >&2
+  exit 1
+fi
+if printf '%s' "$SKEW_GRANT" | "$SCRIPT_DIR/make-pairing-qr.sh" \
+  "$BUNDLE" 'https://192.168.0.1:9443' "$TEST_ROOT/invalid-host-epoch.png" \
+  '1.5' "$DEVICE_NOW" >/dev/null 2>&1; then
+  echo 'QR helper accepted a non-decimal host epoch' >&2
+  exit 1
+fi
+if printf '%s' "$SKEW_GRANT" | "$SCRIPT_DIR/make-pairing-qr.sh" \
+  "$BUNDLE" 'https://192.168.0.1:9443' "$TEST_ROOT/invalid-device-epoch.png" \
+  "$HOST_NOW" '1.5' >/dev/null 2>&1; then
+  echo 'QR helper accepted a non-decimal device epoch' >&2
+  exit 1
+fi
+for DEVICE_OFFSET in 2 600; do
+  DEVICE_RELATIVE_GRANT=$(printf '{"pairing_nonce":"%s","expires_at":%s,"registration_path":"/v1/auth/pair"}\n' \
+    "$NONCE" "$(( DEVICE_NOW + DEVICE_OFFSET ))")
+  if printf '%s' "$DEVICE_RELATIVE_GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+    --host-now "$HOST_NOW" --device-now "$DEVICE_NOW" \
+    "$BUNDLE" 'https://192.168.0.1:9443' >/dev/null 2>&1; then
+    echo "invalid device-relative pairing window was accepted: $DEVICE_OFFSET" >&2
+    exit 1
+  fi
+done
 
 IP_PAYLOAD="$TEST_ROOT/ip-payload.json"
 printf '%s' "$GRANT" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
@@ -45,6 +170,21 @@ for rejected_url in \
 done
 
 if command -v swift >/dev/null && [[ $(uname -s) == Darwin ]]; then
+  LEGACY_QR="$TEST_ROOT/legacy-pairing.png"
+  QR_MESSAGE=$(printf '%s' "$GRANT" | "$SCRIPT_DIR/make-pairing-qr.sh" \
+    "$BUNDLE" 'https://192.168.0.1:9443' "$LEGACY_QR")
+  [[ -s "$LEGACY_QR" ]]
+  [[ $(stat -f '%Lp' "$LEGACY_QR") == 600 ]]
+  [[ $QR_MESSAGE != *"$NONCE"* ]]
+
+  SKEW_QR="$TEST_ROOT/skew-pairing.png"
+  QR_MESSAGE=$(printf '%s' "$SKEW_GRANT" | "$SCRIPT_DIR/make-pairing-qr.sh" \
+    "$BUNDLE" 'https://192.168.0.1:9443' "$SKEW_QR" \
+    "$HOST_NOW" "$DEVICE_NOW")
+  [[ -s "$SKEW_QR" ]]
+  [[ $(stat -f '%Lp' "$SKEW_QR") == 600 ]]
+  [[ $QR_MESSAGE != *"$NONCE"* ]]
+
   QR="$TEST_ROOT/pairing.png"
   (umask 022; swift "$SCRIPT_DIR/render-pairing-qr.swift" "$QR" <"$PAYLOAD")
   [[ -s "$QR" ]]
@@ -102,6 +242,13 @@ EXPIRED=$(printf '{"pairing_nonce":"%s","expires_at":%s,"registration_path":"/v1
 if printf '%s' "$EXPIRED" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
   "$BUNDLE" 'https://u60.local:9443' >/dev/null 2>&1; then
   echo 'expired pairing grant was accepted' >&2
+  exit 1
+fi
+OVERLONG=$(printf '{"pairing_nonce":"%s","expires_at":%s,"registration_path":"/v1/auth/pair"}\n' \
+  "$NONCE" "$(( $(date +%s) + 600 ))")
+if printf '%s' "$OVERLONG" | python3 "$SCRIPT_DIR/build-pairing-payload.py" \
+  "$BUNDLE" 'https://u60.local:9443' >/dev/null 2>&1; then
+  echo 'overlong pairing grant was accepted' >&2
   exit 1
 fi
 echo 'pairing tool tests passed'

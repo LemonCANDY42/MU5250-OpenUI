@@ -4,13 +4,37 @@ import OpenAPIURLSession
 enum AgentServiceError: LocalizedError {
     case rejected(status: Int, message: String)
     case invalidResponse
+    case transportSecurity(String)
 
     var errorDescription: String? {
         switch self {
         case let .rejected(status, message): "U60 rejected the request (\(status)): \(message)"
         case .invalidResponse: "The U60 returned a response that does not match the v1 contract."
+        case let .transportSecurity(message): message
         }
     }
+}
+
+struct WifiTransactionEdits: Sendable {
+    var ssid2g: String? = nil
+    var passphrase2g: String? = nil
+    var hidden2g: Bool? = nil
+    var channel2g: String? = nil
+    var bandwidth2g: String? = nil
+    var transmitPower2g: Int? = nil
+    var ssid5g: String? = nil
+    var passphrase5g: String? = nil
+    var hidden5g: Bool? = nil
+    var channel5g: String? = nil
+    var bandwidth5g: String? = nil
+    var transmitPower5g: Int? = nil
+    var guestEnabled2g: Bool? = nil
+    var guestEnabled5g: Bool? = nil
+    var guestSSID: String? = nil
+    var guestPassphrase: String? = nil
+    var guestHidden: Bool? = nil
+    var guestIsolation: Bool? = nil
+    var guestActiveTimeMinutes: Int? = nil
 }
 
 final class AgentService: Sendable {
@@ -38,14 +62,22 @@ final class AgentService: Sendable {
     }
 
     func pair(nonce: String, label: String, publicKeySPKI: Data) async throws -> Components.Schemas.RegisteredCredential {
-        let output = try await client.registerCredential(.init(body: .json(.init(
-            pairingNonce: nonce,
-            label: label,
-            publicKeySpki: Base64URL.encode(publicKeySPKI)
-        ))))
-        switch output {
-        case let .ok(response): return try response.body.json.data
-        default: throw AgentServiceError.invalidResponse
+        delegate.resetTrustFailure()
+        do {
+            let output = try await client.registerCredential(.init(body: .json(.init(
+                pairingNonce: nonce,
+                label: label,
+                publicKeySpki: Base64URL.encode(publicKeySPKI)
+            ))))
+            switch output {
+            case let .ok(response): return try response.body.json.data
+            default: throw AgentServiceError.invalidResponse
+            }
+        } catch {
+            if let failure = delegate.consumeTrustFailure() {
+                throw AgentServiceError.transportSecurity(failure.userMessage)
+            }
+            throw error
         }
     }
 
@@ -205,6 +237,9 @@ final class AgentService: Sendable {
         let output = try await client.getChargingStatus()
         switch output {
         case let .ok(response): return try response.body.json.data
+        case let .serviceUnavailable(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 503, message: body.error.message)
         default: throw AgentServiceError.invalidResponse
         }
     }
@@ -219,6 +254,12 @@ final class AgentService: Sendable {
         ))))
         switch output {
         case let .ok(response): return try response.body.json.data
+        case let .badRequest(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .serviceUnavailable(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 503, message: body.error.message)
         default: throw AgentServiceError.invalidResponse
         }
     }
@@ -228,23 +269,50 @@ final class AgentService: Sendable {
             resetDay: resetDay,
             enabled: enabled
         ))))
-        guard case .ok = output else { throw AgentServiceError.invalidResponse }
+        switch output {
+        case .ok: return
+        case let .badRequest(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .serviceUnavailable(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+        default: throw AgentServiceError.invalidResponse
+        }
     }
 
     func beginWifiTransaction(
-        ssid2g: String?,
-        passphrase2g: String?,
-        ssid5g: String?,
-        passphrase5g: String?
+        _ edits: WifiTransactionEdits
     ) async throws -> Components.Schemas.WifiTransactionGrant {
         let output = try await client.beginWifiTransaction(.init(body: .json(.init(
-            ssid2g: ssid2g,
-            passphrase2g: passphrase2g,
-            ssid5g: ssid5g,
-            passphrase5g: passphrase5g
+            ssid2g: edits.ssid2g,
+            passphrase2g: edits.passphrase2g,
+            hidden2g: edits.hidden2g,
+            channel2g: edits.channel2g,
+            bandwidth2g: edits.bandwidth2g,
+            transmitPower2g: edits.transmitPower2g,
+            ssid5g: edits.ssid5g,
+            passphrase5g: edits.passphrase5g,
+            hidden5g: edits.hidden5g,
+            channel5g: edits.channel5g,
+            bandwidth5g: edits.bandwidth5g,
+            transmitPower5g: edits.transmitPower5g,
+            guestEnabled2g: edits.guestEnabled2g,
+            guestEnabled5g: edits.guestEnabled5g,
+            guestSsid: edits.guestSSID,
+            guestPassphrase: edits.guestPassphrase,
+            guestHidden: edits.guestHidden,
+            guestIsolation: edits.guestIsolation,
+            guestActiveTimeMinutes: edits.guestActiveTimeMinutes
         ))))
         switch output {
         case let .ok(response): return try response.body.json.data
+        case let .badRequest(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .serviceUnavailable(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 503, message: body.error.message)
         default: throw AgentServiceError.invalidResponse
         }
     }

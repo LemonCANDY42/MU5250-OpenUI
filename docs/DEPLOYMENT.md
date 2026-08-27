@@ -21,6 +21,26 @@ public metadata, writes an owner-only manifest, and publishes
 `baseline.complete` last. It does not write to the device. A canary must not
 begin without an exactly verified completion marker.
 
+## Stopped LAN-canary redeploy baseline
+
+Do not rerun the first-canary command after a nonpersistent LAN canary has
+stopped: its immutable release directory under `/data/u60/releases/` is a
+retained recovery artifact, not debris to remove. Before redeploying it, record
+the narrower read-only baseline below. It requires the exact approved release,
+no `zte-agent` process and absent `current`/`previous` links; it rechecks those
+facts before and after the capture, retains an owner-only `rc.local` backup and
+publishes hash-bound evidence completion-last to the approved NAS share.
+
+```sh
+U60_B04_READ_ONLY_PROBE=I_CONFIRMED_B04_AND_ROOT_RECOVERY \
+  python3 scripts/capture-b04-lan-redeploy-baseline.py \
+  --expected-release 9b334dd65f32d8ef375d04026c197e467d6f42a44c7cf53df4c5803e49e58fb9
+```
+
+It does not write to the device, remove old releases, create a release link or
+alter the Mac route/TUN configuration. A successful result is the prerequisite
+for the subsequent `lan-canary` command, not evidence of a running service.
+
 ## Reviewed B04 V1 deployment path
 
 The V1 path is implemented by three separate boundaries:

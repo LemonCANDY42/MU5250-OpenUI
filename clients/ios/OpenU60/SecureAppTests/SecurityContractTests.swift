@@ -43,6 +43,18 @@ final class SecurityContractTests: XCTestCase {
         ))
     }
 
+    func testLocalNetworkPreflightUsesOnlyTheValidatedPairingEndpoint() throws {
+        let profile = try DeviceProfile(
+            baseURL: XCTUnwrap(URL(string: "https://192.168.0.1:9443")),
+            spkiSHA256: "sha256/" + Data(repeating: 9, count: 32).base64EncodedString()
+        )
+
+        XCTAssertEqual(
+            try LocalNetworkPreflight.endpoint(for: profile),
+            .init(host: "192.168.0.1", port: 9443)
+        )
+    }
+
     func testSimulatorCredentialSignsAndPersistsOnlyDeviceLocalMaterial() throws {
         let memory = MemorySecretStore()
         let credentials = DeviceCredentialStore(store: memory)
@@ -140,6 +152,35 @@ final class SecurityContractTests: XCTestCase {
         task.cancel()
     }
 
+    func testMissingServerTrustIsRejectedWithAnExplicitDiagnostic() throws {
+        let pin = "sha256/" + Data(repeating: 4, count: 32).base64EncodedString()
+        let delegate = try SPKIPinningDelegate(expectedPin: pin)
+        let protectionSpace = URLProtectionSpace(
+            host: "u60.local",
+            port: 9443,
+            protocol: "https",
+            realm: nil,
+            authenticationMethod: NSURLAuthenticationMethodServerTrust
+        )
+        let challenge = URLAuthenticationChallenge(
+            protectionSpace: protectionSpace,
+            proposedCredential: nil,
+            previousFailureCount: 0,
+            failureResponse: nil,
+            error: nil,
+            sender: ChallengeSender()
+        )
+
+        let completed = expectation(description: "authentication challenge completed")
+        delegate.urlSession(URLSession.shared, didReceive: challenge) { disposition, credential in
+            XCTAssertEqual(disposition, .cancelAuthenticationChallenge)
+            XCTAssertNil(credential)
+            completed.fulfill()
+        }
+        wait(for: [completed], timeout: 1)
+        XCTAssertEqual(delegate.consumeTrustFailure(), .missingServerTrust)
+    }
+
     private func payloadJSON(
         baseURL: String,
         pin: String,
@@ -168,6 +209,14 @@ private final class RedirectCapture: @unchecked Sendable {
     func record(_ request: URLRequest?) {
         lock.withLock { state = (true, request) }
     }
+}
+
+private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender {
+    func use(_: URLCredential, for _: URLAuthenticationChallenge) {}
+    func continueWithoutCredential(for _: URLAuthenticationChallenge) {}
+    func cancel(_: URLAuthenticationChallenge) {}
+    func performDefaultHandling(for _: URLAuthenticationChallenge) {}
+    func rejectProtectionSpaceAndContinue(with _: URLAuthenticationChallenge) {}
 }
 
 private final class MemorySecretStore: SecretStore, @unchecked Sendable {

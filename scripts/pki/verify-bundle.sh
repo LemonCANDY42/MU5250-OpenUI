@@ -6,21 +6,23 @@ SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 # shellcheck source=_lib.sh
 source "$SCRIPT_DIR/_lib.sh"
 
-[[ $# -eq 2 ]] || pki_die 'usage: verify-bundle.sh DEVICE_DIR CA_CERT'
-DEVICE_DIR=$1
-CA_CERT=$2
-KEY="$DEVICE_DIR/device-key.pem"
-CERT="$DEVICE_DIR/device-cert.pem"
-CHAIN="$DEVICE_DIR/device-chain.pem"
-PIN="$DEVICE_DIR/device-spki-pin.txt"
-CSR_COMPLETION="$DEVICE_DIR/device-csr.complete"
-BUNDLE_COMPLETION="$DEVICE_DIR/device-bundle.complete"
+[[ $# -eq 3 ]] || pki_die 'usage: verify-bundle.sh CSR_DIR BUNDLE_DIR CA_CERT'
+CSR_DIR=$1
+BUNDLE_DIR=$2
+CA_CERT=$3
+CSR="$CSR_DIR/device.csr.pem"
+CERT="$BUNDLE_DIR/device-cert.pem"
+CHAIN="$BUNDLE_DIR/device-chain.pem"
+PIN="$BUNDLE_DIR/device-spki-pin.txt"
+CSR_COMPLETION="$CSR_DIR/device-csr.complete"
+BUNDLE_COMPLETION="$BUNDLE_DIR/device-bundle.complete"
 CA_DIRECTORY=$(dirname -- "$CA_CERT")
 CA_COMPLETION="$CA_DIRECTORY/owner-ca.complete"
 
 pki_require_command openssl
 pki_require_command python3
-pki_validate_existing_private_directory "$DEVICE_DIR" 'device directory'
+pki_validate_existing_private_directory "$CSR_DIR" 'device CSR directory'
+pki_validate_existing_private_directory "$BUNDLE_DIR" 'device bundle directory'
 pki_validate_existing_private_directory "$CA_DIRECTORY" 'CA directory'
 pki_require_completion_marker \
   "$CSR_COMPLETION" "$PKI_DEVICE_CSR_COMPLETION" 'device CSR completion marker'
@@ -28,12 +30,11 @@ pki_require_completion_marker \
   "$BUNDLE_COMPLETION" "$PKI_DEVICE_BUNDLE_COMPLETION" 'device bundle completion marker'
 pki_require_completion_marker \
   "$CA_COMPLETION" "$PKI_OWNER_CA_COMPLETION" 'owner CA completion marker'
-pki_require_regular_file "$KEY" 'device key'
+pki_require_regular_file "$CSR" 'device CSR'
 pki_require_regular_file "$CERT" 'device certificate'
 pki_require_regular_file "$CHAIN" 'device chain'
 pki_require_regular_file "$PIN" 'device SPKI pin'
 pki_require_regular_file "$CA_CERT" 'owner CA certificate'
-[[ $(pki_file_mode "$KEY") == '600' ]] || pki_die 'device key mode must be 0600'
 
 TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/u60-pki-verify.XXXXXX")
 cleanup() {
@@ -43,23 +44,27 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-KEY_PUBLIC="$TEMP_DIR/key-public.pem"
+CSR_PUBLIC="$TEMP_DIR/csr-public.pem"
 CERT_PUBLIC="$TEMP_DIR/cert-public.pem"
 CA_PUBLIC="$TEMP_DIR/ca-public.pem"
 EXPECTED_CHAIN="$TEMP_DIR/expected-chain.pem"
 EXPECTED_PIN="$TEMP_DIR/expected-pin.txt"
 VALIDITY_DATES="$TEMP_DIR/validity-dates.txt"
 
-openssl pkey -in "$KEY" -pubout -out "$KEY_PUBLIC" 2>/dev/null
+openssl req -in "$CSR" -verify -noout >/dev/null 2>&1 ||
+  pki_die 'device CSR self-signature is invalid'
+[[ $(openssl req -in "$CSR" -subject -nameopt RFC2253 -noout) == 'subject=CN=u60.local' ]] ||
+  pki_die 'device CSR subject is not fixed to CN=u60.local'
+openssl req -in "$CSR" -pubkey -noout >"$CSR_PUBLIC"
 openssl x509 -in "$CERT" -pubkey -noout >"$CERT_PUBLIC"
 openssl x509 -in "$CA_CERT" -pubkey -noout >"$CA_PUBLIC"
-pki_is_p256_public_key "$KEY_PUBLIC" || pki_die 'device private key must be P-256'
+pki_is_p256_public_key "$CSR_PUBLIC" || pki_die 'device CSR public key must be P-256'
 pki_is_p256_public_key "$CERT_PUBLIC" || pki_die 'device certificate public key must be P-256'
 pki_is_p256_public_key "$CA_PUBLIC" || pki_die 'owner CA certificate public key must be P-256'
 cmp -s \
-  <(openssl pkey -pubin -in "$KEY_PUBLIC" -outform DER 2>/dev/null) \
+  <(openssl pkey -pubin -in "$CSR_PUBLIC" -outform DER 2>/dev/null) \
   <(openssl pkey -pubin -in "$CERT_PUBLIC" -outform DER 2>/dev/null) ||
-  pki_die 'device key does not match device certificate'
+  pki_die 'device CSR does not match device certificate'
 
 openssl verify -CAfile "$CA_CERT" -purpose sslserver "$CERT" >/dev/null 2>&1 ||
   pki_die 'device certificate chain verification failed'

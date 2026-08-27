@@ -61,7 +61,8 @@ DEVICE_DIR="$TEST_ROOT/device"
 "$SCRIPT_DIR/sign-device-csr.sh" \
   "$CA_DIR" "$DEVICE_DIR/device.csr.pem" "$DEVICE_DIR" \
   3<<<"$TEST_PASSPHRASE" >/dev/null
-"$SCRIPT_DIR/verify-bundle.sh" "$DEVICE_DIR" "$CA_DIR/owner-ca-cert.pem" >/dev/null
+"$SCRIPT_DIR/verify-bundle.sh" \
+  "$DEVICE_DIR" "$DEVICE_DIR" "$CA_DIR/owner-ca-cert.pem" >/dev/null
 pki_require_completion_marker \
   "$CA_DIR/owner-ca.complete" "$PKI_OWNER_CA_COMPLETION" 'test owner CA marker'
 pki_require_completion_marker \
@@ -89,6 +90,26 @@ if openssl x509 -in "$DEVICE_DIR/device-cert.pem" -checkend $((826 * 86400)) -no
   printf 'test-pki: leaf validity exceeds the 825-day default\n' >&2
   exit 1
 fi
+
+SPLIT_DEVICE_DIR="$TEST_ROOT/split-device"
+SPLIT_CSR_DIR="$TEST_ROOT/split-public-csr"
+SPLIT_BUNDLE_DIR="$TEST_ROOT/split-bundle"
+"$SCRIPT_DIR/generate-device-csr.sh" "$SPLIT_DEVICE_DIR" >/dev/null
+mkdir -m 700 "$SPLIT_CSR_DIR"
+cp \
+  "$SPLIT_DEVICE_DIR/device.csr.pem" \
+  "$SPLIT_DEVICE_DIR/device-csr.complete" \
+  "$SPLIT_CSR_DIR/"
+SPLIT_CSR_CONTENTS=$(find "$SPLIT_CSR_DIR" -mindepth 1 -maxdepth 1 \
+  -exec basename {} \; | LC_ALL=C sort)
+[[ "$SPLIT_CSR_CONTENTS" == $'device-csr.complete\ndevice.csr.pem' ]]
+[[ ! -e "$SPLIT_CSR_DIR/device-key.pem" && ! -L "$SPLIT_CSR_DIR/device-key.pem" ]]
+"$SCRIPT_DIR/sign-device-csr.sh" \
+  "$CA_DIR" "$SPLIT_CSR_DIR/device.csr.pem" "$SPLIT_BUNDLE_DIR" \
+  3<<<"$TEST_PASSPHRASE" >/dev/null
+"$SCRIPT_DIR/verify-bundle.sh" \
+  "$SPLIT_CSR_DIR" "$SPLIT_BUNDLE_DIR" "$CA_DIR/owner-ca-cert.pem" >/dev/null
+[[ ! -e "$SPLIT_BUNDLE_DIR/device-key.pem" && ! -L "$SPLIT_BUNDLE_DIR/device-key.pem" ]]
 
 BACKDATED_DIR="$TEST_ROOT/backdated-validity"
 BACKDATED_CA_STATE="$TEST_ROOT/backdated-ca-state"
@@ -155,7 +176,8 @@ if openssl x509 \
   exit 1
 fi
 expect_failure 'backdated leaf total validity over 825 days' \
-  "$SCRIPT_DIR/verify-bundle.sh" "$BACKDATED_DIR" "$CA_DIR/owner-ca-cert.pem"
+  "$SCRIPT_DIR/verify-bundle.sh" \
+  "$DEVICE_DIR" "$BACKDATED_DIR" "$CA_DIR/owner-ca-cert.pem"
 grep -Fq 'total validity span exceeds the 825-day profile' "$TEST_ROOT/negative-output.txt"
 
 WRONG_OUTPUT="$TEST_ROOT/wrong-pass-output"
@@ -183,14 +205,12 @@ expect_failure 'non-P-256 CSR' \
 [[ ! -e "$RSA_DIR/device-spki-pin.txt" ]]
 assert_no_stage "$RSA_DIR"
 
-SWAPPED_DIR="$TEST_ROOT/swapped-device"
-cp -R "$DEVICE_DIR" "$SWAPPED_DIR"
-openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
-  -out "$SWAPPED_DIR/replacement-key.pem"
-chmod 600 "$SWAPPED_DIR/replacement-key.pem"
-mv "$SWAPPED_DIR/replacement-key.pem" "$SWAPPED_DIR/device-key.pem"
-expect_failure 'device key replaced after CSR issuance' \
-  "$SCRIPT_DIR/verify-bundle.sh" "$SWAPPED_DIR" "$CA_DIR/owner-ca-cert.pem"
+MISMATCHED_CSR_DIR="$TEST_ROOT/mismatched-csr"
+"$SCRIPT_DIR/generate-device-csr.sh" "$MISMATCHED_CSR_DIR" >/dev/null
+expect_failure 'device CSR does not match signed bundle' \
+  "$SCRIPT_DIR/verify-bundle.sh" \
+  "$MISMATCHED_CSR_DIR" "$DEVICE_DIR" "$CA_DIR/owner-ca-cert.pem"
+grep -Fq 'device CSR does not match device certificate' "$TEST_ROOT/negative-output.txt"
 
 LINK_TARGET="$TEST_ROOT/link-target"
 mkdir -m 700 "$LINK_TARGET"
@@ -371,26 +391,30 @@ cp \
   "$DEVICE_DIR/device-spki-pin.txt" \
   "$PARTIAL_BUNDLE/"
 expect_failure 'signed bundle files without completion marker' \
-  "$SCRIPT_DIR/verify-bundle.sh" "$PARTIAL_BUNDLE" "$CA_DIR/owner-ca-cert.pem"
+  "$SCRIPT_DIR/verify-bundle.sh" \
+  "$PARTIAL_BUNDLE" "$PARTIAL_BUNDLE" "$CA_DIR/owner-ca-cert.pem"
 grep -Fq 'device bundle completion marker' "$TEST_ROOT/negative-output.txt"
 
 TAMPERED_DIR="$TEST_ROOT/tampered-chain"
 cp -R "$DEVICE_DIR" "$TAMPERED_DIR"
 printf '\n' >>"$TAMPERED_DIR/device-chain.pem"
 expect_failure 'tampered chain' \
-  "$SCRIPT_DIR/verify-bundle.sh" "$TAMPERED_DIR" "$CA_DIR/owner-ca-cert.pem"
+  "$SCRIPT_DIR/verify-bundle.sh" \
+  "$DEVICE_DIR" "$TAMPERED_DIR" "$CA_DIR/owner-ca-cert.pem"
 
 TAMPERED_PIN="$TEST_ROOT/tampered-pin"
 cp -R "$DEVICE_DIR" "$TAMPERED_PIN"
 printf 'sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=\n' >"$TAMPERED_PIN/device-spki-pin.txt"
 expect_failure 'tampered pin' \
-  "$SCRIPT_DIR/verify-bundle.sh" "$TAMPERED_PIN" "$CA_DIR/owner-ca-cert.pem"
+  "$SCRIPT_DIR/verify-bundle.sh" \
+  "$DEVICE_DIR" "$TAMPERED_PIN" "$CA_DIR/owner-ca-cert.pem"
 
-INSECURE_KEY="$TEST_ROOT/insecure-key"
-cp -R "$DEVICE_DIR" "$INSECURE_KEY"
-chmod 644 "$INSECURE_KEY/device-key.pem"
-expect_failure 'insecure device-key permissions' \
-  "$SCRIPT_DIR/verify-bundle.sh" "$INSECURE_KEY" "$CA_DIR/owner-ca-cert.pem"
+MISSING_CSR_MARKER="$TEST_ROOT/missing-csr-marker"
+cp -R "$DEVICE_DIR" "$MISSING_CSR_MARKER"
+mv "$MISSING_CSR_MARKER/device-csr.complete" "$MISSING_CSR_MARKER/moved-csr-marker"
+expect_failure 'device CSR files without completion marker' \
+  "$SCRIPT_DIR/verify-bundle.sh" \
+  "$MISSING_CSR_MARKER" "$DEVICE_DIR" "$CA_DIR/owner-ca-cert.pem"
 
 SYMLINK_FILE_DIR="$TEST_ROOT/symlink-file"
 mkdir -m 700 "$SYMLINK_FILE_DIR"

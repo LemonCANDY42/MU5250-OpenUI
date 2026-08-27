@@ -17,13 +17,22 @@ from urllib.parse import urlsplit
 COMPLETE = "u60-device-bundle-complete-v1"
 NONCE = re.compile(r"^[A-Za-z0-9_-]{43}$")
 PIN = re.compile(r"^sha256/[A-Za-z0-9+/]{43}=$")
+CLOCK_SAMPLE_SAFETY_MARGIN_SECONDS = 2
 
 
 def die(message: str) -> None:
     raise SystemExit(f"pairing payload: {message}")
 
 
+def decimal_epoch(value: str) -> int:
+    if not re.fullmatch(r"[0-9]+", value):
+        raise argparse.ArgumentTypeError("must be a decimal integer")
+    return int(value, 10)
+
+
 parser = argparse.ArgumentParser()
+parser.add_argument("--device-now", type=decimal_epoch, metavar="EPOCH")
+parser.add_argument("--host-now", type=decimal_epoch, metavar="EPOCH")
 parser.add_argument("bundle_dir", type=Path)
 parser.add_argument(
     "base_url",
@@ -34,6 +43,8 @@ parser.add_argument(
     ),
 )
 args = parser.parse_args()
+if (args.device_now is None) != (args.host_now is None):
+    die("--device-now and --host-now must be provided together")
 
 bundle = args.bundle_dir.resolve(strict=True)
 if not bundle.is_dir() or args.bundle_dir.is_symlink():
@@ -74,10 +85,24 @@ if not isinstance(nonce, str) or not NONCE.fullmatch(nonce):
     die("pairing nonce format is invalid")
 if grant["registration_path"] != "/v1/auth/pair":
     die("registration path is invalid")
-if not isinstance(expires_at, int):
+if type(expires_at) is not int:
     die("pairing expiry is invalid")
 now = int(dt.datetime.now(tz=dt.timezone.utc).timestamp())
-if expires_at <= now or expires_at - now > 300:
+if args.device_now is None:
+    remaining_seconds = expires_at - now
+    payload_expires_at = expires_at
+else:
+    if args.host_now > now:
+        die("host clock sample is in the future")
+    elapsed_host_seconds = now - args.host_now
+    remaining_seconds = (
+        expires_at
+        - args.device_now
+        - elapsed_host_seconds
+        - CLOCK_SAMPLE_SAFETY_MARGIN_SECONDS
+    )
+    payload_expires_at = now + remaining_seconds
+if remaining_seconds <= 0 or remaining_seconds > 300:
     die("pairing window is expired or longer than five minutes")
 
 payload = {
@@ -85,7 +110,7 @@ payload = {
     "base_url": args.base_url,
     "spki_sha256": pin,
     "pairing_nonce": nonce,
-    "expires_at": dt.datetime.fromtimestamp(expires_at, tz=dt.timezone.utc)
+    "expires_at": dt.datetime.fromtimestamp(payload_expires_at, tz=dt.timezone.utc)
     .isoformat(timespec="seconds")
     .replace("+00:00", "Z"),
 }

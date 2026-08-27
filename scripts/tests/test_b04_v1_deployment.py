@@ -143,6 +143,38 @@ class ReleasePreparationTests(unittest.TestCase):
             with self.assertRaises(DEPLOY.DeployError):
                 DEPLOY.require_local_release(release)
 
+    def test_device_release_verifier_rejects_non_regular_or_unlisted_entries(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="u60-device-release-test-") as temporary:
+            release = Path(temporary) / "release"
+            release.mkdir()
+            agent = release / "zte-agent"
+            agent.write_bytes(b"synthetic agent")
+            digest = hashlib.sha256(agent.read_bytes()).hexdigest()
+            checksum = f"{digest}  zte-agent\n".encode()
+            release_id = hashlib.sha256(checksum).hexdigest()
+            (release / "release.sha256").write_bytes(checksum)
+            (release / "release.complete").write_text(
+                f"u60-b04-v1-release:{release_id}\n"
+            )
+            script = DEPLOY.verify_device_release_script(
+                release_id, str(release), require_basename=False
+            )
+
+            def run_verifier() -> subprocess.CompletedProcess[bytes]:
+                return subprocess.run(
+                    ["sh", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                )
+
+            self.assertEqual(run_verifier().returncode, 0)
+            (release / "unexpected").write_bytes(b"unlisted")
+            self.assertNotEqual(run_verifier().returncode, 0)
+            (release / "unexpected").unlink()
+            external = Path(temporary) / "external-agent"
+            external.write_bytes(agent.read_bytes())
+            agent.unlink()
+            agent.symlink_to(external)
+            self.assertNotEqual(run_verifier().returncode, 0)
+
 
 class DeploymentBoundaryTests(unittest.TestCase):
     def test_invariants_reject_unexpected_release_link_change(self) -> None:

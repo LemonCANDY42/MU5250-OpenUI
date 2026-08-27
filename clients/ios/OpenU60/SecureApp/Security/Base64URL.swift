@@ -34,6 +34,7 @@ enum LocalSecurityError: LocalizedError, Equatable {
     case unavailableSecureStorage
     case missingCredential
     case untrustedServer
+    case localNetworkAccessDenied
 
     var errorDescription: String? {
         switch self {
@@ -45,6 +46,7 @@ enum LocalSecurityError: LocalizedError, Equatable {
         case .unavailableSecureStorage: "This device cannot access its local signing key."
         case .missingCredential: "No paired device key is available."
         case .untrustedServer: "The server certificate is not trusted or does not match the paired U60."
+        case .localNetworkAccessDenied: "Local Network permission is required to pair. Allow OpenU60 Dev when iOS asks, then try again."
         }
     }
 }

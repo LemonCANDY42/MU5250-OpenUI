@@ -3,135 +3,548 @@ import SwiftUI
 struct ControlView: View {
     let model: AppModel
 
-    @State private var recipient = ""
-    @State private var message = ""
-    @State private var chargeLimit = 80
-    @State private var trafficDay = 1
-    @State private var trafficEnabled = true
-    @State private var ssid2g = ""
-    @State private var passphrase2g = ""
-    @State private var ssid5g = ""
-    @State private var passphrase5g = ""
-    @State private var confirmSMS = false
-    @State private var confirmWifi = false
-
     var body: some View {
         NavigationStack {
-            Form {
-                Section("Charging") {
-                    if let charging = model.charging {
-                        LabeledContent("Battery", value: "\(charging.capacityPercent)%")
-                        LabeledContent("State", value: charging.paused ? "Paused" : "Charging allowed")
-                        LabeledContent(
-                            "Automatic limit",
-                            value: charging.automaticLimitPercent.map { "\($0)%" } ?? "Disabled"
+            List {
+                Section {
+                    NavigationLink {
+                        ChargingControlView(model: model)
+                    } label: {
+                        ControlRow(title: "Charging", subtitle: chargingSummary, systemImage: "battery.100percent.bolt")
+                    }
+                    NavigationLink {
+                        WifiControlView(model: model)
+                    } label: {
+                        ControlRow(title: "Wi-Fi", subtitle: wifiSummary, systemImage: "wifi.router")
+                    }
+                    NavigationLink {
+                        TrafficCycleControlView(model: model)
+                    } label: {
+                        ControlRow(title: "Traffic cycle", subtitle: trafficSummary, systemImage: "calendar.badge.clock")
+                    }
+                    NavigationLink {
+                        SMSControlView(model: model)
+                    } label: {
+                        ControlRow(
+                            title: "Send SMS",
+                            subtitle: String(localized: "Send one message through the U60"),
+                            systemImage: "message"
                         )
                     }
-                    Stepper("Limit: \(chargeLimit)%", value: $chargeLimit, in: 50 ... 95)
-                    Button("Apply automatic limit") {
-                        Task { await model.setCharging(operation: .setLimit, limit: chargeLimit) }
-                    }
-                    HStack {
-                        Button("Pause") { Task { await model.setCharging(operation: .pause) } }
-                        Spacer()
-                        Button("Resume") { Task { await model.setCharging(operation: .resume) } }
-                    }
-                    Button("Disable automatic limit", role: .destructive) {
-                        Task { await model.setCharging(operation: .disableLimit) }
-                    }
-                }
-
-                Section("Send SMS") {
-                    TextField("Recipient", text: $recipient)
-                        .keyboardType(.phonePad)
-                        .textContentType(.telephoneNumber)
-                    TextField("Message", text: $message, axis: .vertical)
-                        .lineLimit(3 ... 6)
-                    Button("Send message") { confirmSMS = true }
-                        .disabled(recipient.isEmpty || message.isEmpty || message.count > 160)
-                }
-
-                Section("Traffic cycle") {
-                    Stepper("Reset day: \(trafficDay)", value: $trafficDay, in: 1 ... 31)
-                    Toggle("Enable monthly reset", isOn: $trafficEnabled)
-                    Button("Apply and verify") {
-                        Task { await model.setTrafficCycle(day: trafficDay, enabled: trafficEnabled) }
-                    }
-                }
-
-                Section {
-                    TextField("2.4 GHz SSID (optional)", text: $ssid2g)
-                        .textInputAutocapitalization(.never)
-                    SecureField("2.4 GHz passphrase (optional)", text: $passphrase2g)
-                    TextField("5 GHz SSID (optional)", text: $ssid5g)
-                        .textInputAutocapitalization(.never)
-                    SecureField("5 GHz passphrase (optional)", text: $passphrase5g)
-                    Button("Apply with two-minute rollback") { confirmWifi = true }
-                        .disabled([ssid2g, passphrase2g, ssid5g, passphrase5g].allSatisfy(\.isEmpty))
-                    if let pending = model.pendingWifiTransaction {
-                        Button("Confirm current Wi-Fi") {
-                            Task { await model.confirmWifiTransaction() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Text("Reconnect if needed and confirm within \(pending.confirmWithinSeconds.rawValue) seconds.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
                 } header: {
-                    Text("Wi-Fi transaction")
+                    Text("Daily controls")
                 } footer: {
-                    Text("Unconfirmed settings are restored by an independent device process. A reboot also restores the pending transaction before the agent starts.")
+                    Text("Every change is sent through the typed v1 control plane. Wi-Fi changes require reconnection confirmation or are restored automatically.")
                 }
             }
             .navigationTitle("Control")
-            .disabled(model.isWorking)
-            .overlay {
-                if model.isWorking { ProgressView().controlSize(.large) }
+            .refreshable { await model.refresh() }
+        }
+    }
+
+    private var chargingSummary: String {
+        guard let status = model.charging else { return String(localized: "Status unavailable") }
+        let state = status.paused ? String(localized: "Paused") : String(localized: "Charging allowed")
+        return "\(status.capacityPercent)% · \(state)"
+    }
+
+    private var wifiSummary: String {
+        guard let wifi = model.dashboard?.wifi else { return String(localized: "Status unavailable") }
+        return wifi.enabled ? String(localized: "Enabled") : String(localized: "Disabled")
+    }
+
+    private var trafficSummary: String {
+        guard let traffic = model.dashboard?.traffic else { return String(localized: "Status unavailable") }
+        return traffic.resetEnabled
+            ? String(localized: "Monthly reset enabled")
+            : String(localized: "Monthly reset disabled")
+    }
+}
+
+private struct ControlRow: View {
+    let title: LocalizedStringKey
+    let subtitle: String
+    let systemImage: String
+
+    var body: some View {
+        Label {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                Text(subtitle)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
             }
-            .confirmationDialog("Send this SMS?", isPresented: $confirmSMS) {
-                Button("Send") {
-                    let submittedRecipient = recipient
-                    let submittedMessage = message
-                    message = ""
-                    Task { await model.sendSMS(recipient: submittedRecipient, message: submittedMessage) }
-                }
-                Button("Cancel", role: .cancel) {}
-            }
-            .confirmationDialog("Apply Wi-Fi changes?", isPresented: $confirmWifi) {
-                Button("Apply with rollback") {
-                    let values = (
-                        optional(ssid2g), optional(passphrase2g),
-                        optional(ssid5g), optional(passphrase5g)
+        } icon: {
+            Image(systemName: systemImage)
+                .foregroundStyle(.tint)
+                .frame(width: 28)
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+private struct ChargingControlView: View {
+    let model: AppModel
+    @State private var chargeLimit = 80
+    @State private var pendingAction: ChargeAction?
+
+    private enum ChargeAction: String {
+        case setLimit, pause, resume, disableLimit
+    }
+
+    var body: some View {
+        Form {
+            Section("Status") {
+                if let charging = model.charging {
+                    LabeledContent("Battery", value: "\(charging.capacityPercent)%")
+                    LabeledContent("State", value: charging.paused ? String(localized: "Paused") : String(localized: "Charging allowed"))
+                    LabeledContent(
+                        "Automatic limit",
+                        value: charging.automaticLimitPercent.map { "\($0)%" } ?? String(localized: "Disabled")
                     )
-                    passphrase2g = ""
-                    passphrase5g = ""
-                    Task {
-                        await model.beginWifiTransaction(
-                            ssid2g: values.0,
-                            passphrase2g: values.1,
-                            ssid5g: values.2,
-                            passphrase5g: values.3
-                        )
+                    LabeledContent("Resume threshold", value: resumeThreshold(charging))
+                } else {
+                    Text("Charging status is unavailable.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section {
+                Stepper("Limit: \(chargeLimit)%", value: $chargeLimit, in: 50 ... 95)
+                Button("Apply automatic limit") { pendingAction = .setLimit }
+                Button("Disable automatic limit", role: .destructive) { pendingAction = .disableLimit }
+            } header: {
+                Text("Automatic limit")
+            } footer: {
+                Text("Charging pauses at the limit and resumes five percentage points below it.")
+            }
+
+            Section("Manual control") {
+                Button("Pause charging") { pendingAction = .pause }
+                    .disabled(model.charging?.paused == true)
+                Button("Resume charging") { pendingAction = .resume }
+                    .disabled(model.charging?.paused == false)
+            }
+        }
+        .navigationTitle("Charging")
+        .disabled(model.isWorking)
+        .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
+        .task {
+            if let limit = model.charging?.automaticLimitPercent { chargeLimit = limit }
+        }
+        .confirmationDialog(
+            "Confirm charging change",
+            isPresented: Binding(
+                get: { pendingAction != nil },
+                set: { if !$0 { pendingAction = nil } }
+            )
+        ) {
+            if let action = pendingAction {
+                Button(actionTitle(action), role: action == .disableLimit ? .destructive : nil) {
+                    Task { await apply(action) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            if let action = pendingAction { Text(actionMessage(action)) }
+        }
+    }
+
+    private func resumeThreshold(_ status: Components.Schemas.ChargingStatus) -> String {
+        guard let limit = status.automaticLimitPercent else { return String(localized: "Not applicable") }
+        return "\(max(0, limit - status.hysteresisPercent.rawValue))%"
+    }
+
+    private func actionTitle(_ action: ChargeAction) -> LocalizedStringKey {
+        switch action {
+        case .setLimit: "Apply limit"
+        case .pause: "Pause charging"
+        case .resume: "Resume charging"
+        case .disableLimit: "Disable limit"
+        }
+    }
+
+    private func actionMessage(_ action: ChargeAction) -> LocalizedStringKey {
+        switch action {
+        case .setLimit: "The U60 will verify the charging state after applying this limit."
+        case .pause: "Charging will pause until you resume it or enable an automatic limit."
+        case .resume: "Charging will be allowed immediately."
+        case .disableLimit: "The automatic charging policy will be removed."
+        }
+    }
+
+    private func apply(_ action: ChargeAction) async {
+        switch action {
+        case .setLimit: await model.setCharging(operation: .setLimit, limit: chargeLimit)
+        case .pause: await model.setCharging(operation: .pause)
+        case .resume: await model.setCharging(operation: .resume)
+        case .disableLimit: await model.setCharging(operation: .disableLimit)
+        }
+    }
+}
+
+private struct WifiControlView: View {
+    let model: AppModel
+    @State private var ssid2g = ""
+    @State private var passphrase2g = ""
+    @State private var hidden2g = false
+    @State private var channel2g = "0"
+    @State private var bandwidth2g = "EHT20_40"
+    @State private var power2g = 30
+    @State private var ssid5g = ""
+    @State private var passphrase5g = ""
+    @State private var hidden5g = false
+    @State private var channel5g = "0"
+    @State private var bandwidth5g = "EHT160"
+    @State private var power5g = 50
+    @State private var confirmApply = false
+    @State private var initialized = false
+
+    private let channels2g = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
+    private let channels5g = ["0", "36", "40", "44", "48", "52", "56", "60", "64", "100", "104", "108", "112", "116", "120", "124", "128", "132", "136", "140", "149", "153", "157", "161", "165"]
+    private let bandwidths2g = ["EHT20", "EHT40", "EHT20_40"]
+    private let bandwidths5g = ["EHT20", "EHT40", "EHT80", "EHT160"]
+    private let powers = Array(stride(from: 10, through: 100, by: 10))
+
+    var body: some View {
+        Form {
+            if let pending = model.pendingWifiTransaction {
+                Section {
+                    Label("Wi-Fi confirmation required", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text("Reconnect to the U60 and confirm within \(pending.confirmWithinSeconds.rawValue) seconds. Otherwise the previous settings are restored automatically.")
+                        .font(.footnote)
+                    Button("Confirm current Wi-Fi") {
+                        Task { await model.confirmWifiTransaction() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+
+            if let wifi = model.dashboard?.wifi {
+                Section("Current status") {
+                    LabeledContent("Wi-Fi", value: wifi.enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
+                    LabeledContent(
+                        "Wi-Fi 7",
+                        value: wifi.bands.contains(where: { $0.bandwidth.hasPrefix("EHT") })
+                            ? String(localized: "Active")
+                            : String(localized: "Supported by firmware")
+                    )
+                }
+                ForEach(Array(wifi.bands.enumerated()), id: \.offset) { _, band in
+                    Section(band.band) {
+                        LabeledContent("SSID", value: band.ssid)
+                        LabeledContent("Channel", value: channelLabel(band.channel))
+                        LabeledContent("Bandwidth", value: bandwidthLabel(band.bandwidth))
+                        LabeledContent("TX power", value: band.transmitPowerPercent.map { "\($0)%" } ?? String(localized: "Unavailable"))
+                        LabeledContent("Security", value: band.encryption)
+                        LabeledContent("Clients", value: band.clients.map(String.init) ?? String(localized: "Unavailable"))
                     }
                 }
-                Button("Cancel", role: .cancel) {}
             }
-            .alert("U60 operation failed", isPresented: errorPresented) {
-                Button("OK") { model.errorMessage = nil }
-            } message: {
-                Text(model.errorMessage ?? "Unknown error")
+
+            radioSection(
+                title: "2.4 GHz", ssid: $ssid2g, passphrase: $passphrase2g, hidden: $hidden2g,
+                channel: $channel2g, bandwidth: $bandwidth2g, power: $power2g,
+                channels: channels2g, bandwidths: bandwidths2g
+            )
+            radioSection(
+                title: "5 GHz", ssid: $ssid5g, passphrase: $passphrase5g, hidden: $hidden5g,
+                channel: $channel5g, bandwidth: $bandwidth5g, power: $power5g,
+                channels: channels5g, bandwidths: bandwidths5g
+            )
+
+            if let guest = model.dashboard?.wifi?.guest {
+                Section {
+                    NavigationLink("Guest network") {
+                        GuestWifiControlView(model: model, guest: guest)
+                    }
+                } footer: {
+                    Text("Guest changes use the same two-minute rollback protection.")
+                }
+            }
+
+            Section {
+                Button("Apply with two-minute rollback") { confirmApply = true }
+                    .frame(maxWidth: .infinity)
+            } footer: {
+                Text("The U60 saves the old values before applying changes. An independent device process restores them unless you reconnect and confirm.")
+            }
+        }
+        .navigationTitle("Wi-Fi")
+        .disabled(model.isWorking)
+        .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
+        .task { initializeIfNeeded() }
+        .confirmationDialog("Apply Wi-Fi changes?", isPresented: $confirmApply) {
+            Button("Apply with rollback") { apply() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Wi-Fi will restart briefly. Reconnect and confirm before the two-minute deadline.")
+        }
+    }
+
+    @ViewBuilder
+    private func radioSection(
+        title: LocalizedStringKey,
+        ssid: Binding<String>,
+        passphrase: Binding<String>,
+        hidden: Binding<Bool>,
+        channel: Binding<String>,
+        bandwidth: Binding<String>,
+        power: Binding<Int>,
+        channels: [String],
+        bandwidths: [String]
+    ) -> some View {
+        Section {
+            TextField("SSID", text: ssid)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            SecureField("New password (leave blank to keep current)", text: passphrase)
+            Toggle("Hidden SSID", isOn: hidden)
+            Picker("Channel", selection: channel) {
+                ForEach(channels, id: \.self) { Text(channelLabel($0)).tag($0) }
+            }
+            Picker("Bandwidth", selection: bandwidth) {
+                ForEach(bandwidths, id: \.self) { Text(bandwidthLabel($0)).tag($0) }
+            }
+            Picker("TX power", selection: power) {
+                ForEach(powers, id: \.self) { Text("\($0)%").tag($0) }
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            if power.wrappedValue <= 20 {
+                Text("Low transmit power can reduce range or prevent clients from reconnecting.")
+                    .foregroundStyle(.orange)
             }
         }
     }
 
-    private var errorPresented: Binding<Bool> {
-        Binding(
-            get: { model.errorMessage != nil },
-            set: { if !$0 { model.errorMessage = nil } }
-        )
+    private func initializeIfNeeded() {
+        guard !initialized, let bands = model.dashboard?.wifi?.bands else { return }
+        initialized = true
+        if let band = bands.first(where: { $0.band.contains("2.4") }) {
+            ssid2g = band.ssid
+            hidden2g = band.hidden
+            channel2g = normalizedChannel(band.channel, allowed: channels2g)
+            bandwidth2g = bandwidths2g.contains(band.bandwidth) ? band.bandwidth : "EHT20_40"
+            power2g = normalizedPower(band.transmitPowerPercent)
+        }
+        if let band = bands.first(where: { $0.band.contains("5") }) {
+            ssid5g = band.ssid
+            hidden5g = band.hidden
+            channel5g = normalizedChannel(band.channel, allowed: channels5g)
+            bandwidth5g = bandwidths5g.contains(band.bandwidth) ? band.bandwidth : "EHT160"
+            power5g = normalizedPower(band.transmitPowerPercent)
+        }
     }
 
-    private func optional(_ value: String) -> String? {
-        value.isEmpty ? nil : value
+    private func normalizedChannel(_ value: String, allowed: [String]) -> String {
+        let normalized = value == "auto" ? "0" : value
+        return allowed.contains(normalized) ? normalized : "0"
+    }
+
+    private func normalizedPower(_ value: Int?) -> Int {
+        guard let value else { return 50 }
+        return min(100, max(10, Int(round(Double(value) / 10.0) * 10)))
+    }
+
+    private func apply() {
+        let edits = WifiTransactionEdits(
+            ssid2g: ssid2g,
+            passphrase2g: optional(passphrase2g),
+            hidden2g: hidden2g,
+            channel2g: channel2g,
+            bandwidth2g: bandwidth2g,
+            transmitPower2g: power2g,
+            ssid5g: ssid5g,
+            passphrase5g: optional(passphrase5g),
+            hidden5g: hidden5g,
+            channel5g: channel5g,
+            bandwidth5g: bandwidth5g,
+            transmitPower5g: power5g
+        )
+        passphrase2g = ""
+        passphrase5g = ""
+        Task { await model.beginWifiTransaction(edits) }
+    }
+}
+
+private struct GuestWifiControlView: View {
+    let model: AppModel
+    let guest: Components.Schemas.WifiGuestStatus
+    @State private var enabled2g: Bool
+    @State private var enabled5g: Bool
+    @State private var ssid: String
+    @State private var passphrase = ""
+    @State private var hidden: Bool
+    @State private var isolation: Bool
+    @State private var activeTime: Int
+    @State private var confirmApply = false
+
+    private let durations = [0, 30, 60, 120, 240, 480, 720, 1440]
+
+    init(model: AppModel, guest: Components.Schemas.WifiGuestStatus) {
+        self.model = model
+        self.guest = guest
+        _enabled2g = State(initialValue: guest.enabled2g)
+        _enabled5g = State(initialValue: guest.enabled5g)
+        _ssid = State(initialValue: guest.ssid)
+        _hidden = State(initialValue: guest.hidden)
+        _isolation = State(initialValue: guest.isolation)
+        _activeTime = State(initialValue: guest.activeTimeMinutes)
+    }
+
+    var body: some View {
+        Form {
+            Section("Radio bands") {
+                Toggle("2.4 GHz", isOn: $enabled2g)
+                Toggle("5 GHz", isOn: $enabled5g)
+            }
+            Section("Network") {
+                TextField("SSID", text: $ssid)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                SecureField("New password (leave blank to keep current)", text: $passphrase)
+                Toggle("Hidden SSID", isOn: $hidden)
+                Toggle("Client isolation", isOn: $isolation)
+            }
+            Section("Timer") {
+                Picker("Auto-shutoff", selection: $activeTime) {
+                    ForEach(durations, id: \.self) { duration in
+                        Text(durationLabel(duration)).tag(duration)
+                    }
+                }
+            }
+            Section {
+                Button("Apply with two-minute rollback") { confirmApply = true }
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .navigationTitle("Guest network")
+        .disabled(model.isWorking)
+        .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
+        .confirmationDialog("Apply guest network changes?", isPresented: $confirmApply) {
+            Button("Apply with rollback") {
+                let edits = WifiTransactionEdits(
+                    guestEnabled2g: enabled2g,
+                    guestEnabled5g: enabled5g,
+                    guestSSID: ssid,
+                    guestPassphrase: optional(passphrase),
+                    guestHidden: hidden,
+                    guestIsolation: isolation,
+                    guestActiveTimeMinutes: activeTime
+                )
+                passphrase = ""
+                Task { await model.beginWifiTransaction(edits) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    private func durationLabel(_ minutes: Int) -> String {
+        switch minutes {
+        case 0: String(localized: "No limit")
+        case 30: String(localized: "30 minutes")
+        case 60: String(localized: "1 hour")
+        case 120: String(localized: "2 hours")
+        case 240: String(localized: "4 hours")
+        case 480: String(localized: "8 hours")
+        case 720: String(localized: "12 hours")
+        case 1440: String(localized: "24 hours")
+        default: "\(minutes) min"
+        }
+    }
+}
+
+private struct TrafficCycleControlView: View {
+    let model: AppModel
+    @State private var resetDay = 1
+    @State private var enabled = true
+    @State private var confirmApply = false
+
+    var body: some View {
+        Form {
+            Section("Monthly cycle") {
+                Stepper("Reset day: \(resetDay)", value: $resetDay, in: 1 ... 31)
+                Toggle("Enable monthly reset", isOn: $enabled)
+            }
+            Section {
+                Button("Apply and verify") { confirmApply = true }
+                    .frame(maxWidth: .infinity)
+            } footer: {
+                Text("The previous cycle settings are restored if device readback does not match.")
+            }
+        }
+        .navigationTitle("Traffic cycle")
+        .disabled(model.isWorking)
+        .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
+        .task {
+            if let traffic = model.dashboard?.traffic {
+                resetDay = traffic.resetDay
+                enabled = traffic.resetEnabled
+            }
+        }
+        .confirmationDialog("Apply traffic cycle?", isPresented: $confirmApply) {
+            Button("Apply and verify") { Task { await model.setTrafficCycle(day: resetDay, enabled: enabled) } }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+private struct SMSControlView: View {
+    let model: AppModel
+    @State private var recipient = ""
+    @State private var message = ""
+    @State private var confirmSend = false
+
+    var body: some View {
+        Form {
+            Section("Message") {
+                TextField("Recipient", text: $recipient)
+                    .keyboardType(.phonePad)
+                    .textContentType(.telephoneNumber)
+                TextField("Message", text: $message, axis: .vertical)
+                    .lineLimit(3 ... 6)
+                LabeledContent("Characters", value: "\(message.count)/160")
+            }
+            Section {
+                Button("Send message") { confirmSend = true }
+                    .disabled(recipient.isEmpty || message.isEmpty || message.count > 160)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .navigationTitle("Send SMS")
+        .disabled(model.isWorking)
+        .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
+        .confirmationDialog("Send this SMS?", isPresented: $confirmSend) {
+            Button("Send") {
+                let submittedRecipient = recipient
+                let submittedMessage = message
+                message = ""
+                Task { await model.sendSMS(recipient: submittedRecipient, message: submittedMessage) }
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+}
+
+private func optional(_ value: String) -> String? {
+    value.isEmpty ? nil : value
+}
+
+private func channelLabel(_ value: String) -> String {
+    value == "0" || value == "auto" ? String(localized: "Auto") : String(localized: "Channel \(value)")
+}
+
+private func bandwidthLabel(_ value: String) -> String {
+    switch value {
+    case "EHT20": "20 MHz"
+    case "EHT40": "40 MHz"
+    case "EHT20_40": "20/40 MHz"
+    case "EHT80": "80 MHz"
+    case "EHT160": "160 MHz"
+    default: value
     }
 }

@@ -28,6 +28,7 @@ PYTHON_TOOLS = (
     "scripts/research/zstrings.py",
     "scripts/research/zwrite.py",
     "installer/app.py",
+    "scripts/capture-b04-lan-redeploy-baseline.py",
     "scripts/deploy-b04-v1.py",
 )
 SHELL_TOOLS = (

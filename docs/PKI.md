@@ -39,13 +39,24 @@ fixed subject and P-256 key before issuing a fixed 825-day server certificate:
 The signing output is the leaf certificate, leaf-plus-root chain, and
 `sha256/` base64 SHA-256 SPKI pin. The CA private key is never copied into the
 device output. The final file is `device-bundle.complete`.
-`verify-bundle.sh DEVICE_DIR CA_CERT` requires all three applicable completion
-markers and checks the chain, current-time validity, no more than 825 days of
-total `notAfter - notBefore` validity, exact identity and extensions, P-256
-keys, leaf key/certificate match, mode `0600` leaf key, exact chain bytes and
-exact SPKI pin before later deployment is considered. The host verifier uses
-Python 3's standard library to parse fixed `LC_ALL=C` OpenSSL validity output;
-date-parse failure is a hard verification failure.
+`verify-bundle.sh CSR_DIR BUNDLE_DIR CA_CERT` requires the public CSR and its
+marker in `CSR_DIR`, the signed certificate artifacts and their marker in
+`BUNDLE_DIR`, and the owner CA marker alongside `CA_CERT`. It never reads or
+copies a device private key. It verifies the CSR self-signature and fixed
+subject, compares the CSR public key with the leaf certificate public key, and
+checks the chain, current-time validity, no more than 825 days of total
+`notAfter - notBefore` validity, exact identity and extensions, P-256 keys,
+exact chain bytes and exact SPKI pin before later deployment is considered. The
+host verifier uses Python 3's standard library to parse fixed `LC_ALL=C`
+OpenSSL validity output; date-parse failure is a hard verification failure.
+
+Successful host verification deliberately does not establish that the private
+key deployed on the U60 matches the accepted leaf certificate: the host has no
+device private key with which to make that comparison. That proof belongs to
+the post-deploy live TLS gate. The gate must verify that the certificate served
+by the device equals the accepted leaf certificate and then complete an
+owner-CA-authenticated TLS handshake. Serving that exact certificate while
+completing the handshake proves possession of its corresponding private key.
 
 Every CA, CSR and output directory is checked by physical path before any
 mutation. `/`, the current working directory, the user home, the Git repository
@@ -64,10 +75,10 @@ set is incomplete:
 
 - quarantine an incomplete owner-CA or device-CSR directory and regenerate into
   a different empty mode-`0700` directory;
-- if only signing publication was interrupted inside an otherwise complete CSR
-  directory, retain `device-key.pem`, `device.csr.pem` and
-  `device-csr.complete`; quarantine the incomplete certificate, chain, pin and
-  bundle marker, then rerun signing into that cleaned mode-`0700` directory.
+- if only signing publication was interrupted, retain the completed CSR set and
+  quarantine the incomplete certificate, chain, pin and bundle marker from the
+  signing output directory; rerun signing into a different empty mode-`0700`
+  output directory.
 
 The tooling does not delete, repair or automatically recover an incomplete set.
 
@@ -80,9 +91,10 @@ enabled, and never place an output directory in this repository.
 
 `test-pki.sh` exercises the complete flow only under a temporary directory with
 a fixed, explicitly test-only passphrase. It covers wrong-passphrase,
-non-P-256, key/certificate mismatch, symlink, overwrite, permission, pin and
-chain failures, overlong total certificate validity, unsafe physical paths and
-missing completion markers, then removes every generated test artifact.
+non-P-256, CSR/certificate mismatch, public-CSR-only host verification, symlink,
+overwrite, permission, pin and chain failures, overlong total certificate
+validity, unsafe physical paths and missing completion markers, then removes
+every generated test artifact.
 
 Real execution is now accepted only through the first read-only canary gate:
 

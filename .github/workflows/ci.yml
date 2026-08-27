@@ -90,7 +90,7 @@ jobs:
         run: scripts/pairing/test-pairing-tools.sh
       - name: Test content-addressed V1 deployment boundary
         run: |
-          python3 -m unittest discover -s scripts/tests -p 'test_b04_v1_*.py'
+          python3 -m unittest discover -s scripts/tests -p 'test_b04_*.py'
           sh -n device/b04-v1/*.sh scripts/build-b04-dropbear.sh
 
   pki:

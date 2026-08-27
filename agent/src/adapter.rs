@@ -185,6 +185,18 @@ pub struct WifiBandStatus {
 pub struct WifiStatus {
     pub enabled: bool,
     pub bands: Vec<WifiBandStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub guest: Option<WifiGuestStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WifiGuestStatus {
+    pub enabled_2g: bool,
+    pub enabled_5g: bool,
+    pub ssid: String,
+    pub hidden: bool,
+    pub isolation: bool,
+    pub active_time_minutes: u16,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -842,9 +854,22 @@ fn parse_wifi_status(
     let report_enabled = report
         .and_then(|value| value.get("wifi_onoff"))
         .and_then(|value| boolish(Some(value)));
+    let guest = (|| {
+        let ssid = config.get("guest_2g.ssid")?.clone();
+        let active_time_minutes = config.get("guest_2g.active_time")?.parse::<u16>().ok()?;
+        Some(WifiGuestStatus {
+            enabled_2g: !disabled(config.get("guest_2g.disabled")),
+            enabled_5g: !disabled(config.get("guest_5g.disabled")),
+            ssid,
+            hidden: boolish_string(config.get("guest_2g.hidden")).unwrap_or(false),
+            isolation: boolish_string(config.get("guest_2g.isolate")).unwrap_or(false),
+            active_time_minutes,
+        })
+    })();
     Ok(WifiStatus {
         enabled: report_enabled.unwrap_or_else(|| bands.iter().any(|band| band.enabled)),
         bands,
+        guest,
     })
 }
 
@@ -1318,12 +1343,23 @@ mod tests {
             ("main_5g.ssid".into(), "Five".into()),
             ("main_5g.hidden".into(), "1".into()),
             ("main_5g.encryption".into(), "sae-mixed".into()),
+            ("guest_2g.disabled".into(), "0".into()),
+            ("guest_2g.ssid".into(), "Guest".into()),
+            ("guest_2g.hidden".into(), "0".into()),
+            ("guest_2g.isolate".into(), "1".into()),
+            ("guest_2g.active_time".into(), "120".into()),
+            ("guest_5g.disabled".into(), "1".into()),
         ]);
         let wifi =
             parse_wifi_status(&config, Some(&json!({"wifi_onoff":"1"})), Some(1), Some(2)).unwrap();
         assert!(wifi.enabled);
         assert_eq!(wifi.bands[1].clients, Some(2));
         assert!(wifi.bands[1].hidden);
+        let guest = wifi.guest.unwrap();
+        assert!(guest.enabled_2g);
+        assert!(!guest.enabled_5g);
+        assert!(guest.isolation);
+        assert_eq!(guest.active_time_minutes, 120);
 
         let clients = parse_lan_clients(&json!({"dhcp_leases":[{
             "hostname":"phone", "ipaddr":"192.168.0.2",

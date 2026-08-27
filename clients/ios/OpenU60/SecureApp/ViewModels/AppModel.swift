@@ -57,6 +57,7 @@ final class AppModel {
                 throw LocalSecurityError.invalidPairingPayload
             }
             let profile = try payload.profile
+            try await LocalNetworkPreflight.requestAccess(for: profile)
             let pending = try credentials.prepareCredential()
             let pairingService = try AgentService(profile: profile, vault: vault)
             let registered = try await pairingService.pair(
@@ -129,20 +130,10 @@ final class AppModel {
         }
     }
 
-    func beginWifiTransaction(
-        ssid2g: String?,
-        passphrase2g: String?,
-        ssid5g: String?,
-        passphrase5g: String?
-    ) async {
+    func beginWifiTransaction(_ edits: WifiTransactionEdits) async {
         await perform {
             guard let service else { throw LocalSecurityError.missingCredential }
-            pendingWifiTransaction = try await service.beginWifiTransaction(
-                ssid2g: ssid2g,
-                passphrase2g: passphrase2g,
-                ssid5g: ssid5g,
-                passphrase5g: passphrase5g
-            )
+            pendingWifiTransaction = try await service.beginWifiTransaction(edits)
         }
     }
 

@@ -21,13 +21,13 @@ authentication paths:
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
 | `GET /v1/status/traffic` | Current day, billing-cycle, power-on and total counters |
-| `GET /v1/status/wifi` | Two fixed B04 radio sections, security and station counts |
+| `GET /v1/status/wifi` | Two fixed B04 radio sections, channel/bandwidth/power, security, station counts and optional guest state |
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
-| `GET/PUT /v1/charging` | Pause/resume or 50–95% automatic threshold with readback |
+| `GET/PUT /v1/charging` | Pause/resume or 50–95% automatic threshold with bounded delayed-state readback |
 | `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
-| `POST /v1/wifi/transaction` | Apply bounded Wi-Fi fields with 120-second rollback |
+| `POST /v1/wifi/transaction` | Apply allowlisted primary/guest SSID, key, visibility, channel, bandwidth and transmit-power fields with 120-second rollback |
 | `POST /v1/wifi/transaction/confirm` | Commit the matching pending Wi-Fi transaction |
 | `POST /v1/auth/password/session` | Argon2id password login for a normal scoped session |
 | `POST /v1/auth/password/advanced` | Password re-entry for a non-sliding five-minute advanced session |
