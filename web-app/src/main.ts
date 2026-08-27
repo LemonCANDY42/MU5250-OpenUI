@@ -332,17 +332,13 @@ function chargingForm(status: HTMLElement, error: HTMLElement): HTMLFormElement 
   limit.value = '80'
   const label = recipientLabel(limit, 'Automatic limit (%)')
   const buttons = element('div', 'actions')
-  const pause = button('Pause', 'secondary')
-  pause.type = 'button'
-  const resume = button('Resume', 'secondary')
-  resume.type = 'button'
   const setLimit = button('Set limit', 'primary')
   const disable = button('Disable limit', 'quiet')
   disable.type = 'button'
-  buttons.append(pause, resume, setLimit, disable)
+  buttons.append(setLimit, disable)
   form.append(current, label, limit, buttons)
   const updateCurrent = (value: V1ChargingStatus) => {
-    current.textContent = `${value.capacity_percent}% · ${value.paused ? 'paused' : 'charging allowed'} · ${value.automatic_limit_percent === undefined ? 'manual' : `limit ${value.automatic_limit_percent}%`}`
+    current.textContent = `${value.capacity_percent}% · ${value.paused ? 'paused at limit' : 'charging allowed'} · ${value.automatic_limit_percent === undefined ? 'automatic limit disabled' : `limit ${value.automatic_limit_percent}%`}`
   }
   void getJson('/v1/charging')
     .then((value) => updateCurrent(value as V1ChargingStatus))
@@ -356,10 +352,11 @@ function chargingForm(status: HTMLElement, error: HTMLElement): HTMLFormElement 
       setError(error, errorMessage(reason))
     }
   }
-  pause.addEventListener('click', () => void operation({ operation: 'pause' }, 'Charging paused.'))
-  resume.addEventListener('click', () => void operation({ operation: 'resume' }, 'Charging resumed.'))
   disable.addEventListener('click', () =>
-    void operation({ operation: 'disable_limit' }, 'Automatic charging limit disabled.'),
+    void operation(
+      { operation: 'disable_limit' },
+      'Automatic charging limit disabled. Charging is allowed.',
+    ),
   )
   bindForm(form, setLimit, status, error, 'Applying…', 'Set limit', async () => {
     const value = Number(limit.value)
@@ -442,7 +439,8 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
     void postJson('/v1/wifi/transaction/confirm', { transaction_id: pendingId })
       .then(() => {
         pendingId = undefined
-        status.textContent = 'Wi-Fi transaction committed.'
+        status.textContent =
+          'Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.'
       })
       .catch((reason: unknown) => {
         confirm.disabled = false

@@ -300,9 +300,9 @@ export interface paths {
             readonly path?: never;
             readonly cookie?: never;
         };
-        /** Read charging pause state and the optional automatic threshold */
+        /** Read the automatic charging-limit state and current enforcement result */
         readonly get: operations["getChargingStatus"];
-        /** Pause, resume, enable or disable the bounded charging threshold */
+        /** Set or disable the bounded automatic charging threshold */
         readonly put: operations["updateCharging"];
         readonly post?: never;
         readonly delete?: never;
@@ -650,7 +650,7 @@ export interface components {
         };
         readonly ChargingRequest: {
             /** @enum {string} */
-            readonly operation: "pause" | "resume" | "set_limit" | "disable_limit";
+            readonly operation: "set_limit" | "disable_limit";
             readonly limit_percent?: number;
         };
         readonly TrafficCycleRequest: {

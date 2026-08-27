@@ -44,7 +44,7 @@ struct ControlView: View {
 
     private var chargingSummary: String {
         guard let status = model.charging else { return String(localized: "Status unavailable") }
-        let state = status.paused ? String(localized: "Paused") : String(localized: "Charging allowed")
+        let state = status.paused ? String(localized: "Paused at limit") : String(localized: "Charging allowed")
         return "\(status.capacityPercent)% · \(state)"
     }
 
@@ -90,7 +90,7 @@ private struct ChargingControlView: View {
     @State private var pendingAction: ChargeAction?
 
     private enum ChargeAction: String {
-        case setLimit, pause, resume, disableLimit
+        case setLimit, disableLimit
     }
 
     var body: some View {
@@ -98,7 +98,7 @@ private struct ChargingControlView: View {
             Section("Status") {
                 if let charging = model.charging {
                     LabeledContent("Battery", value: "\(charging.capacityPercent)%")
-                    LabeledContent("State", value: charging.paused ? String(localized: "Paused") : String(localized: "Charging allowed"))
+                    LabeledContent("State", value: charging.paused ? String(localized: "Paused at limit") : String(localized: "Charging allowed"))
                     LabeledContent(
                         "Automatic limit",
                         value: charging.automaticLimitPercent.map { "\($0)%" } ?? String(localized: "Disabled")
@@ -118,13 +118,6 @@ private struct ChargingControlView: View {
                 Text("Automatic limit")
             } footer: {
                 Text("Charging pauses at the limit and resumes five percentage points below it.")
-            }
-
-            Section("Manual control") {
-                Button("Pause charging") { pendingAction = .pause }
-                    .disabled(model.charging?.paused == true)
-                Button("Resume charging") { pendingAction = .resume }
-                    .disabled(model.charging?.paused == false)
             }
         }
         .navigationTitle("Charging")
@@ -159,8 +152,6 @@ private struct ChargingControlView: View {
     private func actionTitle(_ action: ChargeAction) -> LocalizedStringKey {
         switch action {
         case .setLimit: "Apply limit"
-        case .pause: "Pause charging"
-        case .resume: "Resume charging"
         case .disableLimit: "Disable limit"
         }
     }
@@ -168,18 +159,14 @@ private struct ChargingControlView: View {
     private func actionMessage(_ action: ChargeAction) -> LocalizedStringKey {
         switch action {
         case .setLimit: "The U60 will verify the charging state after applying this limit."
-        case .pause: "Charging will pause until you resume it or enable an automatic limit."
-        case .resume: "Charging will be allowed immediately."
-        case .disableLimit: "The automatic charging policy will be removed."
+        case .disableLimit: "The automatic charging policy will be removed and charging will resume if it was paused at the limit."
         }
     }
 
     private func apply(_ action: ChargeAction) async {
         switch action {
-        case .setLimit: await model.setCharging(operation: .setLimit, limit: chargeLimit)
-        case .pause: await model.setCharging(operation: .pause)
-        case .resume: await model.setCharging(operation: .resume)
-        case .disableLimit: await model.setCharging(operation: .disableLimit)
+        case .setLimit: await model.setChargingLimit(chargeLimit)
+        case .disableLimit: await model.setChargingLimit(nil)
         }
     }
 }

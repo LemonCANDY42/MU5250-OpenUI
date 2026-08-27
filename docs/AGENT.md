@@ -25,10 +25,10 @@ authentication paths:
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
-| `GET/PUT /v1/charging` | Pause/resume or 50–95% automatic threshold with bounded delayed-state readback |
+| `GET/PUT /v1/charging` | Set or disable a 50–95% automatic threshold with bounded delayed-state readback; no public manual pause |
 | `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
 | `POST /v1/wifi/transaction` | Apply allowlisted primary/guest SSID, key, visibility, channel, bandwidth and transmit-power fields with 120-second rollback |
-| `POST /v1/wifi/transaction/confirm` | Commit the matching pending Wi-Fi transaction |
+| `POST /v1/wifi/transaction/confirm` | Re-read the requested fields and commit only a matching pending Wi-Fi transaction |
 | `POST /v1/auth/password/session` | Argon2id password login for a normal scoped session |
 | `POST /v1/auth/password/advanced` | Password re-entry for a non-sliding five-minute advanced session |
 | `POST /v1/auth/challenge` | Single-use P-256 signing challenge |

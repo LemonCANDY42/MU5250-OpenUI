@@ -394,7 +394,7 @@ paths:
   /v1/charging:
     get:
       operationId: getChargingStatus
-      summary: Read charging pause state and the optional automatic threshold
+      summary: Read the automatic charging-limit state and current enforcement result
       responses:
         "200":
           description: Charging state and policy
@@ -412,7 +412,7 @@ paths:
           $ref: "#/components/responses/DailySourceUnavailable"
     put:
       operationId: updateCharging
-      summary: Pause, resume, enable or disable the bounded charging threshold
+      summary: Set or disable the bounded automatic charging threshold
       requestBody:
         required: true
         content:
@@ -1279,7 +1279,7 @@ components:
       properties:
         operation:
           type: string
-          enum: [pause, resume, set_limit, disable_limit]
+          enum: [set_limit, disable_limit]
         limit_percent:
           type: integer
           minimum: 50

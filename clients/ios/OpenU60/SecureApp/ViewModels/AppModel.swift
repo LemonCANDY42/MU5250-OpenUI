@@ -4,6 +4,11 @@ import Observation
 @MainActor
 @Observable
 final class AppModel {
+    struct Notice: Equatable {
+        let title: String
+        let message: String
+    }
+
     enum Phase: Equatable {
         case booting
         case needsPairing
@@ -18,6 +23,7 @@ final class AppModel {
     private(set) var charging: Components.Schemas.ChargingStatus?
     private(set) var pendingWifiTransaction: Components.Schemas.WifiTransactionGrant?
     private(set) var isWorking = false
+    private(set) var notice: Notice?
     var errorMessage: String?
 
     private let credentials: DeviceCredentialStore
@@ -114,10 +120,10 @@ final class AppModel {
         }
     }
 
-    func setCharging(operation: Components.Schemas.ChargingRequest.OperationPayload, limit: Int? = nil) async {
+    func setChargingLimit(_ limit: Int?) async {
         await perform {
             guard let service else { throw LocalSecurityError.missingCredential }
-            charging = try await service.updateCharging(operation: operation, limitPercent: limit)
+            charging = try await service.updateChargingLimit(limit)
             try await refreshThrowing()
         }
     }
@@ -145,7 +151,16 @@ final class AppModel {
             try await service.confirmWifiTransaction(id: pendingWifiTransaction.transactionId)
             self.pendingWifiTransaction = nil
             try await refreshThrowing()
+            notice = Notice(
+                title: String(localized: "Wi-Fi updated"),
+                message: String(localized: "Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.")
+            )
         }
+    }
+
+    func dismissPresentedMessage() {
+        errorMessage = nil
+        notice = nil
     }
 
     func signOut() async {
@@ -153,6 +168,7 @@ final class AppModel {
         dashboard = nil
         charging = nil
         pendingWifiTransaction = nil
+        notice = nil
         phase = profile == nil ? .needsPairing : .signedOut
     }
 
@@ -163,6 +179,7 @@ final class AppModel {
             dashboard = nil
             charging = nil
             pendingWifiTransaction = nil
+            notice = nil
             profile = nil
             credential = nil
             service = nil
@@ -195,6 +212,7 @@ final class AppModel {
 
     private func perform(_ operation: () async throws -> Void) async {
         guard !isWorking else { return }
+        notice = nil
         isWorking = true
         defer { isWorking = false }
         do {

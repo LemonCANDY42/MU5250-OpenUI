@@ -43,7 +43,11 @@ flow. The Wi-Fi screen mirrors the useful hierarchy of the imported MIT client
 while keeping the V1 safety boundary: typed primary and guest fields only,
 fixed channel/bandwidth/transmit-power choices, no raw UCI/ubus surface, no
 prefilled password, and a visible two-minute reconnect confirmation backed by
-the independent device rollback worker. B04 exposes Wi-Fi 7 through its EHT
+the independent device rollback worker. Confirmation re-reads the requested
+fields before cancelling rollback, refreshes the client status, and then shows
+an explicit reconnection-and-verification success message. The charging screen
+offers only the 50–95% automatic limit and its disable action; manual pause and
+resume are not public controls. B04 exposes Wi-Fi 7 through its EHT
 radio mode but no independent switch source, so the client reports that state
 without presenting a nonfunctional toggle.
 

@@ -244,12 +244,11 @@ final class AgentService: Sendable {
         }
     }
 
-    func updateCharging(
-        operation: Components.Schemas.ChargingRequest.OperationPayload,
-        limitPercent: Int? = nil
+    func updateChargingLimit(
+        _ limitPercent: Int?
     ) async throws -> Components.Schemas.ChargingStatus {
         let output = try await client.updateCharging(.init(body: .json(.init(
-            operation: operation,
+            operation: limitPercent == nil ? .disableLimit : .setLimit,
             limitPercent: limitPercent
         ))))
         switch output {

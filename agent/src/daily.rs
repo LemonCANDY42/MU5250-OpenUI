@@ -53,8 +53,6 @@ pub struct ChargingStatus {
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ChargingOperation {
-    Pause,
-    Resume,
     SetLimit,
     DisableLimit,
 }
@@ -134,6 +132,8 @@ struct PendingWifiTransaction {
     id: String,
     expires_at: u64,
     old_values: BTreeMap<WifiField, String>,
+    #[serde(default)]
+    new_values: BTreeMap<WifiField, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -241,11 +241,6 @@ impl DailyService {
         let previous_paused = charger_paused(self.io.as_ref())?;
         let result = (|| {
             match request.operation {
-                ChargingOperation::Pause | ChargingOperation::Resume => {
-                    self.persist_charge_policy(&ChargePolicy::default())?;
-                    let paused = request.operation == ChargingOperation::Pause;
-                    self.set_charge_paused(paused)?;
-                }
                 ChargingOperation::SetLimit => {
                     let limit = request
                         .limit_percent
@@ -258,6 +253,9 @@ impl DailyService {
                 }
                 ChargingOperation::DisableLimit => {
                     self.persist_charge_policy(&ChargePolicy::default())?;
+                    if charger_paused(self.io.as_ref())? {
+                        self.set_charge_paused(false)?;
+                    }
                 }
             }
             self.charging_status()
@@ -347,10 +345,24 @@ impl DailyService {
             id: random_id(),
             expires_at: unix_now()?.saturating_add(WIFI_CONFIRM_SECONDS),
             old_values,
+            new_values: values.clone(),
         };
         self.store.write_json(WIFI_TRANSACTION_FILE, &transaction)?;
         if let Err(apply_error) = self.io.apply_wifi_values(&values) {
             return self.rollback_after_failed_apply(&transaction, apply_error);
+        }
+        match self
+            .io
+            .wifi_values(&values.keys().copied().collect::<Vec<_>>())
+        {
+            Ok(applied) if applied == values => {}
+            Ok(_) => {
+                return self.rollback_after_failed_apply(
+                    &transaction,
+                    "Wi-Fi readback did not match the requested settings".into(),
+                )
+            }
+            Err(error) => return self.rollback_after_failed_apply(&transaction, error),
         }
         if let Err(spawn_error) = spawn_wifi_rollback(&transaction.id) {
             return self.rollback_after_failed_apply(&transaction, spawn_error);
@@ -377,6 +389,21 @@ impl DailyService {
             self.store.remove(WIFI_TRANSACTION_FILE)?;
             self.audit("wifi_transaction_confirm", "expired_rolled_back");
             return Err("Wi-Fi confirmation deadline expired; old settings were restored".into());
+        }
+        if transaction.new_values.is_empty() {
+            return Err(
+                "Wi-Fi verification snapshot is unavailable; automatic rollback remains armed"
+                    .into(),
+            );
+        }
+        let applied = self
+            .io
+            .wifi_values(&transaction.new_values.keys().copied().collect::<Vec<_>>())?;
+        if applied != transaction.new_values {
+            return Err(
+                "Wi-Fi settings do not match the requested values; automatic rollback remains armed"
+                    .into(),
+            );
         }
         self.store.remove(WIFI_TRANSACTION_FILE)?;
         self.audit("wifi_transaction_confirm", "success");
@@ -725,7 +752,7 @@ fn validate_charging_request(request: &ChargingRequest) -> Result<(), String> {
                 return Err("limit_percent must be between 50 and 95".into());
             }
         }
-        ChargingOperation::Pause | ChargingOperation::Resume | ChargingOperation::DisableLimit => {
+        ChargingOperation::DisableLimit => {
             if request.limit_percent.is_some() {
                 return Err("limit_percent is only valid with set_limit".into());
             }
@@ -1135,8 +1162,8 @@ mod tests {
             .store(CHARGE_READBACK_ATTEMPTS, Ordering::SeqCst);
         let charge_error = service
             .charging_update(ChargingRequest {
-                operation: ChargingOperation::Pause,
-                limit_percent: None,
+                operation: ChargingOperation::SetLimit,
+                limit_percent: Some(80),
             })
             .unwrap_err();
         assert!(charge_error.contains("rolled back"));
@@ -1160,8 +1187,8 @@ mod tests {
         io.stale_after_next_charge_write.store(2, Ordering::SeqCst);
         let status = service
             .charging_update(ChargingRequest {
-                operation: ChargingOperation::Pause,
-                limit_percent: None,
+                operation: ChargingOperation::SetLimit,
+                limit_percent: Some(80),
             })
             .unwrap();
         assert!(status.paused);
@@ -1173,13 +1200,76 @@ mod tests {
         let (_temp, io, service) = service();
         let error = service
             .charging_update(ChargingRequest {
-                operation: ChargingOperation::Pause,
+                operation: ChargingOperation::DisableLimit,
                 limit_percent: Some(80),
             })
             .unwrap_err();
         assert_eq!(error, "limit_percent is only valid with set_limit");
         assert!(!*io.paused.lock().unwrap());
         assert_eq!(service.charge_policy().unwrap(), ChargePolicy::default());
+    }
+
+    #[test]
+    fn public_charging_contract_rejects_manual_pause_and_disable_resumes() {
+        assert!(serde_json::from_str::<ChargingRequest>(r#"{"operation":"pause"}"#).is_err());
+        assert!(serde_json::from_str::<ChargingRequest>(r#"{"operation":"resume"}"#).is_err());
+
+        let (_temp, io, service) = service();
+        service
+            .charging_update(ChargingRequest {
+                operation: ChargingOperation::SetLimit,
+                limit_percent: Some(80),
+            })
+            .unwrap();
+        assert!(*io.paused.lock().unwrap());
+        let status = service
+            .charging_update(ChargingRequest {
+                operation: ChargingOperation::DisableLimit,
+                limit_percent: None,
+            })
+            .unwrap();
+        assert!(!status.paused);
+        assert_eq!(status.automatic_limit_percent, None);
+        assert!(!*io.paused.lock().unwrap());
+    }
+
+    #[test]
+    fn wifi_confirmation_requires_matching_device_readback() {
+        let (_temp, io, service) = service();
+        let transaction = PendingWifiTransaction {
+            id: random_id(),
+            expires_at: unix_now().unwrap() + 120,
+            old_values: BTreeMap::from([(WifiField::TransmitPower2g, "30".into())]),
+            new_values: BTreeMap::from([(WifiField::TransmitPower2g, "40".into())]),
+        };
+        service
+            .store
+            .write_json(WIFI_TRANSACTION_FILE, &transaction)
+            .unwrap();
+
+        let error = service
+            .wifi_transaction_confirm(&transaction.id)
+            .unwrap_err();
+        assert!(error.contains("automatic rollback remains armed"));
+        assert!(service
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_some());
+
+        io.apply_wifi_values(&transaction.new_values).unwrap();
+        assert_eq!(
+            service
+                .wifi_transaction_confirm(&transaction.id)
+                .unwrap()
+                .result,
+            "committed"
+        );
+        assert!(service
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1195,6 +1285,7 @@ mod tests {
             id: random_id(),
             expires_at: unix_now().unwrap() + 120,
             old_values: BTreeMap::from([(WifiField::Ssid2g, old.clone())]),
+            new_values: BTreeMap::from([(WifiField::Ssid2g, "new-ssid".into())]),
         };
         store.write_json(WIFI_TRANSACTION_FILE, &pending).unwrap();
         io.apply_wifi_values(&BTreeMap::from([(WifiField::Ssid2g, "new-ssid".into())]))

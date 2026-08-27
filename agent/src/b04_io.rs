@@ -179,7 +179,7 @@ impl B04Io for SystemB04Io {
         };
         let payload = payload.to_string();
         let output = run_fixed(label, "ubus", &["call", object, method, &payload])?;
-        serde_json::from_slice(&output).map_err(|_| format!("{label} returned invalid JSON"))
+        parse_ubus_write_response(label, &output)
     }
 
     fn ubus_write(&self, operation: UbusWrite) -> Result<Value, String> {
@@ -283,9 +283,7 @@ impl B04Io for SystemB04Io {
             "ubus",
             &["call", "zwrt_wlan", "reload", "{}"],
         )?;
-        serde_json::from_slice::<Value>(&output)
-            .map(|_| ())
-            .map_err(|_| "Wi-Fi reload returned invalid JSON".to_string())
+        parse_ubus_write_response("Wi-Fi reload", &output).map(|_| ())
     }
 
     fn battery_capacity(&self) -> Result<u8, String> {
@@ -298,6 +296,16 @@ impl B04Io for SystemB04Io {
             .filter(|value| *value <= 100)
             .ok_or_else(|| "battery capacity source is invalid".to_string())
     }
+}
+
+fn parse_ubus_write_response(label: &str, output: &[u8]) -> Result<Value, String> {
+    // Several accepted B04 write methods acknowledge success with an empty
+    // stdout stream. The command exit status remains mandatory, and every
+    // state-changing caller performs an independent readback afterwards.
+    if output.iter().all(u8::is_ascii_whitespace) {
+        return Ok(json!({}));
+    }
+    serde_json::from_slice(output).map_err(|_| format!("{label} returned invalid JSON"))
 }
 
 fn run_fixed(label: &str, program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -421,5 +429,22 @@ mod tests {
         .map(WifiField::uci_path);
         assert_eq!(paths.len(), 6);
         assert!(paths.iter().all(|path| path.starts_with("wireless.")));
+    }
+
+    #[test]
+    fn ubus_writes_accept_empty_success_but_reject_non_json_output() {
+        assert_eq!(parse_ubus_write_response("write", b"").unwrap(), json!({}));
+        assert_eq!(
+            parse_ubus_write_response("write", b" \r\n").unwrap(),
+            json!({})
+        );
+        assert_eq!(
+            parse_ubus_write_response("write", br#"{"ok":true}"#).unwrap(),
+            json!({"ok": true})
+        );
+        assert_eq!(
+            parse_ubus_write_response("write", b"not-json").unwrap_err(),
+            "write returned invalid JSON"
+        );
     }
 }

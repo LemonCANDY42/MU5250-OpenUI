@@ -84,7 +84,7 @@ loopback canary is evidence for a stage, not completion of V1.
    requires owner-confirmed physical-iPhone CA installation/full trust, followed
    by key pairing and handshake acceptance. The
    web and iOS clients share generated `/v1` models and capability-driven UI. Daily
-   writes are SMS send, charging threshold/pause/resume, traffic-cycle reset and
+   writes are SMS send, automatic charging-threshold policy, traffic-cycle reset and
    transactional Wi-Fi primary/guest settings with fixed B04 field paths, strict
    channel/bandwidth/power allowlists, a persisted roughly 120-second confirmation
    window, reboot-safe rollback, applied-state readback and dedicated recovery tests.

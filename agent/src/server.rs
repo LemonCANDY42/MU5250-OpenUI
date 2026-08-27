@@ -784,7 +784,11 @@ mod tests {
                 "/v1/sms/send",
                 r#"{"recipient":"1","message":"x"}"#,
             ),
-            (Method::PUT, "/v1/charging", r#"{"operation":"pause"}"#),
+            (
+                Method::PUT,
+                "/v1/charging",
+                r#"{"operation":"set_limit","limit_percent":80}"#,
+            ),
             (
                 Method::PUT,
                 "/v1/traffic/cycle",
@@ -811,7 +815,11 @@ mod tests {
         let password = "host test management password";
         state.auth.set_password(password).unwrap();
         let session = state.auth.password_session(password, "127.0.0.1").unwrap();
-        let mut request = request(Method::PUT, "/v1/charging", r#"{"operation":"pause"}"#);
+        let mut request = request(
+            Method::PUT,
+            "/v1/charging",
+            r#"{"operation":"set_limit","limit_percent":80}"#,
+        );
         request.headers_mut().insert(
             AUTHORIZATION,
             format!("Bearer {}", session.token).parse().unwrap(),

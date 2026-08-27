@@ -17,19 +17,19 @@ struct RootView: View {
             }
         }
         .alert(
-            "OpenU60",
+            model.notice?.title ?? "OpenU60",
             isPresented: Binding(
-                get: { model.errorMessage != nil },
+                get: { model.errorMessage != nil || model.notice != nil },
                 set: {
                     if !$0 {
-                        model.errorMessage = nil
+                        model.dismissPresentedMessage()
                     }
                 }
             )
         ) {
-            Button("OK") { model.errorMessage = nil }
+            Button("OK") { model.dismissPresentedMessage() }
         } message: {
-            Text(model.errorMessage ?? "")
+            Text(model.errorMessage ?? model.notice?.message ?? "")
         }
     }
 }
