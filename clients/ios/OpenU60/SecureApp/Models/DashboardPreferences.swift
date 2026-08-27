@@ -5,6 +5,48 @@ struct DashboardPreferences: Codable, Equatable, Sendable {
     var collapsedSections: Set<String> = []
     var refreshSeconds = 0
     var historyRangeSeconds = 86_400
+    var hiddenChartSeries: Set<String> = []
+
+    init(
+        sectionOrder: [String] = [],
+        collapsedSections: Set<String> = [],
+        refreshSeconds: Int = 0,
+        historyRangeSeconds: Int = 86_400,
+        hiddenChartSeries: Set<String> = []
+    ) {
+        self.sectionOrder = sectionOrder
+        self.collapsedSections = collapsedSections
+        self.refreshSeconds = refreshSeconds
+        self.historyRangeSeconds = historyRangeSeconds
+        self.hiddenChartSeries = hiddenChartSeries
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sectionOrder
+        case collapsedSections
+        case refreshSeconds
+        case historyRangeSeconds
+        case hiddenChartSeries
+    }
+
+    init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        sectionOrder = try values.decodeIfPresent([String].self, forKey: .sectionOrder) ?? []
+        collapsedSections = try values.decodeIfPresent(Set<String>.self, forKey: .collapsedSections) ?? []
+        refreshSeconds = try values.decodeIfPresent(Int.self, forKey: .refreshSeconds) ?? 0
+        historyRangeSeconds = try values.decodeIfPresent(Int.self, forKey: .historyRangeSeconds) ?? 86_400
+        hiddenChartSeries = try values.decodeIfPresent(Set<String>.self, forKey: .hiddenChartSeries) ?? []
+    }
+}
+
+enum DashboardChartSeriesID {
+    static let signalLTE = "signal.lte"
+    static let signal5G = "signal.nr5g"
+    static let thermalPrefix = "thermal."
+
+    static func thermal(sensor: String) -> String {
+        "\(thermalPrefix)\(sensor)"
+    }
 }
 
 struct DashboardPreferencesStore {

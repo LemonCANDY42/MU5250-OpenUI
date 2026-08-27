@@ -61,12 +61,17 @@ widths rather than a combined automatic-width value.
 
 The Wi-Fi detail uses a native segmented Status/Modify view so observed state is
 not mixed with editable values. The authenticated dashboard uses collapsible
-cards and a dedicated reorder sheet; card order, collapsed state, monitoring
-interval and graph range are remembered in device-local Keychain state. Manual
-refresh remains the default to minimize device and radio load, with explicit
+cards and a dedicated reorder sheet; unavailable cards retain their normal
+position and remain reorderable instead of being appended as unowned errors.
+Card order, collapsed state, monitoring interval, graph range and per-series
+chart visibility are remembered in device-local Keychain state. Manual refresh
+remains the default to minimize device and radio load, with explicit five-second,
 15-second, 30-second, one-minute and five-minute monitoring choices. Successful
-status refreshes append a bounded, up-to-seven-day local telemetry history used for
-battery and LTE/5G RSRP charts; no background daemon or U60 write is involved.
+status refreshes append a bounded, up-to-seven-day local telemetry history used
+for battery, LTE/5G RSRP and multi-sensor thermal charts. Signal and thermal
+series can be shown or hidden independently; no background daemon or U60 write
+is involved. The five-second display option still respects the history store's
+bounded sampling window rather than growing the retained history without limit.
 Apple's public accessory-network API does not expose the current iPhone Wi-Fi
 RSSI, so the UI states that limitation rather than displaying an inferred or
 router-side substitute.

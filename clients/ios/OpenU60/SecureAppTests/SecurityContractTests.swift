@@ -1,24 +1,111 @@
 import CryptoKit
 import Foundation
+import OpenAPIRuntime
 @testable import OpenU60
 import Security
 import XCTest
 
 final class SecurityContractTests: XCTestCase {
+    func testWrappedWifiFeaturesDecodeFailureReportsAgentReleaseMismatch() throws {
+        let key = try XCTUnwrap(TestCodingKey(stringValue: "features"))
+        let decodingError = DecodingError.keyNotFound(
+            key,
+            .init(codingPath: [], debugDescription: "Required Wi-Fi features are missing")
+        )
+        let clientError = ClientError(
+            operationID: "getWifiStatus",
+            operationInput: "test",
+            causeDescription: "response body decoding failed",
+            underlyingError: decodingError
+        )
+
+        XCTAssertEqual(
+            AgentService.dashboardFailureMessage(for: .wifiStatus, error: clientError),
+            String(
+                localized: "The running agent does not provide the required Wi-Fi feature fields. Update it to the same release as this app."
+            )
+        )
+        XCTAssertNotEqual(
+            AgentService.dashboardFailureMessage(for: .signalStatus, error: clientError),
+            String(
+                localized: "The running agent does not provide the required Wi-Fi feature fields. Update it to the same release as this app."
+            )
+        )
+    }
+
     func testTelemetryHistoryIsBoundedDeviceLocalAndReplacesRapidSamples() throws {
         let memory = MemorySecretStore()
         let store = TelemetryHistoryStore(store: memory, account: "history")
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let first = TelemetrySample(timestamp: start, batteryPercent: 80, lteRSRPdBm: -90, nr5gRSRPdBm: nil)
-        let replacement = TelemetrySample(timestamp: start.addingTimeInterval(5), batteryPercent: 79, lteRSRPdBm: -91, nr5gRSRPdBm: -88)
-        let later = TelemetrySample(timestamp: start.addingTimeInterval(20), batteryPercent: 78, lteRSRPdBm: -92, nr5gRSRPdBm: -89)
+        let first = TelemetrySample(
+            timestamp: start,
+            batteryPercent: 80,
+            lteRSRPdBm: -90,
+            nr5gRSRPdBm: nil,
+            thermalTemperaturesC: ["cpu_0": 42]
+        )
+        let replacement = TelemetrySample(
+            timestamp: start.addingTimeInterval(5),
+            batteryPercent: 79,
+            lteRSRPdBm: -91,
+            nr5gRSRPdBm: -88,
+            thermalTemperaturesC: ["cpu_0": 43]
+        )
+        let later = TelemetrySample(
+            timestamp: start.addingTimeInterval(10),
+            batteryPercent: 78,
+            lteRSRPdBm: -92,
+            nr5gRSRPdBm: -89,
+            thermalTemperaturesC: ["cpu_0": 44]
+        )
 
         var history = store.append(first, to: [])
         history = store.append(replacement, to: history)
-        XCTAssertEqual(history, [replacement])
+        let anchoredReplacement = TelemetrySample(
+            timestamp: start,
+            batteryPercent: replacement.batteryPercent,
+            lteRSRPdBm: replacement.lteRSRPdBm,
+            nr5gRSRPdBm: replacement.nr5gRSRPdBm,
+            thermalTemperaturesC: replacement.thermalTemperaturesC
+        )
+        XCTAssertEqual(history, [anchoredReplacement])
         history = store.append(later, to: history)
-        XCTAssertEqual(history, [replacement, later])
+        XCTAssertEqual(history, [anchoredReplacement, later])
         XCTAssertEqual(store.load(now: later.timestamp), history)
+    }
+
+    func testTelemetryHistoryDecodesLegacySamplesAndBoundsThermalSeries() throws {
+        struct LegacySample: Codable {
+            let timestamp: Date
+            let batteryPercent: Int?
+            let lteRSRPdBm: Double?
+            let nr5gRSRPdBm: Double?
+        }
+
+        let memory = MemorySecretStore()
+        let store = TelemetryHistoryStore(store: memory, account: "history")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        try memory.write(
+            JSONEncoder().encode([
+                LegacySample(timestamp: now, batteryPercent: 50, lteRSRPdBm: -90, nr5gRSRPdBm: nil),
+            ]),
+            account: "history"
+        )
+        XCTAssertEqual(store.load(now: now).first?.thermalTemperaturesC, [:])
+
+        let temperatures = Dictionary(uniqueKeysWithValues: (0 ..< 32).map { ("sensor_\($0)", Double($0)) })
+        let history = store.append(
+            TelemetrySample(
+                timestamp: now.addingTimeInterval(10),
+                batteryPercent: nil,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil,
+                thermalTemperaturesC: temperatures.merging(["invalid": .infinity]) { current, _ in current }
+            ),
+            to: []
+        )
+        XCTAssertEqual(history.first?.thermalTemperaturesC.count, TelemetryHistoryStore.maximumThermalSeries)
+        XCTAssertNil(history.first?.thermalTemperaturesC["invalid"])
     }
 
     func testDashboardPreferencesPersistWithoutNetworkOrSharedStorage() {
@@ -28,10 +115,25 @@ final class SecurityContractTests: XCTestCase {
             sectionOrder: ["signal", "battery"],
             collapsedSections: ["Capabilities"],
             refreshSeconds: 30,
-            historyRangeSeconds: 604_800
+            historyRangeSeconds: 604_800,
+            hiddenChartSeries: [
+                DashboardChartSeriesID.signalLTE,
+                DashboardChartSeriesID.thermal(sensor: "cpu_0"),
+            ]
         )
         store.save(value)
         XCTAssertEqual(store.load(), value)
+    }
+
+    func testDashboardPreferencesDecodeExistingValueWithAllChartSeriesVisible() throws {
+        let data = Data(
+            #"{"sectionOrder":["wifi","thermal"],"collapsedSections":["Wi-Fi"],"refreshSeconds":5,"historyRangeSeconds":86400}"#.utf8
+        )
+        let value = try JSONDecoder().decode(DashboardPreferences.self, from: data)
+        XCTAssertEqual(value.sectionOrder, ["wifi", "thermal"])
+        XCTAssertEqual(value.collapsedSections, ["Wi-Fi"])
+        XCTAssertEqual(value.refreshSeconds, 5)
+        XCTAssertTrue(value.hiddenChartSeries.isEmpty)
     }
 
     func testWifiConfirmationIdentifierExistsBeforeNetworkMutationAndPersists() throws {
@@ -241,6 +343,19 @@ final class SecurityContractTests: XCTestCase {
         return """
         {"version":1,"base_url":"\(baseURL)","spki_sha256":"\(pin)","pairing_nonce":"\(nonce)","expires_at":"\(formatter.string(from: expiresAt))"}
         """
+    }
+}
+
+private struct TestCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int? = nil
+
+    init?(stringValue: String) {
+        self.stringValue = stringValue
+    }
+
+    init?(intValue: Int) {
+        return nil
     }
 }
 

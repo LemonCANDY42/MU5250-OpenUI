@@ -1,4 +1,5 @@
 import Foundation
+import OpenAPIRuntime
 import OpenAPIURLSession
 
 enum AgentServiceError: LocalizedError {
@@ -139,74 +140,77 @@ final class AgentService: Sendable {
                     if case let .ok(response) = output {
                         device = try response.body.json.data
                     } else {
-                        failures["device_identity"] = "Unavailable"
+                        failures["device_identity"] = String(localized: "Unavailable")
                     }
                 case .systemStatus:
                     let output = try await client.getSystemStatus()
                     if case let .ok(response) = output {
                         system = try response.body.json.data
                     } else {
-                        failures["system_status"] = "Unavailable"
+                        failures["system_status"] = String(localized: "Unavailable")
                     }
                 case .batteryStatus:
                     let output = try await client.getBatteryStatus()
                     if case let .ok(response) = output {
                         battery = try response.body.json.data
                     } else {
-                        failures["battery_status"] = "Unavailable"
+                        failures["battery_status"] = String(localized: "Unavailable")
                     }
                 case .thermalStatus:
                     let output = try await client.getThermalStatus()
                     if case let .ok(response) = output {
                         thermal = try response.body.json.data
                     } else {
-                        failures["thermal_status"] = "Unavailable"
+                        failures["thermal_status"] = String(localized: "Unavailable")
                     }
                 case .signalStatus:
                     let output = try await client.getSignalStatus()
                     if case let .ok(response) = output {
                         signal = try response.body.json.data
                     } else {
-                        failures["signal_status"] = "Unavailable"
+                        failures["signal_status"] = String(localized: "Unavailable")
                     }
                 case .cellularStatus:
                     let output = try await client.getCellularStatus()
                     if case let .ok(response) = output {
                         cellular = try response.body.json.data
                     } else {
-                        failures["cellular_status"] = "Unavailable"
+                        failures["cellular_status"] = String(localized: "Unavailable")
                     }
                 case .trafficStatus:
                     let output = try await client.getTrafficStatus()
                     if case let .ok(response) = output {
                         traffic = try response.body.json.data
                     } else {
-                        failures["traffic_status"] = "Unavailable"
+                        failures["traffic_status"] = String(localized: "Unavailable")
                     }
                 case .wifiStatus:
                     let output = try await client.getWifiStatus()
                     if case let .ok(response) = output {
                         wifi = try response.body.json.data
                     } else {
-                        failures["wifi_status"] = "Unavailable"
+                        failures["wifi_status"] = String(localized: "Unavailable")
                     }
                 case .lanClients:
                     let output = try await client.getLanClients()
                     if case let .ok(response) = output {
                         lanClients = try response.body.json.data
                     } else {
-                        failures["lan_clients"] = "Unavailable"
+                        failures["lan_clients"] = String(localized: "Unavailable")
                     }
                 case .smsList:
                     let output = try await client.getSmsList()
                     if case let .ok(response) = output {
                         sms = try response.body.json.data
                     } else {
-                        failures["sms_list"] = "Unavailable"
+                        failures["sms_list"] = String(localized: "Unavailable")
                     }
                 }
             } catch {
-                failures[String(describing: capability.id)] = error.localizedDescription
+                failures[dashboardFailureKey(for: capability.id)] = Self.dashboardFailureMessage(
+                    for: capability.id,
+                    error: error
+                )
             }
         }
         return DashboardSnapshot(
@@ -223,6 +227,43 @@ final class AgentService: Sendable {
             sms: sms,
             failures: failures
         )
+    }
+
+    private func dashboardFailureKey(for capability: Components.Schemas.Capability.IdPayload) -> String {
+        switch capability {
+        case .deviceIdentity: "device_identity"
+        case .systemStatus: "system_status"
+        case .batteryStatus: "battery_status"
+        case .thermalStatus: "thermal_status"
+        case .signalStatus: "signal_status"
+        case .cellularStatus: "cellular_status"
+        case .trafficStatus: "traffic_status"
+        case .wifiStatus: "wifi_status"
+        case .lanClients: "lan_clients"
+        case .smsList: "sms_list"
+        }
+    }
+
+    static func dashboardFailureMessage(
+        for capability: Components.Schemas.Capability.IdPayload,
+        error: any Error
+    ) -> String {
+        let decodingError: DecodingError? = if let clientError = error as? ClientError {
+            clientError.underlyingError as? DecodingError
+        } else {
+            error as? DecodingError
+        }
+
+        if case .wifiStatus = capability,
+           let decodingError,
+           case DecodingError.keyNotFound(let key, _) = decodingError,
+           key.stringValue == "features"
+        {
+            return String(
+                localized: "The running agent does not provide the required Wi-Fi feature fields. Update it to the same release as this app."
+            )
+        }
+        return error.localizedDescription
     }
 
     func sendSMS(recipient: String, message: String) async throws {
