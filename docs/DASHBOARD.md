@@ -32,6 +32,12 @@ before mutation so a page reload can resume the bounded rollback handshake.
 The battery card displays the magnitude of signed `power_mw`; the API retains
 direction through the separate current and state fields. This is a battery-side
 estimate derived from voltage and current, not USB or wall power.
+Signal status may include bounded LTE/NR aggregation, network-selection and
+read-only cell-lock summaries; the fields remain optional so this client can
+read earlier V1 agents. The existing Wi-Fi card shows router-observed RSSI and
+rates when the request peer has one unique DHCP-to-station correlation. An
+unmatched or ambiguous peer leaves the optional context absent without failing
+Wi-Fi status. Battery health/cycle/capacity remain outside the public contract.
 
 ## Browser authentication
 

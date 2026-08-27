@@ -951,6 +951,38 @@ components:
           $ref: "#/components/schemas/RadioSignal"
         nr5g:
           $ref: "#/components/schemas/RadioSignal"
+        network_selection_mode:
+          type: string
+          enum: [automatic, manual, unknown]
+          description: Optional for compatibility with earlier V1 agents
+        lte_carrier_aggregation:
+          $ref: "#/components/schemas/CarrierAggregationStatus"
+        nr5g_carrier_aggregation:
+          $ref: "#/components/schemas/CarrierAggregationStatus"
+        cell_lock:
+          $ref: "#/components/schemas/CellLockStatus"
+          description: Read-only configured-state summary; V1 exposes no cell-lock write
+    CarrierAggregationStatus:
+      type: object
+      additionalProperties: false
+      required: [active, bands]
+      properties:
+        active:
+          type: boolean
+        bands:
+          type: array
+          maxItems: 8
+          items:
+            type: string
+    CellLockStatus:
+      type: object
+      additionalProperties: false
+      required: [lte, nr5g]
+      properties:
+        lte:
+          type: boolean
+        nr5g:
+          type: boolean
     RadioSignal:
       type: object
       additionalProperties: false
@@ -1082,6 +1114,11 @@ components:
           $ref: "#/components/schemas/WifiFeatureStatus"
         guest:
           $ref: "#/components/schemas/WifiGuestStatus"
+        current_client_link:
+          $ref: "#/components/schemas/CurrentClientLink"
+          description: >-
+            Optional router-side observation for the authenticated request peer.
+            It is absent when DHCP-to-station correlation is unavailable or ambiguous.
     WifiFeatureStatus:
       type: object
       additionalProperties: false
@@ -1110,6 +1147,38 @@ components:
           type: boolean
         band_steering_enabled:
           type: boolean
+    CurrentClientLink:
+      type: object
+      additionalProperties: false
+      required:
+        - observation
+        - band
+        - signal_dbm
+        - tx_bitrate_mbps
+        - rx_bitrate_mbps
+        - connected_seconds
+      properties:
+        observation:
+          type: string
+          enum: [router_observed]
+        band:
+          type: string
+        signal_dbm:
+          type: integer
+          minimum: -127
+          maximum: 0
+        tx_bitrate_mbps:
+          type: number
+          minimum: 0
+        rx_bitrate_mbps:
+          type: number
+          minimum: 0
+        expected_throughput_mbps:
+          type: number
+          minimum: 0
+        connected_seconds:
+          type: integer
+          minimum: 0
     WifiGuestStatus:
       type: object
       additionalProperties: false

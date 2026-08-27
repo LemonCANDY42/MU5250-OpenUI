@@ -625,6 +625,19 @@ function appendSignal(card: HTMLElement, value: V1SignalStatus): void {
     ['Roaming', value.roaming ? 'Yes' : 'No'],
     ['Active band', value.active_band ?? 'Not reported'],
   ]
+  if (value.network_selection_mode !== undefined) {
+    metrics.push(['Network selection', value.network_selection_mode])
+  }
+  if (value.lte_carrier_aggregation !== undefined) {
+    metrics.push(['LTE aggregation', aggregationText(value.lte_carrier_aggregation)])
+  }
+  if (value.nr5g_carrier_aggregation !== undefined) {
+    metrics.push(['5G aggregation', aggregationText(value.nr5g_carrier_aggregation)])
+  }
+  if (value.cell_lock !== undefined) {
+    metrics.push(['LTE cell lock', value.cell_lock.lte ? 'Configured' : 'Off'])
+    metrics.push(['5G cell lock', value.cell_lock.nr5g ? 'Configured' : 'Off'])
+  }
   if (value.lte !== undefined) {
     metrics.push(
       ['LTE band', value.lte.band ?? 'Not reported'],
@@ -644,6 +657,13 @@ function appendSignal(card: HTMLElement, value: V1SignalStatus): void {
     )
   }
   appendDefinitionList(card, metrics)
+}
+
+function aggregationText(
+  value: NonNullable<V1SignalStatus['lte_carrier_aggregation']>,
+): string {
+  if (!value.active) return 'Not aggregated'
+  return value.bands.length > 0 ? value.bands.join(' + ') : 'Active'
 }
 
 function appendCellular(card: HTMLElement, value: V1CellularStatus): void {
@@ -675,6 +695,18 @@ function appendWifi(card: HTMLElement, value: V1WifiStatus): void {
       [`${band.band} radio`, `${band.channel} · ${band.bandwidth}`],
       [`${band.band} security`, `${band.encryption}${band.hidden ? ' · hidden' : ''}`],
       [`${band.band} clients`, band.clients?.toString() ?? 'Not reported'],
+    )
+  }
+  if (value.current_client_link !== undefined) {
+    const link = value.current_client_link
+    metrics.push(
+      ['Observation', 'Router-observed for this browser'],
+      ['Client band', link.band],
+      ['Client signal', `${link.signal_dbm} dBm`],
+      ['Client TX rate', `${link.tx_bitrate_mbps.toFixed(1)} Mbps`],
+      ['Client RX rate', `${link.rx_bitrate_mbps.toFixed(1)} Mbps`],
+      ['Client expected throughput', link.expected_throughput_mbps === undefined ? 'Not reported' : `${link.expected_throughput_mbps.toFixed(1)} Mbps`],
+      ['Client connected', formatDuration(link.connected_seconds)],
     )
   }
   appendDefinitionList(card, metrics)

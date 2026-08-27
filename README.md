@@ -8,11 +8,9 @@ HK B04 firmware.
 > is running on the U60 management address, with no `current`/`previous` link
 > or boot hook. Its release checksum, TLS authentication boundary and unchanged
 > recovery/network invariants were freshly revalidated before restart. Real
-> Chrome WebCrypto
-> pairing and all ten read-only capabilities are accepted; physical-iPhone
-> build/install/launch and owner-confirmed CA trust are accepted, while Secure
-> Enclave pairing and
-> each daily write still require their independent device gates.
+> Chrome WebCrypto pairing, all ten read-only capabilities, owner-confirmed iPhone
+> CA trust, Secure Enclave QR pairing and an authenticated physical-iPhone session
+> are accepted. Each daily write still requires its independent device gate.
 > The original 24-hour RSS-growth target was replaced by the owner's one-hour V1 gate.
 > The legacy setup, deployment and hardening entry points remain fail-closed.
 
@@ -53,13 +51,12 @@ authorize daily mutations or a stable install.
 - An owner-signed physical-device build has been installed and launched on the
   owner's iPhone using a local-only bundle-identifier override. The public
   project keeps automatic signing and contains no team or device identifier.
-  Owner-confirmed iPhone CA installation/full trust is accepted; Secure Enclave
-  pairing and a live device handshake are not accepted yet.
+  Owner-confirmed iPhone CA installation/full trust, Secure Enclave QR pairing
+  and a live authenticated device session are accepted.
 - A host-only pairing tool combines `pair-open` JSON received on stdin with a
   verified public certificate bundle and renders a mode-`0600` QR outside the
-  repository. A real one-time browser pairing window has been accepted without
-  persisting its nonce; no physical-iPhone QR or Secure Enclave credential has
-  been accepted yet.
+  repository. Real browser and physical-iPhone pairing windows have been accepted
+  without persisting their nonces.
 - Raw AT and process-killing routes, client bindings, mock fixtures and UI are
   removed. There is no generic AT, ubus, UCI or shell execution API.
 - CI checks Rust, authentication/storage tests, the production dashboard
@@ -73,14 +70,14 @@ running device canary remains read-only.
 
 ## Accepted read-only canary release
 
-The current LAN-canary release is
+The last accepted LAN-canary release was
 `9b334dd65f32d8ef375d04026c197e467d6f42a44c7cf53df4c5803e49e58fb9`,
 whose identifier binds its complete checksum list. It is installed under the
 immutable `/data/u60/releases/` store and bound only to `192.168.0.1:9443`.
 `current` and `previous` are still absent, so it is not a stable installation.
-The current agent is a nonpersistent LAN process; it will not restart after a
-reboot. The release is not referenced by `rc.local`, init, firewall or a new
-system service.
+That nonpersistent process has since stopped and no LAN listener is currently
+accepted as live; it will not restart after a reboot. The release is not
+referenced by `rc.local`, init, firewall or a new system service.
 
 Immediate acceptance proved the full device-side release checksum, TLS owner-CA
 verification with unauthenticated `401`, root ADB retention and unchanged exact
@@ -124,6 +121,15 @@ enabled.
   allowlist, NAS evidence format and network/TUN invariants.
 - [docs/CROSS-BUILD.md](docs/CROSS-BUILD.md) — pinned host-only AArch64 musl
   build recipe and artifact acceptance boundary.
+
+The source keeps the ten-capability contract and adds optional contextual
+router-observed client-link data to the existing Wi-Fi status, plus optional
+radio aggregation, selection and read-only cell-lock summaries. These fields
+are host-tested; the fixed sources have B04 read-only evidence, but the combined
+release has not been deployed or accepted on physical clients. Battery health,
+cycle and capacity fields remain excluded until their B04 semantics are accepted.
+SIM/APN and router-configuration summaries remain absent until their own
+redaction and B04 gates pass.
 
 The public contract source of truth is
 [openapi/u60-v1.yaml](openapi/u60-v1.yaml). The routing source of truth is

@@ -309,9 +309,13 @@ async fn traffic_status(State(state): State<AppState>, headers: HeaderMap) -> Re
     })
 }
 
-async fn wifi_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn wifi_status(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
     protected(&state, &headers, Scope::Read, || {
-        api_v1::wifi_status(&state)
+        api_v1::wifi_status(&state, peer.ip())
     })
 }
 

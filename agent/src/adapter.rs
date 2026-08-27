@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::b04_io::{B04Io, SystemB04Io, UbusRead, WifiInterface};
+use crate::b04_io::{B04Io, SystemB04Io, UbusRead, WifiClientLinkSource, WifiInterface};
 
 const ADAPTER_ID: &str = "zte-mu5250-hk-b04";
 const FIRMWARE_TARGET: &str = "BD_XCBZHKMU5250V1.0.0B04";
@@ -135,6 +135,26 @@ pub struct SignalStatus {
     pub lte: Option<RadioSignal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nr5g: Option<RadioSignal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub network_selection_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lte_carrier_aggregation: Option<CarrierAggregationStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nr5g_carrier_aggregation: Option<CarrierAggregationStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cell_lock: Option<CellLockStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CarrierAggregationStatus {
+    pub active: bool,
+    pub bands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CellLockStatus {
+    pub lte: bool,
+    pub nr5g: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -182,13 +202,27 @@ pub struct WifiBandStatus {
     pub clients: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct WifiStatus {
     pub enabled: bool,
     pub bands: Vec<WifiBandStatus>,
     pub features: WifiFeatureStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guest: Option<WifiGuestStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_client_link: Option<CurrentClientLink>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CurrentClientLink {
+    pub observation: &'static str,
+    pub band: &'static str,
+    pub signal_dbm: i64,
+    pub tx_bitrate_mbps: f64,
+    pub rx_bitrate_mbps: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_throughput_mbps: Option<f64>,
+    pub connected_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -260,6 +294,9 @@ pub trait DeviceAdapter: Send + Sync {
     fn cellular_status(&self) -> Result<CellularStatus, AdapterError>;
     fn traffic_status(&self) -> Result<TrafficStatus, AdapterError>;
     fn wifi_status(&self) -> Result<WifiStatus, AdapterError>;
+    fn wifi_status_for_peer(&self, _peer: IpAddr) -> Result<WifiStatus, AdapterError> {
+        self.wifi_status()
+    }
     fn lan_clients(&self) -> Result<LanClients, AdapterError>;
     fn sms_list(&self, page: u16, per_page: u16) -> Result<SmsPage, AdapterError>;
 }
@@ -655,6 +692,13 @@ impl DeviceAdapter for B04Adapter {
         })
     }
 
+    fn wifi_status_for_peer(&self, peer: IpAddr) -> Result<WifiStatus, AdapterError> {
+        let mut status = self.wifi_status()?;
+        status.current_client_link =
+            current_client_link_for_peer(peer, |peer| self.io.current_client_link(peer));
+        Ok(status)
+    }
+
     fn lan_clients(&self) -> Result<LanClients, AdapterError> {
         self.firmware_gate()?;
         self.io
@@ -700,6 +744,27 @@ impl Default for B04Adapter {
     }
 }
 
+fn current_client_link_for_peer<F>(peer: IpAddr, read: F) -> Option<CurrentClientLink>
+where
+    F: FnOnce(Ipv4Addr) -> Result<WifiClientLinkSource, String>,
+{
+    let IpAddr::V4(peer) = peer else {
+        return None;
+    };
+    if peer.is_loopback() || peer.is_unspecified() || peer.is_multicast() {
+        return None;
+    }
+    read(peer).ok().map(|link| CurrentClientLink {
+        observation: "router_observed",
+        band: link.band,
+        signal_dbm: link.signal_dbm,
+        tx_bitrate_mbps: link.tx_bitrate_mbps,
+        rx_bitrate_mbps: link.rx_bitrate_mbps,
+        expected_throughput_mbps: link.expected_throughput_mbps,
+        connected_seconds: link.connected_seconds,
+    })
+}
+
 fn source_error(code: &'static str, message: String, action: &str) -> AdapterError {
     AdapterError {
         code,
@@ -735,6 +800,8 @@ fn parse_signal_status(value: &Value) -> Result<SignalStatus, String> {
         "nr5g_rssi",
         "nr5g_snr",
     );
+    let lte_bands = parse_ca_bands(object.get("lteca"), RadioKind::Lte);
+    let nr5g_bands = parse_ca_bands(object.get("nrca"), RadioKind::Nr5g);
     Ok(SignalStatus {
         network_type,
         provider: optional_string(object.get("network_provider_fullname"))
@@ -744,7 +811,84 @@ fn parse_signal_status(value: &Value) -> Result<SignalStatus, String> {
         active_band: optional_string(object.get("wan_active_band")),
         lte,
         nr5g,
+        network_selection_mode: Some(
+            normalize_network_selection(optional_string(object.get("net_select_mode")).as_deref())
+                .into(),
+        ),
+        lte_carrier_aggregation: Some(CarrierAggregationStatus {
+            active: boolish(object.get("lteca_state")).unwrap_or(false) || !lte_bands.is_empty(),
+            bands: lte_bands,
+        }),
+        nr5g_carrier_aggregation: Some(CarrierAggregationStatus {
+            active: !nr5g_bands.is_empty(),
+            bands: nr5g_bands,
+        }),
+        cell_lock: Some(CellLockStatus {
+            lte: lock_is_configured(object.get("lock_lte_cell"), "0,0"),
+            nr5g: lock_is_configured(object.get("lock_nr_cell"), "0,0,0"),
+        }),
     })
+}
+
+#[derive(Clone, Copy)]
+enum RadioKind {
+    Lte,
+    Nr5g,
+}
+
+fn parse_ca_bands(value: Option<&Value>, kind: RadioKind) -> Vec<String> {
+    let Some(raw) = optional_string(value) else {
+        return Vec::new();
+    };
+    let mut bands = Vec::new();
+    for entry in raw
+        .split(';')
+        .filter(|entry| !entry.trim().is_empty())
+        .take(8)
+    {
+        let fields: Vec<&str> = entry.split(',').map(str::trim).collect();
+        let candidate = match kind {
+            RadioKind::Lte => fields.get(1),
+            RadioKind::Nr5g if fields.len() >= 6 => fields.get(3),
+            RadioKind::Nr5g => fields.get(1),
+        };
+        let Some(number) = candidate.and_then(|field| field.parse::<u16>().ok()) else {
+            continue;
+        };
+        let valid = match kind {
+            RadioKind::Lte => (1..=88).contains(&number),
+            RadioKind::Nr5g => (1..=261).contains(&number),
+        };
+        if !valid {
+            continue;
+        }
+        let prefix = match kind {
+            RadioKind::Lte => "B",
+            RadioKind::Nr5g => "n",
+        };
+        let band = format!("{prefix}{number}");
+        if !bands.contains(&band) {
+            bands.push(band);
+        }
+    }
+    bands
+}
+
+fn normalize_network_selection(value: Option<&str>) -> &'static str {
+    match value.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
+        Some("auto") | Some("automatic") | Some("auto_select") => "automatic",
+        Some("manual") | Some("manual_select") => "manual",
+        _ => "unknown",
+    }
+}
+
+fn lock_is_configured(value: Option<&Value>, unlocked_sentinel: &str) -> bool {
+    optional_string(value)
+        .map(|value| {
+            let value = value.trim();
+            !value.is_empty() && value != unlocked_sentinel
+        })
+        .unwrap_or(false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -923,6 +1067,7 @@ fn parse_wifi_status(
         },
         bands,
         guest,
+        current_client_link: None,
     })
 }
 
@@ -1362,11 +1507,29 @@ mod tests {
             "nr5g_rsrp": -88,
             "nr5g_rsrq": -11,
             "nr5g_rssi": -59,
-            "nr5g_snr": "22.0"
+            "nr5g_snr": "22.0",
+            "net_select_mode": "auto_select",
+            "lteca_state": 1,
+            "lteca": "312,8,1,3650,20,1;314,1,1,300,15,1",
+            "nrca": "1,803,2,40,472000,40,0,-88,-11.4,12.5,-69",
+            "lock_lte_cell": "0,0",
+            "lock_nr_cell": "78,640000,42"
         }))
         .unwrap();
         assert_eq!(signal.bars, 4);
-        assert_eq!(signal.nr5g.unwrap().pci, Some(42));
+        assert_eq!(signal.nr5g.as_ref().unwrap().pci, Some(42));
+        assert_eq!(signal.network_selection_mode.as_deref(), Some("automatic"));
+        assert!(signal.lte_carrier_aggregation.as_ref().unwrap().active);
+        assert_eq!(
+            signal.lte_carrier_aggregation.as_ref().unwrap().bands,
+            ["B8", "B1"]
+        );
+        assert_eq!(
+            signal.nr5g_carrier_aggregation.as_ref().unwrap().bands,
+            ["n40"]
+        );
+        assert!(!signal.cell_lock.as_ref().unwrap().lte);
+        assert!(signal.cell_lock.as_ref().unwrap().nr5g);
 
         let cellular = parse_cellular_status(&json!({
             "up": true,
@@ -1445,6 +1608,7 @@ mod tests {
         assert!(wifi.features.band_steering_enabled);
         assert_eq!(wifi.bands[1].clients, Some(2));
         assert!(wifi.bands[1].hidden);
+        assert!(wifi.current_client_link.is_none());
         let guest = wifi.guest.unwrap();
         assert!(guest.enabled_2g);
         assert!(!guest.enabled_5g);
@@ -1483,6 +1647,44 @@ mod tests {
         .unwrap();
         assert_eq!(decoded.messages[0].sender, "+100");
         assert_eq!(decoded.messages[0].content, "你好😀");
+    }
+
+    #[test]
+    fn requesting_client_link_is_optional_and_router_observed() {
+        let source = WifiClientLinkSource {
+            band: "5 GHz",
+            signal_dbm: -51,
+            tx_bitrate_mbps: 1200.9,
+            rx_bitrate_mbps: 960.8,
+            expected_throughput_mbps: Some(487.125),
+            connected_seconds: 679,
+        };
+        let link = current_client_link_for_peer("192.168.0.61".parse().unwrap(), |peer| {
+            assert_eq!(peer, Ipv4Addr::new(192, 168, 0, 61));
+            Ok(source.clone())
+        })
+        .unwrap();
+        assert_eq!(link.observation, "router_observed");
+        assert_eq!(link.signal_dbm, -51);
+
+        assert!(
+            current_client_link_for_peer("127.0.0.1".parse().unwrap(), |_| {
+                panic!("loopback peer must not query station sources")
+            })
+            .is_none()
+        );
+        assert!(
+            current_client_link_for_peer("2001:db8::1".parse().unwrap(), |_| {
+                panic!("IPv6 peer must not query station sources")
+            })
+            .is_none()
+        );
+        assert!(
+            current_client_link_for_peer("192.168.0.62".parse().unwrap(), |_| {
+                Err("ambiguous or unmatched peer".into())
+            })
+            .is_none()
+        );
     }
 
     #[test]

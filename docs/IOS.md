@@ -73,8 +73,12 @@ series can be shown or hidden independently; no background daemon or U60 write
 is involved. The five-second display option still respects the history store's
 bounded sampling window rather than growing the retained history without limit.
 Apple's public accessory-network API does not expose the current iPhone Wi-Fi
-RSSI, so the UI states that limitation rather than displaying an inferred or
-router-side substitute.
+RSSI. The existing Wi-Fi card instead uses optional request context and labels
+RSSI and rates as U60 router observations only when the HTTPS peer uniquely
+matches a DHCP lease and station. Missing or ambiguous correlation leaves the
+field absent without failing Wi-Fi status. Radio aggregation, selection and
+read-only cell-lock summaries are optional so new clients remain compatible
+with earlier V1 agents; battery health/cycle/capacity remain excluded.
 
 English and Simplified Chinese resources cover this control hierarchy and its
 confirmation, warning and recovery text. SwiftUI literals use the string table;

@@ -73,6 +73,20 @@ describe('capability-driven dashboard loading', () => {
 
     await expect(loadDashboard()).rejects.toMatchObject({ status: 401 })
   })
+
+  it('accepts earlier V1 status payloads without the new optional context fields', async () => {
+    const responses = fixtures({})
+    const signal = responses['/v1/status/signal'] as Record<string, unknown>
+    delete signal.network_selection_mode
+    delete signal.lte_carrier_aggregation
+    delete signal.nr5g_carrier_aggregation
+    delete signal.cell_lock
+    const wifi = responses['/v1/status/wifi'] as Record<string, unknown>
+    delete wifi.current_client_link
+    getJsonMock.mockImplementation(async (path) => responses[path])
+
+    await expect(loadDashboard()).resolves.toBeDefined()
+  })
 })
 
 type CapabilityState = 'available' | 'degraded' | 'unsupported'
@@ -129,6 +143,10 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
       provider: 'Example',
       bars: 4,
       roaming: false,
+      network_selection_mode: 'automatic',
+      lte_carrier_aggregation: { active: false, bands: [] },
+      nr5g_carrier_aggregation: { active: false, bands: [] },
+      cell_lock: { lte: false, nr5g: false },
       nr5g: { band: 'n78', rsrp_dbm: -88 },
     },
     '/v1/status/cellular': {
@@ -160,6 +178,15 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
           clients: 1,
         },
       ],
+      current_client_link: {
+        observation: 'router_observed',
+        band: '5 GHz',
+        signal_dbm: -51,
+        tx_bitrate_mbps: 1200.9,
+        rx_bitrate_mbps: 960.8,
+        expected_throughput_mbps: 487.1,
+        connected_seconds: 679,
+      },
     },
     '/v1/lan/clients': {
       clients: [

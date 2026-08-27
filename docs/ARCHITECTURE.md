@@ -80,9 +80,9 @@ loopback canary is evidence for a stage, not completion of V1.
    read-only endpoint gate. The owner-accepted device-process one-hour checkpoint
    also passed. The listener serves one canonical, symlink-free web build only
    when explicitly configured. Real browser WebCrypto pairing, challenge login
-   and all ten read-only capabilities now have B04 acceptance. V1 additionally
-   requires owner-confirmed physical-iPhone CA installation/full trust, followed
-   by key pairing and handshake acceptance. The
+   and all ten read-only capabilities now have B04 acceptance. Owner-confirmed
+   physical-iPhone CA installation/full trust, Secure Enclave key pairing and an
+   authenticated handshake are also accepted. The
    web and iOS clients share generated `/v1` models and capability-driven UI. Daily
    writes are SMS send, traffic-cycle reset and
    transactional Wi-Fi primary/guest settings with fixed B04 field paths, strict
@@ -117,17 +117,19 @@ upstream feature list wholesale:
 
 | Included V1 domain | Source value retained | Safety boundary |
 | --- | --- | --- |
-| Signal/cellular/dashboard | MU's compact device UI and open-u60-pro's richer normalized status | Read-only typed values; no raw AT or vendor JSON |
-| Traffic/battery/thermal | Proven firmware sources | Bounded reads; charging is read-only because B04 write-result and recovery semantics are not proven |
-| Wi-Fi/LAN | Useful settings and connected-client views | No arbitrary UCI; Wi-Fi changes are persisted transactions with timeout rollback |
+| Signal/cellular/dashboard | MU's compact device UI and open-u60-pro's richer normalized status | Optional bounded CA/network-selection/cell-lock summaries are read-only only; no cell-lock writes, raw AT or vendor JSON |
+| Traffic/battery/thermal | Proven firmware sources | Bounded reads; unaccepted battery health/cycle/capacity and time estimates stay hidden; charging is read-only |
+| Wi-Fi/LAN | Useful settings and connected-client views | A request peer may be uniquely correlated to DHCP plus fixed station data for router-observed link telemetry; no arbitrary UCI; Wi-Fi changes are persisted transactions with timeout rollback |
 | SMS | Listing and sending from both projects | Strict UTF-16/UCS-2 hex decoding (including surrogate pairs), bounded pages, UTF-8-safe flagged truncation and explicit malformed-record counts; no SQL fallback, bulk delete, forwarding plugin or arbitrary modem command |
 | Web/iOS clients | MU information density plus open-u60-pro SwiftUI navigation | One OpenAPI contract, capability hiding, pinned HTTPS and public-key login |
 
-SIM identifiers, raw process lists, APN credentials, DNS/firewall control,
-network/band/cell lock, USB composition, FOTA, reboot/shutdown, arbitrary AT,
+SIM identifiers, raw process lists, APN credentials, DNS/LAN/firewall/NAT/UPnP/VPN/QoS/domain-filter summaries,
+network/band/cell-lock writes, USB composition, FOTA, reboot/shutdown, arbitrary AT,
 ubus/UCI/shell and external forwarding remain outside V1. Active radio type is
 reported through normalized signal status; the configured APN is not exposed
-until a separate redaction contract and B04 acceptance exist.
+until a separate redaction contract and B04 acceptance exist. Historical getter
+presence is not enough: every router-summary domain must pass an independent
+fixed-source, privacy and bounded-schema gate.
 
 ## Authentication target
 
@@ -161,15 +163,15 @@ failed.
 The server uses axum with rustls `>=0.23.5` (currently resolved to 0.23.43), ring
 and TLS 1.3 only. Certificate and leaf-key PEM files must be supplied. The real
 owner CA was created outside the repository, the leaf key was generated on the
-U60, and the live loopback canary completed a CA-verified TLS handshake. The iOS
-source performs system trust evaluation followed by an exact P-256 SPKI pin
-check, but no system/iPhone trust or real iPhone pairing acceptance exists yet;
-those remain distinct from the accepted command-line handshake.
+U60, and the live canary completed a CA-verified TLS handshake. The owner iPhone
+has the exact CA installed with full trust; the iOS client completed system trust,
+the exact P-256 SPKI pin check, Secure Enclave QR pairing and a key-authenticated
+session against the nonpersistent LAN canary.
 
 The browser boundary has separate real-device evidence: a non-exportable P-256
 credential survived an agent release replacement, completed a new single-use
-challenge login and loaded ten available B04 capabilities. This does not imply
-physical-iPhone Secure Enclave pairing or live TLS-handshake acceptance.
+challenge login and loaded ten available B04 capabilities. Browser and iPhone
+credentials remain separate client-held keys.
 
 Apple Passkey is a later, distinct WebAuthn layer. It requires an owner domain,
 Associated Domains and an AASA file. The NAS is not an authentication runtime

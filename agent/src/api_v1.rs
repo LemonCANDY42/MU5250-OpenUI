@@ -1,6 +1,7 @@
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::{json, Value};
+use std::net::IpAddr;
 
 use crate::adapter::AdapterError;
 use crate::daily::{
@@ -79,8 +80,8 @@ pub fn traffic_status(state: &AppState) -> (u16, Value) {
     adapter_result(state.adapter.traffic_status())
 }
 
-pub fn wifi_status(state: &AppState) -> (u16, Value) {
-    adapter_result(state.adapter.wifi_status())
+pub fn wifi_status(state: &AppState, peer: IpAddr) -> (u16, Value) {
+    adapter_result(state.adapter.wifi_status_for_peer(peer))
 }
 
 pub fn lan_clients(state: &AppState) -> (u16, Value) {

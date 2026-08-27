@@ -1,9 +1,9 @@
 # Agent source baseline
 
 The B04 V1 agent is a host-tested typed contract. Its final read-only canary,
-all ten capability reads and browser challenge pairing are device-tested;
-physical-iPhone pairing and daily writes still require staged B04 acceptance
-records before stable installation.
+all ten capability reads, browser challenge pairing and physical-iPhone Secure
+Enclave pairing/authentication are device-tested. Daily writes still require
+staged B04 acceptance records before stable installation.
 
 ## Compiled public surface
 
@@ -21,7 +21,7 @@ authentication paths:
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
 | `GET /v1/status/traffic` | Current day, billing-cycle, power-on and total counters |
-| `GET /v1/status/wifi` | Two fixed B04 radio sections, channel/bandwidth/power, security, station counts and optional guest state |
+| `GET /v1/status/wifi` | Two fixed B04 radio sections, channel/bandwidth/power, security, station counts, optional guest state and optional request-peer link context |
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
@@ -57,6 +57,18 @@ the fixed B04 `voltage_now` and `current_now` sources. The adapter deliberately
 does not trust the PMIC's `power_now` node, matching the proven behavior of the
 original MU5250 tooling. Its sign follows `current_ma`; it is neither USB input
 power nor a wall-power measurement.
+
+Battery health, cycle count, remaining/learned/design capacity and time estimates
+remain excluded because their B04 units, sentinels and accuracy have not completed
+semantic acceptance.
+
+`/v1/status/wifi` never accepts an address or MAC from the client. Its optional
+`current_client_link` context uses the handler-supplied HTTPS peer IPv4 address,
+which must uniquely match one current DHCP lease and exactly one fixed
+`wlan0`/`wlan2` station entry. Only the `router_observed` label, band, signal,
+rates, expected throughput and connection age leave the adapter. Unmatched,
+loopback, IPv6 or ambiguous peers still receive normal Wi-Fi status with this
+field absent; there is no standalone link endpoint or separate capability claim.
 
 Capability reporting is fail-closed:
 

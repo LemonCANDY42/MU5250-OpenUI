@@ -520,6 +520,23 @@ export interface components {
             readonly active_band?: string;
             readonly lte?: components["schemas"]["RadioSignal"];
             readonly nr5g?: components["schemas"]["RadioSignal"];
+            /**
+             * @description Optional for compatibility with earlier V1 agents
+             * @enum {string}
+             */
+            readonly network_selection_mode?: "automatic" | "manual" | "unknown";
+            readonly lte_carrier_aggregation?: components["schemas"]["CarrierAggregationStatus"];
+            readonly nr5g_carrier_aggregation?: components["schemas"]["CarrierAggregationStatus"];
+            /** @description Read-only configured-state summary; V1 exposes no cell-lock write */
+            readonly cell_lock?: components["schemas"]["CellLockStatus"];
+        };
+        readonly CarrierAggregationStatus: {
+            readonly active: boolean;
+            readonly bands: readonly string[];
+        };
+        readonly CellLockStatus: {
+            readonly lte: boolean;
+            readonly nr5g: boolean;
         };
         readonly RadioSignal: {
             readonly band?: string;
@@ -581,6 +598,8 @@ export interface components {
             ];
             readonly features: components["schemas"]["WifiFeatureStatus"];
             readonly guest?: components["schemas"]["WifiGuestStatus"];
+            /** @description Optional router-side observation for the authenticated request peer. It is absent when DHCP-to-station correlation is unavailable or ambiguous. */
+            readonly current_client_link?: components["schemas"]["CurrentClientLink"];
         };
         readonly WifiFeatureStatus: {
             readonly wifi7_active: boolean;
@@ -592,6 +611,16 @@ export interface components {
             readonly mlo_enabled: boolean;
             readonly band_steering_supported: boolean;
             readonly band_steering_enabled: boolean;
+        };
+        readonly CurrentClientLink: {
+            /** @enum {string} */
+            readonly observation: "router_observed";
+            readonly band: string;
+            readonly signal_dbm: number;
+            readonly tx_bitrate_mbps: number;
+            readonly rx_bitrate_mbps: number;
+            readonly expected_throughput_mbps?: number;
+            readonly connected_seconds: number;
         };
         readonly WifiGuestStatus: {
             readonly enabled_2g: boolean;

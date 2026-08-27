@@ -189,11 +189,28 @@ function parseSignal(value: unknown): V1SignalStatus {
     !optionalString(value.provider) ||
     !optionalString(value.active_band) ||
     !optionalRadio(value.lte) ||
-    !optionalRadio(value.nr5g)
+    !optionalRadio(value.nr5g) ||
+    (value.network_selection_mode !== undefined &&
+      !['automatic', 'manual', 'unknown'].includes(String(value.network_selection_mode))) ||
+    !isOptionalCarrierAggregation(value.lte_carrier_aggregation) ||
+    !isOptionalCarrierAggregation(value.nr5g_carrier_aggregation) ||
+    (value.cell_lock !== undefined &&
+      (!isRecord(value.cell_lock) ||
+        typeof value.cell_lock.lte !== 'boolean' ||
+        typeof value.cell_lock.nr5g !== 'boolean'))
   ) {
     throw new AgentError('The agent returned invalid signal status')
   }
   return value as unknown as V1SignalStatus
+}
+
+function isOptionalCarrierAggregation(value: unknown): boolean {
+  if (value === undefined) return true
+  return (
+    isRecord(value) &&
+    typeof value.active === 'boolean' &&
+    isStringArray(value.bands, 8)
+  )
 }
 
 function optionalRadio(value: unknown): boolean {
@@ -261,11 +278,33 @@ function parseWifi(value: unknown): V1WifiStatus {
     typeof value.enabled !== 'boolean' ||
     !Array.isArray(value.bands) ||
     value.bands.length > 2 ||
-    !value.bands.every(isWifiBand)
+    !value.bands.every(isWifiBand) ||
+    !isOptionalCurrentClientLink(value.current_client_link)
   ) {
     throw new AgentError('The agent returned invalid Wi-Fi status')
   }
   return value as unknown as V1WifiStatus
+}
+
+function isOptionalCurrentClientLink(value: unknown): boolean {
+  if (value === undefined) return true
+  if (
+    !isRecord(value) ||
+    value.observation !== 'router_observed' ||
+    typeof value.band !== 'string' ||
+    !Number.isInteger(value.signal_dbm) ||
+    Number(value.signal_dbm) < -127 ||
+    Number(value.signal_dbm) > 0 ||
+    !isFiniteNumber(value.tx_bitrate_mbps) ||
+    Number(value.tx_bitrate_mbps) < 0 ||
+    !isFiniteNumber(value.rx_bitrate_mbps) ||
+    Number(value.rx_bitrate_mbps) < 0 ||
+    !optionalFiniteNumber(value.expected_throughput_mbps) ||
+    !isNonNegativeInteger(value.connected_seconds)
+  ) {
+    return false
+  }
+  return true
 }
 
 function isWifiBand(value: unknown): boolean {

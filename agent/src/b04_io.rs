@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io::Read;
+use std::net::Ipv4Addr;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 
@@ -41,6 +42,16 @@ pub enum UbusWrite {
 pub enum WifiInterface {
     TwoG,
     FiveG,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WifiClientLinkSource {
+    pub band: &'static str,
+    pub signal_dbm: i64,
+    pub tx_bitrate_mbps: f64,
+    pub rx_bitrate_mbps: f64,
+    pub expected_throughput_mbps: Option<f64>,
+    pub connected_seconds: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -109,6 +120,9 @@ pub trait B04Io: Send + Sync {
     fn wireless_config(&self) -> Result<BTreeMap<String, String>, String>;
     fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String>;
     fn station_count(&self, interface: WifiInterface) -> Result<u32, String>;
+    fn current_client_link(&self, _peer: Ipv4Addr) -> Result<WifiClientLinkSource, String> {
+        Err("requesting-client Wi-Fi link source is unavailable".into())
+    }
     fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String>;
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String>;
     fn battery_capacity(&self) -> Result<u8, String>;
@@ -250,6 +264,29 @@ impl B04Io for SystemB04Io {
         u32::try_from(count).map_err(|_| "Wi-Fi station count is out of range".to_string())
     }
 
+    fn current_client_link(&self, peer: Ipv4Addr) -> Result<WifiClientLinkSource, String> {
+        let leases = self.ubus_read(UbusRead::DhcpLeases)?;
+        let mac = unique_lease_mac(&leases, peer)?;
+        let mut matches = Vec::new();
+        for (interface, band) in [("wlan0", "2.4 GHz"), ("wlan2", "5 GHz")] {
+            let output = run_fixed(
+                "requesting-client Wi-Fi station list",
+                "iw",
+                &[interface, "station", "dump"],
+            )?;
+            let text = String::from_utf8(output)
+                .map_err(|_| "requesting-client station list was not UTF-8".to_string())?;
+            if let Some(link) = parse_station_link(&text, &mac, band)? {
+                matches.push(link);
+            }
+        }
+        match matches.len() {
+            1 => Ok(matches.remove(0)),
+            0 => Err("requesting client is not a uniquely matched Wi-Fi station".into()),
+            _ => Err("requesting client matched more than one Wi-Fi station".into()),
+        }
+    }
+
     fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
         fields
             .iter()
@@ -378,6 +415,110 @@ fn uci_unquote(raw: &str) -> String {
     inner.replace("'\\''", "'")
 }
 
+fn unique_lease_mac(value: &Value, peer: Ipv4Addr) -> Result<String, String> {
+    let leases = value
+        .get("dhcp_leases")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "requesting-client DHCP leases were missing".to_string())?;
+    if leases.len() > 256 {
+        return Err("requesting-client DHCP lease count exceeded the fixed limit".into());
+    }
+    let target = peer.to_string();
+    let mut matches = leases.iter().filter_map(|lease| {
+        let object = lease.as_object()?;
+        (object.get("ipaddr")?.as_str()? == target)
+            .then(|| object.get("macaddr")?.as_str().map(str::to_owned))?
+    });
+    let mac = matches
+        .next()
+        .ok_or_else(|| "requesting client has no current DHCP lease".to_string())?;
+    if matches.next().is_some() || !valid_mac(&mac) {
+        return Err("requesting client did not have one valid DHCP identity".into());
+    }
+    Ok(mac)
+}
+
+fn parse_station_link(
+    text: &str,
+    target_mac: &str,
+    band: &'static str,
+) -> Result<Option<WifiClientLinkSource>, String> {
+    let mut matched_block: Option<&str> = None;
+    for block in text
+        .split("\nStation ")
+        .filter(|block| !block.trim().is_empty())
+    {
+        let normalized = block.strip_prefix("Station ").unwrap_or(block);
+        let station_mac = normalized.split_whitespace().next().unwrap_or_default();
+        if station_mac.eq_ignore_ascii_case(target_mac)
+            && matched_block.replace(normalized).is_some()
+        {
+            return Err("requesting client appeared twice in one station list".into());
+        }
+    }
+    let Some(block) = matched_block else {
+        return Ok(None);
+    };
+    let field = |name: &str| {
+        block.lines().find_map(|line| {
+            let (key, value) = line.trim().split_once(':')?;
+            (key == name).then(|| value.trim())
+        })
+    };
+    let signal_dbm = first_i64(field("signal"))
+        .filter(|value| (-127..=0).contains(value))
+        .ok_or_else(|| "requesting-client signal was missing or out of range".to_string())?;
+    let tx_bitrate_mbps = field("tx bitrate")
+        .and_then(first_f64)
+        .filter(valid_bitrate)
+        .ok_or_else(|| "requesting-client TX bitrate was missing or out of range".to_string())?;
+    let rx_bitrate_mbps = field("rx bitrate")
+        .and_then(first_f64)
+        .filter(valid_bitrate)
+        .ok_or_else(|| "requesting-client RX bitrate was missing or out of range".to_string())?;
+    let expected_throughput_mbps = field("expected throughput")
+        .and_then(first_f64)
+        .filter(valid_bitrate);
+    let connected_seconds = first_u64(field("connected time"))
+        .filter(|value| *value <= 10 * 365 * 24 * 60 * 60)
+        .ok_or_else(|| {
+            "requesting-client connected time was missing or out of range".to_string()
+        })?;
+    Ok(Some(WifiClientLinkSource {
+        band,
+        signal_dbm,
+        tx_bitrate_mbps,
+        rx_bitrate_mbps,
+        expected_throughput_mbps,
+        connected_seconds,
+    }))
+}
+
+fn first_i64(value: Option<&str>) -> Option<i64> {
+    value?.split_whitespace().next()?.parse().ok()
+}
+
+fn first_u64(value: Option<&str>) -> Option<u64> {
+    value?.split_whitespace().next()?.parse().ok()
+}
+
+fn first_f64(value: &str) -> Option<f64> {
+    let token = value.split_whitespace().next()?.trim_end_matches("Mbps");
+    token.parse().ok()
+}
+
+fn valid_bitrate(value: &f64) -> bool {
+    value.is_finite() && (0.0..=100_000.0).contains(value)
+}
+
+fn valid_mac(value: &str) -> bool {
+    let parts: Vec<&str> = value.split(':').collect();
+    parts.len() == 6
+        && parts
+            .iter()
+            .all(|part| part.len() == 2 && part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +588,29 @@ mod tests {
             parse_ubus_write_response("write", b"vendor success token").unwrap(),
             json!({})
         );
+    }
+
+    #[test]
+    fn requesting_client_link_requires_one_lease_and_one_station() {
+        let leases = json!({"dhcp_leases":[{
+            "ipaddr":"192.168.0.61", "macaddr":"a2:17:10:bb:03:fa"
+        }]});
+        let mac = unique_lease_mac(&leases, "192.168.0.61".parse().unwrap()).unwrap();
+        let dump = "Station a2:17:10:bb:03:fa (on wlan2)\n\
+                    \tsignal: -51 [-55, -53] dBm\n\
+                    \ttx bitrate: 1200.9 MBit/s\n\
+                    \trx bitrate: 960.8 MBit/s\n\
+                    \texpected throughput: 487.125Mbps\n\
+                    \tconnected time: 679 seconds\n";
+        let link = parse_station_link(dump, &mac, "5 GHz").unwrap().unwrap();
+        assert_eq!(link.band, "5 GHz");
+        assert_eq!(link.signal_dbm, -51);
+        assert_eq!(link.tx_bitrate_mbps, 1200.9);
+        assert_eq!(link.rx_bitrate_mbps, 960.8);
+        assert_eq!(link.expected_throughput_mbps, Some(487.125));
+        assert_eq!(link.connected_seconds, 679);
+        assert!(parse_station_link(dump, "02:00:00:00:00:01", "5 GHz")
+            .unwrap()
+            .is_none());
     }
 }

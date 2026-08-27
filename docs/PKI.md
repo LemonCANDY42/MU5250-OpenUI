@@ -96,25 +96,26 @@ overwrite, permission, pin and chain failures, overlong total certificate
 validity, unsafe physical paths and missing completion markers, then removes
 every generated test artifact.
 
-Real execution is now accepted only through the first read-only canary gate:
+Real execution is accepted through the nonpersistent LAN and physical-iPhone
+authentication gates:
 
 - the encrypted owner CA exists only outside the repository and has independent
   owner-only Mac, NAS and iCloud copies;
 - the P-256 leaf key was generated on the U60 and never left it; the Mac signed
   only the public CSR, and exact chain, identity, extension and SPKI checks pass;
-- the current canary serves TLS 1.3 at device loopback `127.0.0.1:19443`, reached
-  only through a temporary USB ADB forward;
-- a live client using the explicit owner root completed the TLS handshake and
-  all five authenticated read-only requests; an unauthenticated request was
-  rejected;
-- no system trust entry or iPhone trust/pairing acceptance has run, so the iOS
-  SPKI implementation remains source- and simulator-tested only;
+- the accepted nonpersistent LAN gate serves TLS 1.3 on the certificate-covered
+  management address and rejects unauthenticated requests;
+- the owner iPhone has the exact public CA installed with full trust and still
+  requires the exact leaf SPKI pin after normal Apple trust evaluation;
+- a Secure Enclave P-256 credential was registered through a five-minute QR
+  window and completed a live challenge-authenticated session;
 - the secret-free immediate evidence is stored in
   `/Volumes/backups/U60-Pro/B04-canary-start-20260816T092824Z`.
 
 The owner has replaced the planned 24-hour stability observation with a one-hour
-fast gate; this cannot prove the original 24-hour RSS-growth target. iPhone
-trust, browser/iOS key pairing and every write capability remain unaccepted.
+fast gate; this cannot prove the original 24-hour RSS-growth target. Browser and
+iPhone key pairing are accepted, but every device write and stable installation
+remain separately gated.
 The real private material, password and verifier must never be copied into this
 repository or its evidence manifests.
 

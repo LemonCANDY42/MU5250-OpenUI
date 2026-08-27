@@ -415,6 +415,19 @@ struct DashboardView: View {
             metric("Strength", "\(signal.bars) / 5")
             metric("Roaming", signal.roaming ? String(localized: "Yes") : String(localized: "No"))
             metric("Active band", signal.activeBand ?? String(localized: "Not reported"))
+            if let mode = signal.networkSelectionMode {
+                metric("Network selection", localizedNetworkSelection(mode.rawValue))
+            }
+            if let aggregation = signal.lteCarrierAggregation {
+                metric("LTE aggregation", aggregationLabel(aggregation))
+            }
+            if let aggregation = signal.nr5gCarrierAggregation {
+                metric("5G aggregation", aggregationLabel(aggregation))
+            }
+            if let cellLock = signal.cellLock {
+                metric("LTE cell lock", cellLock.lte ? String(localized: "Configured") : String(localized: "Off"))
+                metric("5G cell lock", cellLock.nr5g ? String(localized: "Configured") : String(localized: "Off"))
+            }
             if let lte = signal.lte {
                 metric("LTE band", lte.band ?? String(localized: "Not reported"))
                 metric("LTE RSRP", formatMetric(lte.rsrpDbm, unit: "dBm"))
@@ -515,7 +528,11 @@ struct DashboardView: View {
                     ? (wifi.features.bandSteeringEnabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                     : String(localized: "Unavailable")
             )
-            metric("This iPhone signal", String(localized: "Not exposed by the iOS public API"))
+            metric(
+                "This iPhone signal",
+                wifi.currentClientLink.map { "\($0.signalDbm) dBm · \($0.band)" }
+                    ?? String(localized: "Not currently observed by the U60")
+            )
             ForEach(wifi.bands, id: \.band) { band in
                 Divider()
                 Text(band.band).font(.subheadline.weight(.semibold))
@@ -523,6 +540,20 @@ struct DashboardView: View {
                 metric("Radio", "\(band.channel) · \(band.bandwidth)")
                 metric("Security", "\(band.encryption)\(band.hidden ? " \(String(localized: "(Hidden)"))" : "")")
                 metric("Clients", band.clients.map(String.init) ?? String(localized: "Not reported"))
+            }
+            if let link = wifi.currentClientLink {
+                Divider()
+                Text("Measured by the U60 for this authenticated client.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                metric("Band", link.band)
+                metric("Signal", "\(link.signalDbm) dBm")
+                metric("TX rate", String(format: "%.1f Mbps", link.txBitrateMbps))
+                metric("RX rate", String(format: "%.1f Mbps", link.rxBitrateMbps))
+                if let throughput = link.expectedThroughputMbps {
+                    metric("Expected throughput", String(format: "%.1f Mbps", throughput))
+                }
+                metric("Connected", formatDuration(link.connectedSeconds))
             }
         }
     }
@@ -801,6 +832,21 @@ struct DashboardView: View {
         case "not charging", "not_charging": String(localized: "Not charging")
         default: state
         }
+    }
+
+    private func localizedNetworkSelection(_ mode: String) -> String {
+        switch mode {
+        case "automatic": String(localized: "Automatic")
+        case "manual": String(localized: "Manual")
+        default: String(localized: "Unknown")
+        }
+    }
+
+    private func aggregationLabel(_ value: Components.Schemas.CarrierAggregationStatus) -> String {
+        guard value.active else { return String(localized: "Not aggregated") }
+        return value.bands.isEmpty
+            ? String(localized: "Active")
+            : value.bands.joined(separator: " + ")
     }
 
     private func capabilityLabel(_ id: Components.Schemas.Capability.IdPayload) -> String {
