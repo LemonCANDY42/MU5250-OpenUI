@@ -5,6 +5,7 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
     let batteryPercent: Int?
     let lteRSRPdBm: Double?
     let nr5gRSRPdBm: Double?
+    let wifiSignalDbm: Double?
     let thermalTemperaturesC: [String: Double]
     let cpuUsagePercent: Double?
     let memoryUsedPercent: Double?
@@ -17,6 +18,7 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         batteryPercent: Int?,
         lteRSRPdBm: Double?,
         nr5gRSRPdBm: Double?,
+        wifiSignalDbm: Double? = nil,
         thermalTemperaturesC: [String: Double] = [:],
         cpuUsagePercent: Double? = nil,
         memoryUsedPercent: Double? = nil,
@@ -26,6 +28,7 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         self.batteryPercent = batteryPercent
         self.lteRSRPdBm = lteRSRPdBm
         self.nr5gRSRPdBm = nr5gRSRPdBm
+        self.wifiSignalDbm = wifiSignalDbm
         self.thermalTemperaturesC = thermalTemperaturesC
         self.cpuUsagePercent = cpuUsagePercent
         self.memoryUsedPercent = memoryUsedPercent
@@ -37,6 +40,7 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         case batteryPercent
         case lteRSRPdBm
         case nr5gRSRPdBm
+        case wifiSignalDbm
         case thermalTemperaturesC
         case cpuUsagePercent
         case memoryUsedPercent
@@ -49,6 +53,7 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         batteryPercent = try values.decodeIfPresent(Int.self, forKey: .batteryPercent)
         lteRSRPdBm = try values.decodeIfPresent(Double.self, forKey: .lteRSRPdBm)
         nr5gRSRPdBm = try values.decodeIfPresent(Double.self, forKey: .nr5gRSRPdBm)
+        wifiSignalDbm = try values.decodeIfPresent(Double.self, forKey: .wifiSignalDbm)
         thermalTemperaturesC = try values.decodeIfPresent(
             [String: Double].self,
             forKey: .thermalTemperaturesC
@@ -137,6 +142,7 @@ struct TelemetryHistoryStore {
             batteryPercent: sample.batteryPercent,
             lteRSRPdBm: sample.lteRSRPdBm,
             nr5gRSRPdBm: sample.nr5gRSRPdBm,
+            wifiSignalDbm: sanitizedWifiSignal(sample.wifiSignalDbm),
             thermalTemperaturesC: Dictionary(uniqueKeysWithValues: temperatures.map { ($0.key, $0.value) }),
             cpuUsagePercent: sanitizedPercent(sample.cpuUsagePercent),
             memoryUsedPercent: sanitizedPercent(sample.memoryUsedPercent),
@@ -150,6 +156,7 @@ struct TelemetryHistoryStore {
             batteryPercent: sample.batteryPercent,
             lteRSRPdBm: sample.lteRSRPdBm,
             nr5gRSRPdBm: sample.nr5gRSRPdBm,
+            wifiSignalDbm: sample.wifiSignalDbm,
             thermalTemperaturesC: sample.thermalTemperaturesC,
             cpuUsagePercent: sample.cpuUsagePercent,
             memoryUsedPercent: sample.memoryUsedPercent,
@@ -159,5 +166,9 @@ struct TelemetryHistoryStore {
 
     private func sanitizedPercent(_ value: Double?) -> Double? {
         value.flatMap { $0.isFinite && (0 ... 100).contains($0) ? $0 : nil }
+    }
+
+    private func sanitizedWifiSignal(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite && (-127 ... 0).contains($0) ? $0 : nil }
     }
 }

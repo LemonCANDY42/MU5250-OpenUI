@@ -17,10 +17,10 @@ private enum DashboardSection: String, CaseIterable, Identifiable, Codable {
         case .system: "System status"
         case .battery: "Battery"
         case .thermal: "Thermal"
-        case .signal: "Signal"
-        case .cellular: "Cellular"
+        case .signal: "Signal strength"
+        case .cellular: "Cellular information"
         case .traffic: "Traffic"
-        case .wifi: "Wi-Fi"
+        case .wifi: "Wi-Fi information"
         case .lanClients: "LAN clients"
         case .messages: "Messages"
         }
@@ -242,14 +242,14 @@ struct DashboardView: View {
                 unavailableCard(for: section, message: failureMessage(for: section, in: snapshot))
             }
         case .signal:
-            if let value = snapshot.signal {
-                signalCard(value)
+            if snapshot.signal != nil || snapshot.wifi != nil {
+                signalStrengthCard(signal: snapshot.signal, wifi: snapshot.wifi)
             } else {
                 unavailableCard(for: section, message: failureMessage(for: section, in: snapshot))
             }
         case .cellular:
-            if let value = snapshot.cellular {
-                cellularCard(value)
+            if snapshot.cellular != nil || snapshot.signal != nil {
+                cellularInformationCard(cellular: snapshot.cellular, signal: snapshot.signal)
             } else {
                 unavailableCard(for: section, message: failureMessage(for: section, in: snapshot))
             }
@@ -514,53 +514,77 @@ struct DashboardView: View {
         }
     }
 
-    private func signalCard(_ signal: Components.Schemas.SignalStatus) -> some View {
-        let series = signalChartSeries
+    private func signalStrengthCard(
+        signal: Components.Schemas.SignalStatus?,
+        wifi: Components.Schemas.WifiStatus?
+    ) -> some View {
+        let wifiSamples = visibleTelemetry.filter { $0.wifiSignalDbm != nil }
+        let cellularSamples = visibleTelemetry.filter { $0.lteRSRPdBm != nil || $0.nr5gRSRPdBm != nil }
         return statusCard(
             id: DashboardSection.signal.rawValue,
-            title: "Signal",
+            title: "Signal strength",
             icon: "antenna.radiowaves.left.and.right",
             tint: .cyan
         ) {
-            metric("Network", signal.networkType)
-            metric("Provider", signal.provider ?? String(localized: "Not reported"))
-            metric("Strength", "\(signal.bars) / 5")
-            metric("Roaming", signal.roaming ? String(localized: "Yes") : String(localized: "No"))
-            metric("Active band", signal.activeBand ?? String(localized: "Not reported"))
-            if let mode = signal.networkSelectionMode {
-                metric("Network selection", localizedNetworkSelection(mode.rawValue))
+            Text("Wi-Fi signal")
+                .font(.subheadline.weight(.semibold))
+            if let link = wifi?.currentClientLink {
+                metric("Signal", "\(link.signalDbm) dBm")
+                metric("Observed band", link.band)
+            } else {
+                Text("Not currently observed by the U60")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
-            if let aggregation = signal.lteCarrierAggregation {
-                metric("LTE aggregation", aggregationLabel(aggregation))
-            }
-            if let aggregation = signal.nr5gCarrierAggregation {
-                metric("5G aggregation", aggregationLabel(aggregation))
-            }
-            if let cellLock = signal.cellLock {
-                metric("LTE cell lock", cellLock.lte ? String(localized: "Configured") : String(localized: "Off"))
-                metric("5G cell lock", cellLock.nr5g ? String(localized: "Configured") : String(localized: "Off"))
-            }
-            if let lte = signal.lte {
-                metric("LTE band", lte.band ?? String(localized: "Not reported"))
-                metric("LTE RSRP", formatMetric(lte.rsrpDbm, unit: "dBm"))
-                metric("LTE RSRQ", formatMetric(lte.rsrqDb, unit: "dB"))
-                metric("LTE SNR", formatMetric(lte.snrDb, unit: "dB"))
-            }
-            if let nr5g = signal.nr5g {
-                metric("5G band", nr5g.band ?? String(localized: "Not reported"))
-                metric("5G channel", nr5g.channel.map(String.init) ?? String(localized: "Not reported"))
-                metric("5G PCI", nr5g.pci.map(String.init) ?? String(localized: "Not reported"))
-                metric("5G RSRP", formatMetric(nr5g.rsrpDbm, unit: "dBm"))
-                metric("5G RSRQ", formatMetric(nr5g.rsrqDb, unit: "dB"))
-                metric("5G SNR", formatMetric(nr5g.snrDb, unit: "dB"))
-            }
-            let samples = visibleTelemetry.filter { $0.lteRSRPdBm != nil || $0.nr5gRSRPdBm != nil }
-            if samples.count >= 2 {
+            if wifiSamples.count >= 2 {
                 Divider()
                 chartHeader(
-                    title: "Signal history",
-                    accessibilityLabel: "Choose signal chart series",
-                    series: series
+                    title: "Wi-Fi signal history",
+                    accessibilityLabel: "Choose Wi-Fi signal chart series",
+                    series: wifiSignalChartSeries
+                )
+                if hiddenChartSeries.contains(DashboardChartSeriesID.signalWiFi) {
+                    Text("No chart series selected")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Chart(wifiSamples) { sample in
+                        if let value = sample.wifiSignalDbm {
+                            LineMark(
+                                x: .value(String(localized: "Time"), sample.timestamp),
+                                y: .value(String(localized: "Wi-Fi signal strength"), value)
+                            )
+                            .foregroundStyle(.indigo)
+                            .interpolationMethod(.monotone)
+                        }
+                    }
+                    .frame(height: 170)
+                }
+            }
+
+            Divider()
+            Text("Cellular signal")
+                .font(.subheadline.weight(.semibold))
+            if let signal {
+                metric("Strength", "\(signal.bars) / 5")
+                if let lte = signal.lte {
+                    metric("LTE RSRP", formatMetric(lte.rsrpDbm, unit: "dBm"))
+                }
+                if let nr5g = signal.nr5g {
+                    metric("5G RSRP", formatMetric(nr5g.rsrpDbm, unit: "dBm"))
+                }
+            } else {
+                Text("Cellular signal unavailable")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if cellularSamples.count >= 2 {
+                Divider()
+                chartHeader(
+                    title: "Cellular signal history",
+                    accessibilityLabel: "Choose cellular signal chart series",
+                    series: signalChartSeries
                 )
                 let showsLTE = !hiddenChartSeries.contains(DashboardChartSeriesID.signalLTE)
                 let shows5G = !hiddenChartSeries.contains(DashboardChartSeriesID.signal5G)
@@ -570,11 +594,11 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Chart(samples) { sample in
+                    Chart(cellularSamples) { sample in
                         if showsLTE, let value = sample.lteRSRPdBm {
                             LineMark(
                                 x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Signal strength"), value),
+                                y: .value(String(localized: "Cellular signal strength"), value),
                                 series: .value(String(localized: "Radio"), "LTE")
                             )
                             .foregroundStyle(by: .value(String(localized: "Radio"), "LTE"))
@@ -583,7 +607,7 @@ struct DashboardView: View {
                         if shows5G, let value = sample.nr5gRSRPdBm {
                             LineMark(
                                 x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Signal strength"), value),
+                                y: .value(String(localized: "Cellular signal strength"), value),
                                 series: .value(String(localized: "Radio"), "5G")
                             )
                             .foregroundStyle(by: .value(String(localized: "Radio"), "5G"))
@@ -598,14 +622,58 @@ struct DashboardView: View {
         }
     }
 
-    private func cellularCard(_ cellular: Components.Schemas.CellularStatus) -> some View {
-        statusCard(id: DashboardSection.cellular.rawValue, title: "Cellular", icon: "cellularbars", tint: .green) {
-            metric("State", cellular.connected ? String(localized: "Connected") : String(localized: "Disconnected"))
-            metric("Protocol", cellular._protocol)
-            metric("Interface", cellular.interface ?? String(localized: "Not reported"))
-            metric("Uptime", formatDuration(cellular.uptimeSeconds))
-            metric("IPv4", cellular.ipv4Addresses.joined(separator: ", ").nilIfEmpty ?? String(localized: "None"))
-            metric("IPv6", cellular.ipv6Addresses.joined(separator: ", ").nilIfEmpty ?? String(localized: "None"))
+    private func cellularInformationCard(
+        cellular: Components.Schemas.CellularStatus?,
+        signal: Components.Schemas.SignalStatus?
+    ) -> some View {
+        statusCard(
+            id: DashboardSection.cellular.rawValue,
+            title: "Cellular information",
+            icon: "cellularbars",
+            tint: .green
+        ) {
+            if let signal {
+                metric("Network", signal.networkType)
+                metric("Provider", signal.provider ?? String(localized: "Not reported"))
+                metric("Roaming", signal.roaming ? String(localized: "Yes") : String(localized: "No"))
+                metric("Active band", signal.activeBand ?? String(localized: "Not reported"))
+                if let mode = signal.networkSelectionMode {
+                    metric("Network selection", localizedNetworkSelection(mode.rawValue))
+                }
+                if let aggregation = signal.lteCarrierAggregation {
+                    metric("LTE aggregation", aggregationLabel(aggregation))
+                }
+                if let aggregation = signal.nr5gCarrierAggregation {
+                    metric("5G aggregation", aggregationLabel(aggregation))
+                }
+                if let cellLock = signal.cellLock {
+                    metric("LTE cell lock", cellLock.lte ? String(localized: "Configured") : String(localized: "Off"))
+                    metric("5G cell lock", cellLock.nr5g ? String(localized: "Configured") : String(localized: "Off"))
+                }
+                if let lte = signal.lte {
+                    metric("LTE band", lte.band ?? String(localized: "Not reported"))
+                    metric("LTE RSRQ", formatMetric(lte.rsrqDb, unit: "dB"))
+                    metric("LTE SNR", formatMetric(lte.snrDb, unit: "dB"))
+                }
+                if let nr5g = signal.nr5g {
+                    metric("5G band", nr5g.band ?? String(localized: "Not reported"))
+                    metric("5G channel", nr5g.channel.map(String.init) ?? String(localized: "Not reported"))
+                    metric("5G PCI", nr5g.pci.map(String.init) ?? String(localized: "Not reported"))
+                    metric("5G RSRQ", formatMetric(nr5g.rsrqDb, unit: "dB"))
+                    metric("5G SNR", formatMetric(nr5g.snrDb, unit: "dB"))
+                }
+            }
+            if let cellular {
+                if signal != nil { Divider() }
+                Text("Connection")
+                    .font(.subheadline.weight(.semibold))
+                metric("State", cellular.connected ? String(localized: "Connected") : String(localized: "Disconnected"))
+                metric("Protocol", cellular._protocol)
+                metric("Interface", cellular.interface ?? String(localized: "Not reported"))
+                metric("Uptime", formatDuration(cellular.uptimeSeconds))
+                metric("IPv4", cellular.ipv4Addresses.joined(separator: ", ").nilIfEmpty ?? String(localized: "None"))
+                metric("IPv6", cellular.ipv6Addresses.joined(separator: ", ").nilIfEmpty ?? String(localized: "None"))
+            }
         }
     }
 
@@ -625,7 +693,7 @@ struct DashboardView: View {
     }
 
     private func wifiCard(_ wifi: Components.Schemas.WifiStatus) -> some View {
-        statusCard(id: DashboardSection.wifi.rawValue, title: "Wi-Fi", icon: "wifi", tint: .indigo) {
+        statusCard(id: DashboardSection.wifi.rawValue, title: "Wi-Fi information", icon: "wifi", tint: .indigo) {
             metric("Overall", wifi.enabled ? String(localized: "Enabled") : String(localized: "Disabled"))
             metric("Wi-Fi 7", wifi.features.wifi7Active ? String(localized: "Active") : String(localized: "Inactive"))
             metric(
@@ -640,11 +708,6 @@ struct DashboardView: View {
                     ? (wifi.features.bandSteeringEnabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                     : String(localized: "Unavailable")
             )
-            metric(
-                "This iPhone signal",
-                wifi.currentClientLink.map { "\($0.signalDbm) dBm · \($0.band)" }
-                    ?? String(localized: "Not currently observed by the U60")
-            )
             ForEach(wifi.bands, id: \.band) { band in
                 Divider()
                 Text(band.band).font(.subheadline.weight(.semibold))
@@ -655,11 +718,12 @@ struct DashboardView: View {
             }
             if let link = wifi.currentClientLink {
                 Divider()
+                Text("Current iPhone link")
+                    .font(.subheadline.weight(.semibold))
                 Text("Measured by the U60 for this authenticated client.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                 metric("Band", link.band)
-                metric("Signal", "\(link.signalDbm) dBm")
                 metric("TX rate", String(format: "%.1f Mbps", link.txBitrateMbps))
                 metric("RX rate", String(format: "%.1f Mbps", link.rxBitrateMbps))
                 if let throughput = link.expectedThroughputMbps {
@@ -706,8 +770,8 @@ struct DashboardView: View {
         case .system: snapshot.system != nil
         case .battery: snapshot.battery != nil
         case .thermal: snapshot.thermal != nil
-        case .signal: snapshot.signal != nil
-        case .cellular: snapshot.cellular != nil
+        case .signal: snapshot.signal != nil || snapshot.wifi != nil
+        case .cellular: snapshot.cellular != nil || snapshot.signal != nil
         case .traffic: snapshot.traffic != nil
         case .wifi: snapshot.wifi != nil
         case .lanClients: snapshot.lanClients != nil
@@ -797,6 +861,15 @@ struct DashboardView: View {
         [
             DashboardChartSeries(id: DashboardChartSeriesID.signalLTE, label: "LTE"),
             DashboardChartSeries(id: DashboardChartSeriesID.signal5G, label: "5G"),
+        ]
+    }
+
+    private var wifiSignalChartSeries: [DashboardChartSeries] {
+        [
+            DashboardChartSeries(
+                id: DashboardChartSeriesID.signalWiFi,
+                label: String(localized: "Wi-Fi")
+            ),
         ]
     }
 

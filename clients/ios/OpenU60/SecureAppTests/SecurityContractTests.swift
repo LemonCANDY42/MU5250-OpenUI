@@ -42,6 +42,7 @@ final class SecurityContractTests: XCTestCase {
             batteryPercent: 80,
             lteRSRPdBm: -90,
             nr5gRSRPdBm: nil,
+            wifiSignalDbm: -55,
             thermalTemperaturesC: ["cpu_0": 42]
         )
         let replacement = TelemetrySample(
@@ -49,6 +50,7 @@ final class SecurityContractTests: XCTestCase {
             batteryPercent: 79,
             lteRSRPdBm: -91,
             nr5gRSRPdBm: -88,
+            wifiSignalDbm: -54,
             thermalTemperaturesC: ["cpu_0": 43],
             cpuUsagePercent: 12.5,
             memoryUsedPercent: 75,
@@ -59,6 +61,7 @@ final class SecurityContractTests: XCTestCase {
             batteryPercent: 78,
             lteRSRPdBm: -92,
             nr5gRSRPdBm: -89,
+            wifiSignalDbm: -53,
             thermalTemperaturesC: ["cpu_0": 44]
         )
 
@@ -69,6 +72,7 @@ final class SecurityContractTests: XCTestCase {
             batteryPercent: replacement.batteryPercent,
             lteRSRPdBm: replacement.lteRSRPdBm,
             nr5gRSRPdBm: replacement.nr5gRSRPdBm,
+            wifiSignalDbm: replacement.wifiSignalDbm,
             thermalTemperaturesC: replacement.thermalTemperaturesC,
             cpuUsagePercent: replacement.cpuUsagePercent,
             memoryUsedPercent: replacement.memoryUsedPercent,
@@ -77,6 +81,7 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertEqual(history, [anchoredReplacement])
         history = store.append(later, to: history)
         XCTAssertEqual(history, [anchoredReplacement, later])
+        XCTAssertEqual(history.last?.wifiSignalDbm, -53)
         XCTAssertEqual(store.load(now: later.timestamp), history)
     }
 
@@ -101,6 +106,7 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(store.load(now: now).first?.cpuUsagePercent)
         XCTAssertNil(store.load(now: now).first?.memoryUsedPercent)
         XCTAssertNil(store.load(now: now).first?.storageUsedPercent)
+        XCTAssertNil(store.load(now: now).first?.wifiSignalDbm)
 
         let temperatures = Dictionary(uniqueKeysWithValues: (0 ..< 32).map { ("sensor_\($0)", Double($0)) })
         let history = store.append(
@@ -109,12 +115,14 @@ final class SecurityContractTests: XCTestCase {
                 batteryPercent: nil,
                 lteRSRPdBm: nil,
                 nr5gRSRPdBm: nil,
+                wifiSignalDbm: 1,
                 thermalTemperaturesC: temperatures.merging(["invalid": .infinity]) { current, _ in current }
             ),
             to: []
         )
         XCTAssertEqual(history.first?.thermalTemperaturesC.count, TelemetryHistoryStore.maximumThermalSeries)
         XCTAssertNil(history.first?.thermalTemperaturesC["invalid"])
+        XCTAssertNil(history.first?.wifiSignalDbm)
     }
 
     func testTelemetryHistoryCoversSevenDaysAtMinuteSpacingAndStaysBounded() throws {

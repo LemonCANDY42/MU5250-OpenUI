@@ -71,19 +71,27 @@ chart visibility are remembered in device-local Keychain state. Manual refresh
 remains the default to minimize device and radio load, with explicit five-second,
 15-second, 30-second, one-minute and five-minute monitoring choices. Successful
 status refreshes append a bounded, up-to-seven-day local telemetry history used
-for battery, LTE/5G RSRP, multi-sensor thermal and optional CPU/memory/storage
-usage charts. History is sampled at no less than one-minute spacing and capped
+for battery, router-observed Wi-Fi RSSI, LTE/5G RSRP, multi-sensor thermal and
+optional CPU/memory/storage usage charts. The dashboard groups the current
+Wi-Fi and cellular signal readings in one Signal strength card, with separate
+Wi-Fi and LTE/5G history charts inside that card. Radio settings, feature state
+and client-link rates remain in a separate Wi-Fi information card; provider,
+network, band, aggregation, cell-lock and connection details remain in a
+separate Cellular information card. History is sampled at no less than
+one-minute spacing and capped
 at 10,080 samples, so it can retain a genuine seven-day window while remaining
 bounded even when the display refreshes every five seconds. Existing dense
 10-second history is migrated to the new one-minute spacing on load, and old
-samples without the optional system percentages remain decodable. Signal, thermal and
-system series can be shown or hidden independently and their visibility is
-remembered; no background daemon or U60 write is involved.
+samples without the optional Wi-Fi signal or system percentages remain
+decodable. Wi-Fi, LTE, 5G, thermal and system series can be shown or hidden
+independently and their visibility is remembered; no background daemon or U60
+write is involved.
 Apple's public accessory-network API does not expose the current iPhone Wi-Fi
-RSSI. The existing Wi-Fi card instead uses optional request context and labels
-RSSI and rates as U60 router observations only when the HTTPS peer uniquely
-matches a DHCP lease and station. Missing or ambiguous correlation leaves the
-field absent without failing Wi-Fi status. Radio aggregation, selection and
+RSSI. The dashboard instead uses optional request context and labels RSSI and
+link rates as U60 router observations only when the HTTPS peer uniquely matches
+a DHCP lease and station. The RSSI appears in Signal strength while link rates
+remain in Wi-Fi information. Missing or ambiguous correlation leaves the fields
+absent without failing Wi-Fi status. Radio aggregation, selection and
 read-only cell-lock summaries are optional so new clients remain compatible
 with earlier V1 agents. The battery card similarly shows optional validated
 health, cycle, learned/design capacity and applicable kernel-estimate fields.

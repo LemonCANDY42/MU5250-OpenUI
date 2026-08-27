@@ -40,6 +40,7 @@ struct DashboardPreferences: Codable, Equatable, Sendable {
 }
 
 enum DashboardChartSeriesID {
+    static let signalWiFi = "signal.wifi"
     static let signalLTE = "signal.lte"
     static let signal5G = "signal.nr5g"
     static let systemCPU = "system.cpu"

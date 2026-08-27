@@ -272,6 +272,7 @@ final class AppModel {
                 batteryPercent: snapshot.battery?.capacityPercent,
                 lteRSRPdBm: snapshot.signal?.lte?.rsrpDbm.map(Double.init),
                 nr5gRSRPdBm: snapshot.signal?.nr5g?.rsrpDbm.map(Double.init),
+                wifiSignalDbm: snapshot.wifi?.currentClientLink.map { Double($0.signalDbm) },
                 thermalTemperaturesC: snapshot.thermal?.sensors.reduce(into: [:]) { temperatures, sensor in
                     temperatures[sensor.sensor] = sensor.temperatureC
                 } ?? [:],
