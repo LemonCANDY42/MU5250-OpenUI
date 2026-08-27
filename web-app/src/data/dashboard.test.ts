@@ -20,18 +20,7 @@ describe('capability-driven dashboard loading', () => {
     getJsonMock.mockImplementation(async (path) => responses[path])
 
     const snapshot = await loadDashboard()
-    expect(getJsonMock.mock.calls.map(([path]) => path)).toEqual([
-      '/v1/capabilities',
-      '/v1/device',
-      '/v1/status/system',
-      '/v1/status/thermal',
-      '/v1/status/signal',
-      '/v1/status/cellular',
-      '/v1/status/traffic',
-      '/v1/status/wifi',
-      '/v1/lan/clients',
-      '/v1/sms',
-    ])
+    expect(getJsonMock.mock.calls.map(([path]) => path)).toEqual(['/v1/status/dashboard'])
     expect(
       snapshot.panels.find((panel) => panel.capability.id === 'battery_status')?.value,
     ).toBeUndefined()
@@ -45,27 +34,13 @@ describe('capability-driven dashboard loading', () => {
     getJsonMock.mockImplementation(async (path) => responses[path])
 
     await loadDashboard()
-    expect(new Set(getJsonMock.mock.calls.map(([path]) => path))).toEqual(
-      new Set([
-        '/v1/capabilities',
-        '/v1/device',
-        '/v1/status/system',
-        '/v1/status/battery',
-        '/v1/status/thermal',
-        '/v1/status/signal',
-        '/v1/status/cellular',
-        '/v1/status/traffic',
-        '/v1/status/wifi',
-        '/v1/lan/clients',
-        '/v1/sms',
-      ]),
-    )
+    expect(getJsonMock.mock.calls.map(([path]) => path)).toEqual(['/v1/status/dashboard'])
   })
 
   it('propagates an authentication failure instead of rendering partial stale state', async () => {
     const responses = fixtures({})
     getJsonMock.mockImplementation(async (path) => {
-      if (path === '/v1/status/system') {
+      if (path === '/v1/status/dashboard') {
         throw new AgentError('authentication failed', 401, 'authentication_failed')
       }
       return responses[path]
@@ -196,7 +171,7 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
     reason: overrides[id] === 'degraded' ? 'partial source' : undefined,
     recovery: { required: overrides[id] !== undefined, action: 'check source' },
   })
-  return {
+  const responses: Record<string, unknown> = {
     '/v1/capabilities': {
       adapter: 'b04',
       firmware_target: 'HK_B04',
@@ -325,6 +300,37 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
       ],
     },
   }
+  const report = responses['/v1/capabilities']
+  const snapshot: Record<string, unknown> = {
+    report,
+    failures: [],
+    device: responses['/v1/device'],
+    system: responses['/v1/status/system'],
+    battery: responses['/v1/status/battery'],
+    thermal: responses['/v1/status/thermal'],
+    signal: responses['/v1/status/signal'],
+    cellular: responses['/v1/status/cellular'],
+    traffic: responses['/v1/status/traffic'],
+    wifi: responses['/v1/status/wifi'],
+    lan_clients: responses['/v1/lan/clients'],
+    sms: responses['/v1/sms'],
+  }
+  for (const [id, key] of Object.entries({
+    device_identity: 'device',
+    system_status: 'system',
+    battery_status: 'battery',
+    thermal_status: 'thermal',
+    signal_status: 'signal',
+    cellular_status: 'cellular',
+    traffic_status: 'traffic',
+    wifi_status: 'wifi',
+    lan_clients: 'lan_clients',
+    sms_list: 'sms',
+  })) {
+    if (overrides[id] === 'unsupported') delete snapshot[key]
+  }
+  responses['/v1/status/dashboard'] = snapshot
+  return responses
 }
 
 function trafficPeriod() {

@@ -10,7 +10,7 @@ import {
   supportsBrowserCredentials,
 } from './auth/auth-service'
 import type { BrowserCredential } from './auth/credential-store'
-import { AgentError, getJson, hasSessionToken, postJson, putJson } from './data/client'
+import { AgentError, hasSessionToken, postJson, putJson } from './data/client'
 import {
   batteryCapacityHealthPercent,
   loadDashboard,
@@ -251,9 +251,8 @@ async function renderDashboard(): Promise<void> {
   live.setAttribute('aria-live', 'polite')
   const grid = element('div', 'card-grid')
   main.append(live, grid)
-  if (hasDailyManagement()) {
-    main.append(dailyManagement())
-  }
+  const management = hasDailyManagement() ? dailyManagement() : undefined
+  if (management !== undefined) main.append(management.element)
   root.replaceChildren(skip, header, main)
 
   logout.addEventListener('click', () => void renderLogin('Signed out.'))
@@ -267,6 +266,7 @@ async function renderDashboard(): Promise<void> {
     try {
       const snapshot = await loadDashboard()
       renderSnapshot(snapshot, grid)
+      management?.update(snapshot)
       live.textContent = `Adapter ${snapshot.report.adapter} · target ${snapshot.report.firmware_target}`
     } catch (reason) {
       if (!hasSessionToken()) {
@@ -283,7 +283,7 @@ async function renderDashboard(): Promise<void> {
   await reload()
 }
 
-function dailyManagement(): HTMLElement {
+function dailyManagement(): { element: HTMLElement; update: (snapshot: DashboardSnapshot) => void } {
   const section = element('section', 'management')
   section.append(
     element('p', 'eyebrow', 'DAILY SCOPE'),
@@ -300,14 +300,18 @@ function dailyManagement(): HTMLElement {
   const error = element('p', 'error')
   error.setAttribute('role', 'alert')
   const grid = element('div', 'management-grid')
+  const charging = chargingForm()
   grid.append(
     smsForm(status, error),
-    chargingForm(status, error),
+    charging.element,
     trafficCycleForm(status, error),
     wifiTransactionForm(status, error),
   )
   section.append(status, error, grid)
-  return section
+  return {
+    element: section,
+    update: (snapshot) => charging.update(snapshot.charging, snapshot.chargingError),
+  }
 }
 
 function smsForm(status: HTMLElement, error: HTMLElement): HTMLFormElement {
@@ -331,17 +335,22 @@ function smsForm(status: HTMLElement, error: HTMLElement): HTMLFormElement {
   return form
 }
 
-function chargingForm(_status: HTMLElement, error: HTMLElement): HTMLFormElement {
+function chargingForm(): {
+  element: HTMLFormElement
+  update: (value?: V1ChargingStatus, failure?: string) => void
+} {
   const form = controlForm('Charging status')
   const current = element('p', 'hint', 'Loading charging status…')
   form.append(current)
-  const updateCurrent = (value: V1ChargingStatus) => {
-    current.textContent = `${value.capacity_percent}% · ${value.paused ? 'charging stopped' : 'charging allowed'}`
+  return {
+    element: form,
+    update: (value, failure) => {
+      current.textContent =
+        value === undefined
+          ? (failure ?? 'Charging status unavailable')
+          : `${value.capacity_percent}% · ${value.paused ? 'charging stopped' : 'charging allowed'}`
+    },
   }
-  void getJson('/v1/charging')
-    .then((value) => updateCurrent(value as V1ChargingStatus))
-    .catch((reason: unknown) => setError(error, errorMessage(reason)))
-  return form
 }
 
 function trafficCycleForm(status: HTMLElement, error: HTMLElement): HTMLFormElement {

@@ -4,7 +4,9 @@ import type {
   V1Capability,
   V1CapabilityReport,
   V1CellularStatus,
+  V1ChargingStatus,
   V1Device,
+  V1DashboardSnapshot,
   V1LanClients,
   V1SignalStatus,
   V1SmsPage,
@@ -36,6 +38,8 @@ export interface DashboardPanel {
 export interface DashboardSnapshot {
   report: V1CapabilityReport
   panels: readonly DashboardPanel[]
+  charging?: V1ChargingStatus
+  chargingError?: string
 }
 
 export function batteryCapacityHealthPercent(
@@ -71,31 +75,94 @@ const ENDPOINTS: Readonly<
   sms_list: { path: '/v1/sms', parse: parseSmsPage },
 }
 
+const SNAPSHOT_KEYS: Readonly<Record<CapabilityId, keyof V1DashboardSnapshot>> = {
+  device_identity: 'device',
+  system_status: 'system',
+  battery_status: 'battery',
+  thermal_status: 'thermal',
+  signal_status: 'signal',
+  cellular_status: 'cellular',
+  traffic_status: 'traffic',
+  wifi_status: 'wifi',
+  lan_clients: 'lan_clients',
+  sms_list: 'sms',
+}
+
 export async function loadDashboard(): Promise<DashboardSnapshot> {
-  const report = parseCapabilityReport(await getJson('/v1/capabilities'))
-  const panels = await Promise.all(
-    report.capabilities.map(async (capability): Promise<DashboardPanel> => {
-      if (capability.status === 'unsupported') {
-        return { capability }
-      }
-      const endpoint = ENDPOINTS[capability.id]
-      try {
-        return {
-          capability,
-          value: endpoint.parse(await getJson(endpoint.path)),
-        }
-      } catch (error) {
-        if (error instanceof AgentError && error.status === 401) {
-          throw error
-        }
-        return {
-          capability,
-          error: error instanceof Error ? error.message : 'Status unavailable',
-        }
-      }
-    }),
+  const aggregate = parseDashboardSnapshot(await getJson('/v1/status/dashboard'))
+  const report = parseCapabilityReport(aggregate.report)
+  const failureMessages = new Map<string, string>(
+    aggregate.failures.map((failure) => [failure.component, failure.error.message]),
   )
-  return { report, panels }
+  const panels = report.capabilities.map((capability): DashboardPanel => {
+    if (capability.status === 'unsupported') {
+      return { capability }
+    }
+    const endpoint = ENDPOINTS[capability.id]
+    const value = aggregate[SNAPSHOT_KEYS[capability.id]]
+    if (value === undefined) {
+      return {
+        capability,
+        error: failureMessages.get(capability.id) ?? 'Status unavailable',
+      }
+    }
+    try {
+      return { capability, value: endpoint.parse(value) }
+    } catch (error) {
+      return {
+        capability,
+        error: error instanceof Error ? error.message : 'Status unavailable',
+      }
+    }
+  })
+  return {
+    report,
+    panels,
+    charging: aggregate.charging === undefined ? undefined : parseCharging(aggregate.charging),
+    chargingError: failureMessages.get('charging_status'),
+  }
+}
+
+function parseDashboardSnapshot(value: unknown): V1DashboardSnapshot {
+  if (!isRecord(value) || !isRecord(value.report) || !Array.isArray(value.failures)) {
+    throw new AgentError('The agent returned an invalid dashboard snapshot')
+  }
+  const seen = new Set<string>()
+  for (const failure of value.failures) {
+    if (
+      !isRecord(failure) ||
+      !isDashboardComponentId(failure.component) ||
+      !isRecord(failure.error) ||
+      typeof failure.error.code !== 'string' ||
+      typeof failure.error.message !== 'string' ||
+      !isRecord(failure.error.recovery) ||
+      typeof failure.error.recovery.required !== 'boolean' ||
+      seen.has(failure.component)
+    ) {
+      throw new AgentError('The agent returned an invalid dashboard failure')
+    }
+    seen.add(failure.component)
+  }
+  return value as unknown as V1DashboardSnapshot
+}
+
+function isDashboardComponentId(value: unknown): value is CapabilityId | 'charging_status' {
+  return (
+    value === 'charging_status' ||
+    (isCapabilityId(value) && value !== 'device_identity')
+  )
+}
+
+function parseCharging(value: unknown): V1ChargingStatus {
+  if (
+    !isRecord(value) ||
+    !isNonNegativeInteger(value.capacity_percent) ||
+    value.capacity_percent > 100 ||
+    typeof value.paused !== 'boolean'
+  ) {
+    throw new AgentError('The agent returned invalid charging status')
+  }
+  return value as unknown as V1ChargingStatus
 }
 
 function parseCapabilityReport(value: unknown): V1CapabilityReport {

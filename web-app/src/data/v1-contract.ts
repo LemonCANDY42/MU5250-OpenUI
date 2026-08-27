@@ -17,12 +17,15 @@ export type V1SessionGrant = components['schemas']['SessionGrant']
 export type V1ChallengeGrant = components['schemas']['ChallengeGrant']
 export type V1RegisteredCredential = components['schemas']['RegisteredCredential']
 export type V1ChargingStatus = components['schemas']['ChargingStatus']
+export type V1DashboardSnapshot = components['schemas']['DashboardSnapshot']
+export type V1DashboardFailure = components['schemas']['DashboardFailure']
 export type V1WifiTransactionGrant = components['schemas']['WifiTransactionGrant']
 export type V1WriteResult = components['schemas']['WriteResult']
 
 export interface V1ReadClientContract {
   device(): Promise<V1Device>
   capabilities(): Promise<V1CapabilityReport>
+  dashboard(): Promise<V1DashboardSnapshot>
   systemStatus(): Promise<V1SystemStatus>
   batteryStatus(): Promise<V1BatteryStatus>
   thermalStatus(): Promise<V1ThermalStatus>
@@ -38,6 +41,7 @@ export interface V1ReadClientContract {
 export const V1_READ_PATHS = [
   '/v1/device',
   '/v1/capabilities',
+  '/v1/status/dashboard',
   '/v1/status/system',
   '/v1/status/battery',
   '/v1/status/thermal',

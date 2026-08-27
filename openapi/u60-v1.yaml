@@ -177,6 +177,23 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/AuthInternalError"
+  /v1/status/dashboard:
+    get:
+      operationId: getDashboardSnapshot
+      summary: Read one partial-success snapshot for all dashboard components
+      responses:
+        "200":
+          description: Dashboard snapshot with independent component failures
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSnapshotResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
   /v1/status/system:
     get:
       operationId: getSystemStatus
@@ -828,6 +845,72 @@ components:
     CapabilityStatus:
       type: string
       enum: [available, degraded, unsupported]
+    DashboardSnapshotResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/DashboardSnapshot"
+    DashboardSnapshot:
+      type: object
+      additionalProperties: false
+      required: [report, failures]
+      properties:
+        report:
+          $ref: "#/components/schemas/CapabilityReport"
+        device:
+          $ref: "#/components/schemas/Device"
+        system:
+          $ref: "#/components/schemas/SystemStatus"
+        battery:
+          $ref: "#/components/schemas/BatteryStatus"
+        thermal:
+          $ref: "#/components/schemas/ThermalStatus"
+        signal:
+          $ref: "#/components/schemas/SignalStatus"
+        cellular:
+          $ref: "#/components/schemas/CellularStatus"
+        traffic:
+          $ref: "#/components/schemas/TrafficStatus"
+        wifi:
+          $ref: "#/components/schemas/WifiStatus"
+        lan_clients:
+          $ref: "#/components/schemas/LanClients"
+        sms:
+          $ref: "#/components/schemas/SmsPage"
+        charging:
+          $ref: "#/components/schemas/ChargingStatus"
+        failures:
+          type: array
+          maxItems: 10
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/DashboardFailure"
+    DashboardFailure:
+      type: object
+      additionalProperties: false
+      required: [component, error]
+      properties:
+        component:
+          $ref: "#/components/schemas/DashboardComponentId"
+        error:
+          $ref: "#/components/schemas/AdapterError"
+    DashboardComponentId:
+      type: string
+      enum:
+        - system_status
+        - battery_status
+        - thermal_status
+        - signal_status
+        - cellular_status
+        - traffic_status
+        - wifi_status
+        - lan_clients
+        - sms_list
+        - charging_status
     RecoveryMetadata:
       type: object
       additionalProperties: false

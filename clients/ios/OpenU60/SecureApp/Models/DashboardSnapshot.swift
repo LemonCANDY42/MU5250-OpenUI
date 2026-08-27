@@ -12,6 +12,7 @@ struct DashboardSnapshot: Sendable {
     let wifi: Components.Schemas.WifiStatus?
     let lanClients: Components.Schemas.LanClients?
     let sms: Components.Schemas.SmsPage?
+    let charging: Components.Schemas.ChargingStatus?
     let failures: [String: String]
 }
 

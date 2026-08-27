@@ -186,6 +186,7 @@ pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) ->
     Router::new()
         .route("/v1/device", get(device))
         .route("/v1/capabilities", get(capabilities))
+        .route("/v1/status/dashboard", get(dashboard))
         .route("/v1/status/system", get(system_status))
         .route("/v1/status/battery", get(battery_status))
         .route("/v1/status/thermal", get(thermal_status))
@@ -271,6 +272,17 @@ async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Resp
     protected(&state, &headers, Scope::Read, || {
         api_v1::capabilities(&state)
     })
+}
+
+async fn dashboard(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize(&state, &headers, Scope::Read) {
+        return value_response(handlers::failure(error));
+    }
+    value_response(api_v1::dashboard(state, peer.ip()).await)
 }
 
 async fn system_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -762,11 +774,13 @@ mod tests {
     #[tokio::test]
     async fn protected_status_requires_a_read_scope_token() {
         let (_temp, state) = state();
-        let response = router_with_web_root(state, None)
-            .oneshot(request(Method::GET, "/v1/device", ""))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        for path in ["/v1/device", "/v1/status/dashboard"] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(Method::GET, path, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
     }
 
     #[tokio::test]

@@ -123,6 +123,23 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/v1/status/dashboard": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read one partial-success snapshot for all dashboard components */
+        readonly get: operations["getDashboardSnapshot"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/v1/status/system": {
         readonly parameters: {
             readonly query?: never;
@@ -462,6 +479,32 @@ export interface components {
         };
         /** @enum {string} */
         readonly CapabilityStatus: "available" | "degraded" | "unsupported";
+        readonly DashboardSnapshotResponse: {
+            /** @constant */
+            readonly ok: true;
+            readonly data: components["schemas"]["DashboardSnapshot"];
+        };
+        readonly DashboardSnapshot: {
+            readonly report: components["schemas"]["CapabilityReport"];
+            readonly device?: components["schemas"]["Device"];
+            readonly system?: components["schemas"]["SystemStatus"];
+            readonly battery?: components["schemas"]["BatteryStatus"];
+            readonly thermal?: components["schemas"]["ThermalStatus"];
+            readonly signal?: components["schemas"]["SignalStatus"];
+            readonly cellular?: components["schemas"]["CellularStatus"];
+            readonly traffic?: components["schemas"]["TrafficStatus"];
+            readonly wifi?: components["schemas"]["WifiStatus"];
+            readonly lan_clients?: components["schemas"]["LanClients"];
+            readonly sms?: components["schemas"]["SmsPage"];
+            readonly charging?: components["schemas"]["ChargingStatus"];
+            readonly failures: readonly components["schemas"]["DashboardFailure"][];
+        };
+        readonly DashboardFailure: {
+            readonly component: components["schemas"]["DashboardComponentId"];
+            readonly error: components["schemas"]["AdapterError"];
+        };
+        /** @enum {string} */
+        readonly DashboardComponentId: "system_status" | "battery_status" | "thermal_status" | "signal_status" | "cellular_status" | "traffic_status" | "wifi_status" | "lan_clients" | "sms_list" | "charging_status";
         readonly RecoveryMetadata: {
             readonly required: boolean;
             readonly action?: string;
@@ -1088,6 +1131,29 @@ export interface operations {
                 };
                 content: {
                     readonly "application/json": components["schemas"]["CapabilityResponse"];
+                };
+            };
+            readonly 401: components["responses"]["AuthenticationFailed"];
+            readonly 403: components["responses"]["Forbidden"];
+            readonly 500: components["responses"]["AuthInternalError"];
+        };
+    };
+    readonly getDashboardSnapshot: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Dashboard snapshot with independent component failures */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["DashboardSnapshotResponse"];
                 };
             };
             readonly 401: components["responses"]["AuthenticationFailed"];

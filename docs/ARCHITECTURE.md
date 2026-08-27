@@ -50,6 +50,18 @@ new `SecureApp`, resources and one presentation-only upstream component. Legacy
 handwritten `/api`, raw-AT, USB and router-write code is not in its build graph.
 Both client artifact gates reject drift.
 
+Routine dashboard refresh uses one partial-success HTTPS snapshot rather than
+client-side fan-out. This is deliberately a request/response aggregation layer:
+it reuses the same adapter reads, preserves typed per-component failures and
+keeps the individual routes stable. The pass is serialized off the async
+listener, does not pre-probe the same sources, has an 11-second total response
+budget and converts unfinished components into typed timeouts while preventing
+overlapping passes. MQTT is not part of this local snapshot
+path because a broker, persistent connection, reconnection state and iOS
+background lifecycle would add state and recovery cost without improving the
+underlying weak Wi-Fi link. A future event stream would require a distinct,
+measured continuous-event use case rather than replacing this bounded pull.
+
 Each capability reports one of `available`, `degraded` or `unsupported`, with a
 reason and recovery requirement where applicable. Source support and real B04
 acceptance are separate facts: a capability is not considered available until

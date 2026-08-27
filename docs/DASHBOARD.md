@@ -14,8 +14,13 @@ above is documentation, not authorization to run the agent on the U60.
 
 ## Product surface
 
-After authentication the dashboard reads the capability report first. It then
-requests only supported or degraded read endpoints and displays:
+After authentication the dashboard requests one typed
+`/v1/status/dashboard` snapshot. The agent reads the same fixed capability and
+status sources locally, omits unsupported values, and preserves independent
+failures so one unavailable source does not discard the other cards. It makes
+one source pass without a duplicate capability probe; an 11-second server
+budget returns completed cards and marks unfinished components as timed out.
+It displays:
 
 - normalized device identity;
 - capability status and recovery metadata;
@@ -23,8 +28,10 @@ requests only supported or degraded read endpoints and displays:
 - battery state, capacity, voltage, current, derived instantaneous power and temperature, plus optional validated health, cycle, capacity and kernel-estimate details;
 - validated thermal sensors.
 
-An unsupported capability is shown explicitly and is not requested. A degraded
-capability retains its reason and maintenance action. There are no raw commands,
+An unsupported capability is shown explicitly. A degraded capability retains
+its reason and maintenance action. The individual read endpoints remain in the
+contract for compatibility and focused diagnostics, but routine refresh no
+longer fans out one HTTPS request per card. There are no raw commands,
 firmware dictionaries or legacy endpoint bindings. The authenticated controls
 remain limited to the typed V1 daily-operation surface; charging is read-only,
 and Wi-Fi changes keep a client-generated confirmation identifier in IndexedDB

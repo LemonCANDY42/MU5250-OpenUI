@@ -38,8 +38,10 @@ authorize daily mutations or a stable install.
   only the entry document plus fixed assets are loaded; without the flag no web
   content is served.
 - The lightweight dashboard consumes generated `/v1` types over relative,
-  same-origin requests. It exposes the complete typed status set and daily-scope
-  controls only after authenticated capability discovery.
+  same-origin requests. Routine refresh uses one partial-success aggregate
+  snapshot while retaining the individual typed read routes for compatibility
+  and focused diagnostics. It exposes the complete typed status set and
+  daily-scope controls only after authentication.
 - Browser pairing uses a non-exportable WebCrypto P-256 private key stored with
   its public key and credential metadata in IndexedDB. Bearer tokens stay only
   in memory; the dashboard never persists password fallback input.

@@ -65,13 +65,16 @@ cards and a dedicated reorder sheet; unavailable cards retain their normal
 position and remain reorderable instead of being appended as unowned errors.
 Card content is clipped to the rounded card boundary throughout collapse
 animations, and refresh keeps a stable toolbar layout by pulsing a fixed refresh
-button instead of inserting and removing a separate progress item. After the
-capability report is available, the ten fixed read-only capability IDs are
-deduplicated and read within one bounded request window, while charging status
-loads alongside the dashboard. A weak link
-therefore incurs one bounded request window instead of accumulating one timeout
-per status card. The monitoring menu remains separate from the explicit refresh
-button.
+button instead of inserting and removing a separate progress item. The ten fixed
+read-only capabilities and optional charging status are returned by one typed,
+partial-success dashboard snapshot. The U60 performs the same fixed reads
+locally and reports an independent failure for any unavailable component, so a
+weak link incurs one HTTPS request window without making one bad sensor discard
+the successful cards. The server responds within an 11-second collection
+budget, below the client's 15-second transport timeout; values completed before
+that boundary remain usable. Individual read routes remain for older clients and
+focused diagnostics. The monitoring menu remains separate from the explicit
+refresh button.
 Card order, collapsed state, monitoring interval, graph range and per-series
 chart visibility are remembered in device-local Keychain state. Manual refresh
 remains the default to minimize device and radio load, with explicit five-second,

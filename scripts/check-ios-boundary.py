@@ -139,8 +139,8 @@ required_source_fragments = (
     "completionHandler(nil)",
     "kSecAttrAccessibleWhenUnlockedThisDeviceOnly",
     "SessionVault",
-    "DashboardRequestScheduler.run(capabilityIDs)",
-    "async let snapshot = service.dashboard()",
+    "client.getDashboardSnapshot()",
+    "applyDashboard(snapshot, charging: snapshot.charging)",
 )
 for fragment in required_source_fragments:
     if fragment not in source:

@@ -15,6 +15,7 @@ authentication paths:
 |---|---|
 | `GET /v1/device` | Normalized model, adapter target and best-effort firmware/hardware identity |
 | `GET /v1/capabilities` | `available`, `degraded` or `unsupported` state plus reason/recovery metadata |
+| `GET /v1/status/dashboard` | One partial-success snapshot containing the capability report, all available normalized status values, optional charging status and independent typed component failures |
 | `GET /v1/status/system` | Hostname, kernel, uptime and load average, with optional current CPU, memory and `/data` storage metrics |
 | `GET /v1/status/battery` | Normalized capacity, voltage, current, derived battery-side power, temperature and state, with optional validated health, cycle, capacity-counter and kernel-estimate fields |
 | `GET /v1/status/thermal` | Validated readings from the fixed B04 sensor map |
@@ -93,6 +94,20 @@ Capability reporting is fail-closed:
 - an absent B04 source is `unsupported`;
 - source support does not become real-device acceptance until its exact path has
   passed the B04 probe gate.
+
+The dashboard snapshot is an efficiency surface, not a second source of truth.
+It invokes the same fixed adapter methods as the individual read routes and
+retains those routes for compatibility and focused diagnostics. One component
+failure is recorded in `failures` and omitted from the snapshot without hiding
+other successful values. Wi-Fi peer context still comes only from the actual
+HTTPS request peer. The agent performs one serialized source pass on a blocking
+worker, never calls the probing capability report first, and returns values
+completed within one 11-second server budget. Unfinished values become typed
+`snapshot_timeout` failures; cancellation stops the worker before the next
+source, and a process-wide guard prevents overlapping source passes. The
+single-thread async listener and stability monitor therefore remain responsive.
+The endpoint reduces radio/TLS request fan-out without weakening per-component
+error semantics or adding a background stream.
 
 ## Host-only HTTPS and maintenance state
 

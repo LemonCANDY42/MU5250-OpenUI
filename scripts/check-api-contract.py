@@ -41,6 +41,7 @@ EXPECTED_BOOTSTRAP_PATHS: set[str] = set()
 REQUIRED_RESPONSE_CODES = {
     ("Get", "/v1/device"): {"200", "401", "403", "500"},
     ("Get", "/v1/capabilities"): {"200", "401", "403", "500"},
+    ("Get", "/v1/status/dashboard"): {"200", "401", "403", "500"},
     ("Get", "/v1/status/system"): {"200", "401", "403", "500", "501", "503"},
     ("Get", "/v1/status/battery"): {"200", "401", "403", "500", "501", "503"},
     ("Get", "/v1/status/thermal"): {"200", "401", "403", "500", "501", "503"},

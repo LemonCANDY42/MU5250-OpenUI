@@ -300,16 +300,8 @@ final class AppModel {
 
     private func refreshThrowing() async throws {
         guard let service else { throw LocalSecurityError.missingCredential }
-        let result = try await loadDashboard(using: service)
-        applyDashboard(result.snapshot, charging: result.charging)
-    }
-
-    private func loadDashboard(
-        using service: AgentService
-    ) async throws -> (snapshot: DashboardSnapshot, charging: Components.Schemas.ChargingStatus?) {
-        async let snapshot = service.dashboard()
-        async let charging: Components.Schemas.ChargingStatus? = try? await service.chargingStatus()
-        return try await (snapshot, charging)
+        let snapshot = try await service.dashboard()
+        applyDashboard(snapshot, charging: snapshot.charging)
     }
 
     private func applyDashboard(
@@ -393,7 +385,7 @@ final class AppModel {
                             try self.credentials.sign(message)
                         }
                     }
-                    let result = try await self.loadDashboard(using: recoveryService)
+                    let snapshot = try await recoveryService.dashboard()
                     guard !Task.isCancelled,
                           self.connectionRecoveryGeneration == generation
                     else {
@@ -403,7 +395,7 @@ final class AppModel {
                     self.isWorking = false
                     self.service = recoveryService
                     self.phase = .authenticated
-                    self.applyDashboard(result.snapshot, charging: result.charging)
+                    self.applyDashboard(snapshot, charging: snapshot.charging)
                     self.resumeWifiConfirmation()
                     return
                 } catch {

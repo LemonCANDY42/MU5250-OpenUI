@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -11,6 +11,7 @@ pub struct AppState {
     pub auth: Arc<AuthService>,
     pub adapter: Arc<dyn DeviceAdapter>,
     pub daily: Option<Arc<DailyService>>,
+    pub dashboard_guard: Arc<Mutex<()>>,
 }
 
 impl Clone for AppState {
@@ -19,6 +20,7 @@ impl Clone for AppState {
             auth: Arc::clone(&self.auth),
             adapter: Arc::clone(&self.adapter),
             daily: self.daily.as_ref().map(Arc::clone),
+            dashboard_guard: Arc::clone(&self.dashboard_guard),
         }
     }
 }
@@ -35,6 +37,7 @@ impl AppState {
             auth: Arc::new(auth),
             adapter,
             daily: None,
+            dashboard_guard: Arc::new(Mutex::new(())),
         }
     }
 
@@ -43,6 +46,7 @@ impl AppState {
             auth: Arc::new(auth),
             adapter: Arc::new(B04Adapter::new()),
             daily: Some(Arc::new(daily)),
+            dashboard_guard: Arc::new(Mutex::new(())),
         }
     }
 }

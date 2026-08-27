@@ -31,84 +31,20 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(ConnectionIssue.classify(AgentServiceError.invalidResponse))
     }
 
-    func testDashboardCapabilityPlanDeduplicatesAndSkipsUnsupportedEntries() throws {
-        let report = try JSONDecoder().decode(
-            Components.Schemas.CapabilityReport.self,
+    func testGeneratedAggregateSnapshotPreservesPartialSuccess() throws {
+        let snapshot = try JSONDecoder().decode(
+            Components.Schemas.DashboardSnapshot.self,
             from: Data(
-                #"{"adapter":"b04","firmware_target":"hk_b04","capabilities":[{"id":"wifi_status","status":"available","recovery":{"required":false}},{"id":"wifi_status","status":"degraded","recovery":{"required":false}},{"id":"battery_status","status":"unsupported","recovery":{"required":false}},{"id":"signal_status","status":"available","recovery":{"required":false}}]}"#.utf8
+                #"{"report":{"adapter":"b04","firmware_target":"hk_b04","capabilities":[{"id":"wifi_status","status":"available","recovery":{"required":false}},{"id":"battery_status","status":"degraded","recovery":{"required":false}}]},"wifi":{"enabled":true,"bands":[],"features":{"wifi7_active":false,"version_switch_reported_supported":false,"version_switch_state_available":false,"mlo_supported":false,"mlo_enabled":false,"band_steering_supported":false,"band_steering_enabled":false}},"charging":{"capacity_percent":95,"paused":false},"failures":[{"component":"battery_status","error":{"code":"source_unavailable","message":"temporarily unavailable","recovery":{"required":false}}}]}"#.utf8
             )
         )
 
-        XCTAssertEqual(
-            AgentService.dashboardCapabilityIDs(from: report.capabilities),
-            [.wifiStatus, .signalStatus]
-        )
-    }
-
-    func testDashboardRequestSchedulerOverlapsWorkWithinFixedLimit() async throws {
-        let probe = ConcurrentOperationProbe()
-        let values = Array(0 ..< 12)
-        let results = try await DashboardRequestScheduler.run(values) { value in
-            await probe.begin()
-            do {
-                try await Task.sleep(for: .milliseconds(20))
-                await probe.end()
-                return value
-            } catch {
-                await probe.end()
-                throw error
-            }
-        }
-
-        XCTAssertEqual(results.sorted(), values)
-        let maximumActive = await probe.maximumActive
-        XCTAssertGreaterThan(maximumActive, 1)
-        XCTAssertLessThanOrEqual(maximumActive, DashboardRequestScheduler.maximumConcurrentRequests)
-    }
-
-    func testDashboardRequestSchedulerPropagatesCancellation() async throws {
-        let task = Task {
-            try await DashboardRequestScheduler.run(Array(0 ..< 8)) { value in
-                try await Task.sleep(for: .seconds(30))
-                return value
-            }
-        }
-        try await Task.sleep(for: .milliseconds(20))
-        task.cancel()
-
-        do {
-            _ = try await task.value
-            XCTFail("Cancelled dashboard requests must not complete successfully")
-        } catch {
-            XCTAssertTrue(error is CancellationError)
-        }
-    }
-
-    func testWrappedWifiFeaturesDecodeFailureReportsAgentReleaseMismatch() throws {
-        let key = try XCTUnwrap(TestCodingKey(stringValue: "features"))
-        let decodingError = DecodingError.keyNotFound(
-            key,
-            .init(codingPath: [], debugDescription: "Required Wi-Fi features are missing")
-        )
-        let clientError = ClientError(
-            operationID: "getWifiStatus",
-            operationInput: "test",
-            causeDescription: "response body decoding failed",
-            underlyingError: decodingError
-        )
-
-        XCTAssertEqual(
-            AgentService.dashboardFailureMessage(for: .wifiStatus, error: clientError),
-            String(
-                localized: "The running agent does not provide the required Wi-Fi feature fields. Update it to the same release as this app."
-            )
-        )
-        XCTAssertNotEqual(
-            AgentService.dashboardFailureMessage(for: .signalStatus, error: clientError),
-            String(
-                localized: "The running agent does not provide the required Wi-Fi feature fields. Update it to the same release as this app."
-            )
-        )
+        XCTAssertTrue(try XCTUnwrap(snapshot.wifi).enabled)
+        XCTAssertEqual(try XCTUnwrap(snapshot.charging).capacityPercent, 95)
+        XCTAssertNil(snapshot.battery)
+        XCTAssertEqual(snapshot.failures.count, 1)
+        XCTAssertEqual(snapshot.failures[0].component, .batteryStatus)
+        XCTAssertEqual(snapshot.failures[0].error.code, "source_unavailable")
     }
 
     func testTelemetryHistoryIsBoundedDeviceLocalAndReplacesRapidSamples() throws {
@@ -544,19 +480,6 @@ final class SecurityContractTests: XCTestCase {
     }
 }
 
-private struct TestCodingKey: CodingKey {
-    let stringValue: String
-    let intValue: Int? = nil
-
-    init?(stringValue: String) {
-        self.stringValue = stringValue
-    }
-
-    init?(intValue: Int) {
-        return nil
-    }
-}
-
 private final class RedirectCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var state: (called: Bool, request: URLRequest?) = (false, nil)
@@ -580,20 +503,6 @@ private final class ChallengeSender: NSObject, URLAuthenticationChallengeSender 
     func cancel(_: URLAuthenticationChallenge) {}
     func performDefaultHandling(for _: URLAuthenticationChallenge) {}
     func rejectProtectionSpaceAndContinue(with _: URLAuthenticationChallenge) {}
-}
-
-private actor ConcurrentOperationProbe {
-    private var active = 0
-    private(set) var maximumActive = 0
-
-    func begin() {
-        active += 1
-        maximumActive = max(maximumActive, active)
-    }
-
-    func end() {
-        active -= 1
-    }
 }
 
 private final class MemorySecretStore: SecretStore, @unchecked Sendable {
