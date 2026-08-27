@@ -63,6 +63,9 @@ The Wi-Fi detail uses a native segmented Status/Modify view so observed state is
 not mixed with editable values. The authenticated dashboard uses collapsible
 cards and a dedicated reorder sheet; unavailable cards retain their normal
 position and remain reorderable instead of being appended as unowned errors.
+Card content is clipped to the rounded card boundary throughout collapse
+animations, and refresh keeps a stable toolbar layout by pulsing the existing
+monitoring icon instead of inserting and removing a separate progress item.
 Card order, collapsed state, monitoring interval, graph range and per-series
 chart visibility are remembered in device-local Keychain state. Manual refresh
 remains the default to minimize device and radio load, with explicit five-second,

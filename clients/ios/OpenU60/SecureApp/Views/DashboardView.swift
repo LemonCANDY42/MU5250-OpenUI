@@ -163,17 +163,17 @@ struct DashboardView: View {
                             }
                         }
                     } label: {
-                        Label("Monitoring", systemImage: "clock.arrow.circlepath")
+                        Label {
+                            Text("Monitoring")
+                        } icon: {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .symbolEffect(.pulse, options: .repeating, isActive: model.isWorking)
+                        }
                     }
                     Button {
                         showsLayoutEditor = true
                     } label: {
                         Label("Arrange dashboard", systemImage: "arrow.up.arrow.down.square")
-                    }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    if model.isWorking {
-                        ProgressView()
                     }
                 }
             }

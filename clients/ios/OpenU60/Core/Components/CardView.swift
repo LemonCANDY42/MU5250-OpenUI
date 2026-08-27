@@ -10,6 +10,8 @@ struct CardView<Content: View>: View {
     var body: some View {
         content
             .padding()
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12))
+            .background(Color(.secondarySystemGroupedBackground))
+            .compositingGroup()
+            .clipShape(.rect(cornerRadius: 12))
     }
 }
