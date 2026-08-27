@@ -32,6 +32,12 @@ if (rootElement === null) {
   throw new Error('dashboard root is missing')
 }
 const root: HTMLElement = rootElement
+const WIFI_PENDING_KEY = 'u60.pending-wifi-confirmation-v1'
+
+interface PersistedWifiConfirmation {
+  transactionId: string
+  expiresAt: number
+}
 
 void renderLogin()
 
@@ -405,8 +411,9 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
   const submit = button('Apply for 2 minutes', 'secondary')
   const confirm = button('Confirm current Wi-Fi', 'primary')
   confirm.type = 'button'
-  confirm.disabled = true
-  let pendingId: string | undefined
+  const restoredPending = loadPendingWifiConfirmation()
+  confirm.disabled = restoredPending === undefined
+  let pendingId = restoredPending?.transactionId
   form.append(
     recipientLabel(ssid2g, '2.4 GHz SSID (optional)'),
     ssid2g,
@@ -420,13 +427,33 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
     confirm,
   )
   bindForm(form, submit, status, error, 'Applying…', 'Apply for 2 minutes', async () => {
-    const body: Record<string, string> = {}
+    const transactionId = makeWifiTransactionId()
+    const pending = {
+      transactionId,
+      expiresAt: Date.now() + 120_000,
+    }
+    savePendingWifiConfirmation(pending)
+    pendingId = transactionId
+    confirm.disabled = false
+    const body: Record<string, string> = { transaction_id: transactionId }
     if (ssid2g.value !== '') body.ssid_2g = ssid2g.value
     if (pass2g.value !== '') body.passphrase_2g = pass2g.value
     if (ssid5g.value !== '') body.ssid_5g = ssid5g.value
     if (pass5g.value !== '') body.passphrase_5g = pass5g.value
-    const grant = (await postJson('/v1/wifi/transaction', body)) as V1WifiTransactionGrant
-    pendingId = grant.transaction_id
+    let grant: V1WifiTransactionGrant
+    try {
+      grant = (await postJson('/v1/wifi/transaction', body)) as V1WifiTransactionGrant
+    } catch (reason: unknown) {
+      if (reason instanceof AgentError && reason.status === 400) {
+        clearPendingWifiConfirmation()
+        pendingId = undefined
+        confirm.disabled = true
+      }
+      throw reason
+    }
+    if (grant.transaction_id !== transactionId) {
+      throw new AgentError('The U60 returned a mismatched Wi-Fi transaction identifier')
+    }
     pass2g.value = ''
     pass5g.value = ''
     confirm.disabled = false
@@ -439,6 +466,7 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
     void postJson('/v1/wifi/transaction/confirm', { transaction_id: pendingId })
       .then(() => {
         pendingId = undefined
+        clearPendingWifiConfirmation()
         status.textContent =
           'Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.'
       })
@@ -448,6 +476,41 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
       })
   })
   return form
+}
+
+function makeWifiTransactionId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(18))
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+}
+
+function savePendingWifiConfirmation(pending: PersistedWifiConfirmation): void {
+  localStorage.setItem(WIFI_PENDING_KEY, JSON.stringify(pending))
+}
+
+function loadPendingWifiConfirmation(): PersistedWifiConfirmation | undefined {
+  const raw = localStorage.getItem(WIFI_PENDING_KEY)
+  if (raw === null) return undefined
+  try {
+    const parsed = JSON.parse(raw) as Partial<PersistedWifiConfirmation>
+    if (
+      typeof parsed.transactionId === 'string' &&
+      /^[A-Za-z0-9_-]{24}$/.test(parsed.transactionId) &&
+      typeof parsed.expiresAt === 'number' &&
+      parsed.expiresAt > Date.now()
+    ) {
+      return { transactionId: parsed.transactionId, expiresAt: parsed.expiresAt }
+    }
+  } catch {
+    // Invalid non-secret recovery metadata is discarded below.
+  }
+  clearPendingWifiConfirmation()
+  return undefined
+}
+
+function clearPendingWifiConfirmation(): void {
+  localStorage.removeItem(WIFI_PENDING_KEY)
 }
 
 function controlForm(title: string): HTMLFormElement {

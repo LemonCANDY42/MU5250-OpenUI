@@ -5,9 +5,6 @@ use std::sync::{Arc, Weak};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use base64::Engine;
-use rand_core::{OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -75,6 +72,7 @@ pub struct TrafficCycleRequest {
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WifiTransactionRequest {
+    pub transaction_id: String,
     #[serde(default)]
     pub ssid_2g: Option<String>,
     #[serde(default)]
@@ -323,6 +321,8 @@ impl DailyService {
         &self,
         request: WifiTransactionRequest,
     ) -> Result<WifiTransactionGrant, String> {
+        validate_transaction_id(&request.transaction_id)?;
+        let transaction_id = request.transaction_id.clone();
         let values = wifi_values_from_request(request)?;
         if values.is_empty() {
             return Err("at least one Wi-Fi setting is required".into());
@@ -342,7 +342,7 @@ impl DailyService {
             return Err("one or more Wi-Fi settings are unavailable on this firmware".into());
         }
         let transaction = PendingWifiTransaction {
-            id: random_id(),
+            id: transaction_id,
             expires_at: unix_now()?.saturating_add(WIFI_CONFIRM_SECONDS),
             old_values,
             new_values: values.clone(),
@@ -897,12 +897,6 @@ fn value_bool(value: Option<&Value>) -> Option<bool> {
     }
 }
 
-fn random_id() -> String {
-    let mut bytes = [0u8; 18];
-    OsRng.fill_bytes(&mut bytes);
-    URL_SAFE_NO_PAD.encode(bytes)
-}
-
 fn validate_transaction_id(value: &str) -> Result<(), String> {
     if value.len() != 24
         || !value
@@ -1097,6 +1091,18 @@ mod tests {
     }
 
     #[test]
+    fn wifi_transaction_identifier_is_known_before_network_mutation() {
+        assert!(serde_json::from_str::<WifiTransactionRequest>(r#"{"ssid_2g":"test"}"#).is_err());
+        let request = serde_json::from_str::<WifiTransactionRequest>(
+            r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","ssid_2g":"test"}"#,
+        )
+        .unwrap();
+        assert_eq!(request.transaction_id, "abcdefghijklmnopqrstuvwx");
+        assert!(validate_transaction_id(&request.transaction_id).is_ok());
+        assert!(validate_transaction_id("too-short").is_err());
+    }
+
+    #[test]
     fn extended_wifi_fields_are_strict_and_transactional() {
         let values = wifi_values_from_request(WifiTransactionRequest {
             channel_2g: Some("auto".into()),
@@ -1237,7 +1243,7 @@ mod tests {
     fn wifi_confirmation_requires_matching_device_readback() {
         let (_temp, io, service) = service();
         let transaction = PendingWifiTransaction {
-            id: random_id(),
+            id: "abcdefghijklmnopqrstuvwx".into(),
             expires_at: unix_now().unwrap() + 120,
             old_values: BTreeMap::from([(WifiField::TransmitPower2g, "30".into())]),
             new_values: BTreeMap::from([(WifiField::TransmitPower2g, "40".into())]),
@@ -1282,7 +1288,7 @@ mod tests {
             .remove(&WifiField::Ssid2g)
             .unwrap();
         let pending = PendingWifiTransaction {
-            id: random_id(),
+            id: "zyxwvutsrqponmlkjihgfedc".into(),
             expires_at: unix_now().unwrap() + 120,
             old_values: BTreeMap::from([(WifiField::Ssid2g, old.clone())]),
             new_values: BTreeMap::from([(WifiField::Ssid2g, "new-ssid".into())]),

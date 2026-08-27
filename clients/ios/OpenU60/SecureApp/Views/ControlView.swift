@@ -196,16 +196,26 @@ private struct WifiControlView: View {
 
     var body: some View {
         Form {
-            if let pending = model.pendingWifiTransaction {
+            if model.pendingWifiConfirmation != nil {
                 Section {
                     Label("Wi-Fi confirmation required", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
-                    Text("Reconnect to the U60 and confirm within \(pending.confirmWithinSeconds.rawValue) seconds. Otherwise the previous settings are restored automatically.")
+                    LabeledContent(
+                        "Automatic verification",
+                        value: model.isConfirmingWifi ? String(localized: "Checking…") : String(localized: "Active")
+                    )
+                    if let message = model.wifiConfirmationMessage {
+                        Text(message)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("You may switch networks more than once. The app keeps checking until it verifies the requested settings or the U60 restores the previous settings after two minutes.")
                         .font(.footnote)
-                    Button("Confirm current Wi-Fi") {
+                    Button("Check again now") {
                         Task { await model.confirmWifiTransaction() }
                     }
                     .buttonStyle(.borderedProminent)
+                    .disabled(model.isConfirmingWifi)
                 }
             }
 
@@ -256,7 +266,7 @@ private struct WifiControlView: View {
                 Button("Apply with two-minute rollback") { confirmApply = true }
                     .frame(maxWidth: .infinity)
             } footer: {
-                Text("The U60 saves the old values before applying changes. An independent device process restores them unless you reconnect and confirm.")
+                Text("The U60 saves the old values first. The app persists the confirmation identifier before restarting Wi-Fi and retries after temporary disconnects, network switches, and foreground changes. Only device readback can cancel rollback.")
             }
         }
         .navigationTitle("Wi-Fi")
@@ -267,7 +277,7 @@ private struct WifiControlView: View {
             Button("Apply with rollback") { apply() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Wi-Fi will restart briefly. Reconnect and confirm before the two-minute deadline.")
+            Text("Wi-Fi will restart briefly. Reconnect within two minutes; the app will keep checking even if you switch networks more than once.")
         }
     }
 

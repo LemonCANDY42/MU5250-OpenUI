@@ -658,6 +658,8 @@ export interface components {
             readonly enabled: boolean;
         };
         readonly WifiTransactionRequest: {
+            /** @description Client-generated identifier persisted before Wi-Fi is restarted */
+            readonly transaction_id: string;
             readonly ssid_2g?: string;
             readonly passphrase_2g?: string;
             readonly hidden_2g?: boolean;

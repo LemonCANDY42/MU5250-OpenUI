@@ -281,9 +281,11 @@ final class AgentService: Sendable {
     }
 
     func beginWifiTransaction(
-        _ edits: WifiTransactionEdits
+        _ edits: WifiTransactionEdits,
+        transactionID: String
     ) async throws -> Components.Schemas.WifiTransactionGrant {
         let output = try await client.beginWifiTransaction(.init(body: .json(.init(
+            transactionId: transactionID,
             ssid2g: edits.ssid2g,
             passphrase2g: edits.passphrase2g,
             hidden2g: edits.hidden2g,
@@ -320,6 +322,15 @@ final class AgentService: Sendable {
         let output = try await client.confirmWifiTransaction(.init(body: .json(.init(
             transactionId: id
         ))))
-        guard case .ok = output else { throw AgentServiceError.invalidResponse }
+        switch output {
+        case .ok: return
+        case let .badRequest(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .serviceUnavailable(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+        default: throw AgentServiceError.invalidResponse
+        }
     }
 }

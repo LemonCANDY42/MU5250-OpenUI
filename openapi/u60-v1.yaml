@@ -1298,8 +1298,14 @@ components:
     WifiTransactionRequest:
       type: object
       additionalProperties: false
-      minProperties: 1
+      required: [transaction_id]
+      minProperties: 2
       properties:
+        transaction_id:
+          type: string
+          minLength: 24
+          maxLength: 24
+          description: Client-generated identifier persisted before Wi-Fi is restarted
         ssid_2g:
           type: string
           minLength: 1

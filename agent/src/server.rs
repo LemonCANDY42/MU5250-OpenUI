@@ -797,7 +797,7 @@ mod tests {
             (
                 Method::POST,
                 "/v1/wifi/transaction",
-                r#"{"ssid_2g":"test"}"#,
+                r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","ssid_2g":"test"}"#,
             ),
             (
                 Method::POST,

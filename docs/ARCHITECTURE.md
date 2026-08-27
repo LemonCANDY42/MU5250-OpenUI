@@ -86,8 +86,10 @@ loopback canary is evidence for a stage, not completion of V1.
    web and iOS clients share generated `/v1` models and capability-driven UI. Daily
    writes are SMS send, automatic charging-threshold policy, traffic-cycle reset and
    transactional Wi-Fi primary/guest settings with fixed B04 field paths, strict
-   channel/bandwidth/power allowlists, a persisted roughly 120-second confirmation
-   window, reboot-safe rollback, applied-state readback and dedicated recovery tests.
+   channel/bandwidth/power allowlists, a client-generated identifier persisted
+   before mutation, a roughly 120-second confirmation window, reconnect retries
+   across transient network and foreground changes, reboot-safe rollback,
+   applied-state readback and dedicated recovery tests.
    APN and network mode remain read-only.
 4. **Stable owner install**: publish content-addressed releases under
    `/data/u60/releases/<content-hash>/`, switch one atomic symlink, retain one

@@ -61,3 +61,25 @@ struct KeychainStore: SecretStore {
         ]
     }
 }
+
+final class WifiConfirmationStore: @unchecked Sendable {
+    private static let account = "pending-wifi-confirmation-v1"
+    private let store: any SecretStore
+
+    init(store: any SecretStore = KeychainStore(service: "com.lemoncandy42.u60.local-auth")) {
+        self.store = store
+    }
+
+    func load() throws -> PendingWifiConfirmation? {
+        guard let data = try store.read(account: Self.account) else { return nil }
+        return try JSONDecoder().decode(PendingWifiConfirmation.self, from: data)
+    }
+
+    func save(_ pending: PendingWifiConfirmation) throws {
+        try store.write(JSONEncoder().encode(pending), account: Self.account)
+    }
+
+    func clear() throws {
+        try store.delete(account: Self.account)
+    }
+}

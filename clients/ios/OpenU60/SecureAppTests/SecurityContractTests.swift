@@ -5,6 +5,27 @@ import Security
 import XCTest
 
 final class SecurityContractTests: XCTestCase {
+    func testWifiConfirmationIdentifierExistsBeforeNetworkMutationAndPersists() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let pending = PendingWifiConfirmation.make(now: now)
+        XCTAssertEqual(pending.transactionId.count, 24)
+        XCTAssertNotNil(pending.transactionId.range(of: #"^[A-Za-z0-9_-]{24}$"#, options: .regularExpression))
+        XCTAssertEqual(pending.expiresAt, now.addingTimeInterval(120))
+
+        let restored = try JSONDecoder().decode(
+            PendingWifiConfirmation.self,
+            from: JSONEncoder().encode(pending)
+        )
+        XCTAssertEqual(restored, pending)
+
+        let memory = MemorySecretStore()
+        let store = WifiConfirmationStore(store: memory)
+        try store.save(pending)
+        XCTAssertEqual(try store.load(), pending)
+        try store.clear()
+        XCTAssertNil(try store.load())
+    }
+
     func testBase64URLRoundTrip() throws {
         let data = Data(0 ..< 32)
         let encoded = Base64URL.encode(data)
