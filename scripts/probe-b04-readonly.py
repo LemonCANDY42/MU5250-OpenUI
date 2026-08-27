@@ -32,12 +32,38 @@ BATTERY_STATES = {
     "Not charging": "not_charging",
     "Full": "full",
 }
+BATTERY_HEALTH = {
+    "Good": "good",
+    "Overheat": "overheat",
+    "Dead": "dead",
+    "Over voltage": "over_voltage",
+    "Under voltage": "under_voltage",
+    "Unspecified failure": "unspecified_failure",
+    "Cold": "cold",
+    "Watchdog timer expire": "watchdog_timer_expire",
+    "Safety timer expire": "safety_timer_expire",
+    "Over current": "over_current",
+    "Calibration required": "calibration_required",
+    "Warm": "warm",
+    "Cool": "cool",
+    "Hot": "hot",
+    "No battery": "no_battery",
+    "Blown fuse": "blown_fuse",
+    "Cell imbalance": "cell_imbalance",
+}
 BATTERY_FILES = {
     "state": "/sys/class/power_supply/battery/status",
     "capacity_percent": "/sys/class/power_supply/battery/capacity",
     "voltage_uv": "/sys/class/power_supply/battery/voltage_now",
     "current_ua": "/sys/class/power_supply/battery/current_now",
     "temperature_tenths_c": "/sys/class/power_supply/battery/temp",
+    "health": "/sys/class/power_supply/battery/health",
+    "cycle_count": "/sys/class/power_supply/battery/cycle_count",
+    "learned_full_capacity_uah": "/sys/class/power_supply/battery/charge_full",
+    "design_capacity_uah": "/sys/class/power_supply/battery/charge_full_design",
+    "charge_counter_uah": "/sys/class/power_supply/battery/charge_counter",
+    "time_to_empty_seconds": "/sys/class/power_supply/battery/time_to_empty_avg",
+    "time_to_full_seconds": "/sys/class/power_supply/battery/time_to_full_avg",
 }
 THERMAL_FILES = {
     "cpu_0": "/sys/class/thermal/thermal_zone16/temp",
@@ -53,7 +79,11 @@ SYSTEM_FILES = {
     "uptime": "/proc/uptime",
     "load_average": "/proc/loadavg",
     "kernel": "/proc/version",
+    "cpu_previous": "/proc/stat",
+    "cpu_current": "/proc/stat",
+    "memory": "/proc/meminfo",
 }
+STORAGE_STAT_ARGUMENTS = ["stat", "-f", "-c", "%S %b %a", "/data"]
 ROOT_ID_ADB_ARGUMENTS = ["id", "-u"]
 SENSITIVE_MARKER = re.compile(
     r"imei|imsi|iccid|eid|msisdn|serial|password|passphrase|credential|secret|token|bearer",
@@ -69,6 +99,8 @@ ALLOWED_PUBLISHED_KEYS = {
     "capacity_percent",
     "captured_at_utc",
     "current_ma",
+    "cpu_usage_percent",
+    "cycle_count",
     "default_interface",
     "default_route_unchanged",
     "device",
@@ -79,17 +111,25 @@ ALLOWED_PUBLISHED_KEYS = {
     "firmware_target",
     "firmware_file",
     "firmware_version",
+    "filesystem",
     "git_commit",
     "hardware_version",
     "host_network_after",
     "host_network_before",
     "hostname_present",
+    "health",
     "kernel_present",
     "load_average",
     "manufacturer",
+    "memory_available_mb",
+    "memory_total_mb",
+    "memory_used_percent",
     "model",
     "path",
     "power_mw",
+    "charge_counter_mah",
+    "design_capacity_mah",
+    "learned_full_capacity_mah",
     "procfs",
     "reason",
     "recovery",
@@ -104,10 +144,15 @@ ALLOWED_PUBLISHED_KEYS = {
     "sources",
     "state_category",
     "status",
+    "storage_available_mb",
+    "storage_total_mb",
+    "storage_used_percent",
     "system",
     "system_status",
     "sysfs",
     "temperature_c",
+    "time_to_empty_seconds",
+    "time_to_full_seconds",
     "thermal",
     "thermal_status",
     "transport",
@@ -239,11 +284,102 @@ def normalize_system(values: dict[str, str | None]) -> dict[str, Any] | None:
     loads = (loads + [0.0, 0.0, 0.0])[:3]
     if not hostname_present or not kernel_present:
         return None
-    return {
+    result: dict[str, Any] = {
         "hostname_present": True,
         "uptime_seconds": uptime,
         "load_average": loads,
         "kernel_present": True,
+    }
+    cpu_usage = normalize_cpu_usage(
+        values.get("cpu_previous"), values.get("cpu_current")
+    )
+    if cpu_usage is not None:
+        result["cpu_usage_percent"] = cpu_usage
+    memory = normalize_memory(values.get("memory"))
+    if memory is not None:
+        result.update(memory)
+    storage = normalize_storage(values.get("storage"))
+    if storage is not None:
+        result.update(storage)
+    return result
+
+
+def parse_cpu_sample(raw: str | None) -> list[int] | None:
+    if raw is None:
+        return None
+    aggregate = next((line for line in raw.splitlines() if line.startswith("cpu ")), None)
+    if aggregate is None:
+        return None
+    try:
+        counters = [int(value) for value in aggregate.split()[1:9]]
+    except ValueError:
+        return None
+    if len(counters) != 8 or any(value < 0 or value > 2**64 - 1 for value in counters):
+        return None
+    return counters
+
+
+def normalize_cpu_usage(previous_raw: str | None, current_raw: str | None) -> float | None:
+    previous = parse_cpu_sample(previous_raw)
+    current = parse_cpu_sample(current_raw)
+    if previous is None or current is None or any(
+        current_value < previous_value
+        for previous_value, current_value in zip(previous, current, strict=True)
+    ):
+        return None
+    deltas = [
+        current_value - previous_value
+        for previous_value, current_value in zip(previous, current, strict=True)
+    ]
+    total = sum(deltas)
+    if total <= 0:
+        return None
+    idle = deltas[3] + deltas[4]
+    return max(0.0, min(100.0, (total - idle) * 100 / total))
+
+
+def normalize_memory(raw: str | None) -> dict[str, int | float] | None:
+    if raw is None:
+        return None
+    values: dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) == 3 and parts[0] in {"MemTotal:", "MemAvailable:"} and parts[2] == "kB":
+            parsed = parse_int(parts[1])
+            if parsed is None or parsed < 0 or parsed > 2**64 - 1:
+                return None
+            values.setdefault(parts[0], parsed)
+    total_kb = values.get("MemTotal:")
+    available_kb = values.get("MemAvailable:")
+    if total_kb is None or total_kb <= 0 or available_kb is None or available_kb > total_kb:
+        return None
+    return {
+        "memory_total_mb": total_kb // 1_024,
+        "memory_available_mb": available_kb // 1_024,
+        "memory_used_percent": (total_kb - available_kb) * 100 / total_kb,
+    }
+
+
+def normalize_storage(raw: str | None) -> dict[str, int | float] | None:
+    if raw is None:
+        return None
+    try:
+        block_size, total_blocks, available_blocks = [int(value) for value in raw.split()]
+    except (ValueError, TypeError):
+        return None
+    if (
+        block_size <= 0
+        or total_blocks <= 0
+        or available_blocks < 0
+        or available_blocks > total_blocks
+    ):
+        return None
+    total_bytes = block_size * total_blocks
+    available_bytes = block_size * available_blocks
+    return {
+        "storage_total_mb": total_bytes // 1_048_576,
+        "storage_available_mb": available_bytes // 1_048_576,
+        "storage_used_percent": (total_bytes - available_bytes) * 100 / total_bytes,
     }
 
 
@@ -252,6 +388,10 @@ def read_system() -> dict[str, Any] | None:
         name: adb(["cat", path], allow_missing=True)
         for name, path in SYSTEM_FILES.items()
     }
+    try:
+        values["storage"] = adb(STORAGE_STAT_ARGUMENTS, allow_missing=True)
+    except ProbeError:
+        values["storage"] = None
     return normalize_system(values)
 
 
@@ -272,7 +412,8 @@ def normalize_battery(values: dict[str, str | None]) -> dict[str, Any] | None:
         or not -400 <= temperature <= 1_500
     ):
         return None
-    return {
+    state_category = BATTERY_STATES.get(state.strip(), "other")
+    result: dict[str, Any] = {
         "state_category": BATTERY_STATES.get(state.strip(), "other"),
         "capacity_percent": capacity,
         "voltage_mv": voltage_uv // 1_000,
@@ -280,6 +421,36 @@ def normalize_battery(values: dict[str, str | None]) -> dict[str, Any] | None:
         "power_mw": truncate_toward_zero(voltage_uv * current_ua, 1_000_000_000),
         "temperature_c": temperature / 10,
     }
+    health = BATTERY_HEALTH.get((values.get("health") or "").strip())
+    if health is not None:
+        result["health"] = health
+    cycle_count = parse_int(values.get("cycle_count"))
+    if cycle_count is not None and 1 <= cycle_count <= 100_000:
+        result["cycle_count"] = cycle_count
+
+    for source, output in (
+        ("learned_full_capacity_uah", "learned_full_capacity_mah"),
+        ("design_capacity_uah", "design_capacity_mah"),
+    ):
+        raw_value = parse_int(values.get(source))
+        normalized = raw_value // 1_000 if raw_value is not None and raw_value >= 0 else None
+        if normalized is not None and 1 <= normalized <= 1_000_000:
+            result[output] = normalized
+    charge_counter = parse_int(values.get("charge_counter_uah"))
+    if charge_counter is not None:
+        normalized_counter = truncate_toward_zero(charge_counter, 1_000)
+        if abs(normalized_counter) <= 1_000_000:
+            result["charge_counter_mah"] = normalized_counter
+
+    time_to_empty = parse_int(values.get("time_to_empty_seconds"))
+    time_to_full = parse_int(values.get("time_to_full_seconds"))
+    if state_category == "discharging" and time_to_empty is not None and 0 <= time_to_empty <= 2_592_000:
+        result["time_to_empty_seconds"] = time_to_empty
+    if state_category == "charging" and time_to_full is not None and 0 <= time_to_full <= 2_592_000:
+        result["time_to_full_seconds"] = time_to_full
+    if state_category == "full" and time_to_full == 0:
+        result["time_to_full_seconds"] = 0
+    return result
 
 
 def read_battery() -> dict[str, Any] | None:
@@ -635,7 +806,8 @@ def run_probe(output_root: Path) -> Path:
             "device_writes_performed": False,
             "sources": {
                 "firmware_file": WEB_VERSION_FILE,
-                "procfs": sorted(SYSTEM_FILES.values()),
+                "procfs": sorted(set(SYSTEM_FILES.values())),
+                "filesystem": ["/data"],
                 "sysfs": sorted([*BATTERY_FILES.values(), *THERMAL_FILES.values()]),
             },
         }
@@ -711,21 +883,69 @@ def self_test() -> None:
         raise AssertionError("SIM identifier alias was accepted")
 
     system = normalize_system(
-        {"hostname": "u60", "kernel": "Linux", "uptime": None, "load_average": None}
+        {
+            "hostname": "u60",
+            "kernel": "Linux",
+            "uptime": None,
+            "load_average": None,
+            "cpu_previous": "cpu 100 0 100 800 100 0 0 0\n",
+            "cpu_current": "cpu 150 0 150 850 150 0 0 0\n",
+            "memory": "MemTotal: 1048576 kB\nMemAvailable: 262144 kB\n",
+            "storage": "4096 16384 8192",
+        }
     )
     assert system is not None
     assert system["uptime_seconds"] == 0 and system["load_average"] == [0.0, 0.0, 0.0]
+    assert system["cpu_usage_percent"] == 50
+    assert system["memory_total_mb"] == 1_024
+    assert system["memory_available_mb"] == 256
+    assert system["memory_used_percent"] == 75
+    assert system["storage_total_mb"] == 64
+    assert system["storage_available_mb"] == 32
+    assert system["storage_used_percent"] == 50
+    assert normalize_cpu_usage(
+        "cpu 100 0 100 800 100 0 0 0", "cpu 99 0 200 900 100 0 0 0"
+    ) is None
+    assert normalize_memory("MemTotal: 1024 kB\nMemAvailable: 2048 kB") is None
+    assert normalize_storage("4096 1 2") is None
     battery = normalize_battery(
         {
-            "state": "",
+            "state": "Charging",
             "capacity_percent": "80",
             "voltage_uv": "4000000",
             "current_ua": "-500000",
             "temperature_tenths_c": "250",
+            "health": "Good",
+            "cycle_count": "321",
+            "learned_full_capacity_uah": "5432100",
+            "design_capacity_uah": "6000000",
+            "charge_counter_uah": "-1234567",
+            "time_to_empty_seconds": "13641670",
+            "time_to_full_seconds": "0",
         }
     )
-    assert battery is not None and battery["state_category"] == "other"
+    assert battery is not None and battery["state_category"] == "charging"
     assert battery["power_mw"] == -2_000
+    assert battery["health"] == "good" and battery["cycle_count"] == 321
+    assert battery["learned_full_capacity_mah"] == 5_432
+    assert battery["design_capacity_mah"] == 6_000
+    assert battery["charge_counter_mah"] == -1_234
+    assert battery["time_to_full_seconds"] == 0
+    assert "time_to_empty_seconds" not in battery
+    unavailable_estimate = normalize_battery(
+        {
+            "state": "Discharging",
+            "capacity_percent": "80",
+            "voltage_uv": "4000000",
+            "current_ua": "-500000",
+            "temperature_tenths_c": "250",
+            "cycle_count": "0",
+            "time_to_empty_seconds": "13641670",
+        }
+    )
+    assert unavailable_estimate is not None
+    assert "cycle_count" not in unavailable_estimate
+    assert "time_to_empty_seconds" not in unavailable_estimate
     assert_redacted({"battery": battery})
     assert truncate_toward_zero(1_999_999_999, 1_000_000_000) == 1
     assert truncate_toward_zero(-1_999_999_999, 1_000_000_000) == -1
@@ -738,13 +958,24 @@ def self_test() -> None:
         "uptime": "/proc/uptime",
         "load_average": "/proc/loadavg",
         "kernel": "/proc/version",
+        "cpu_previous": "/proc/stat",
+        "cpu_current": "/proc/stat",
+        "memory": "/proc/meminfo",
     }
+    assert STORAGE_STAT_ARGUMENTS == ["stat", "-f", "-c", "%S %b %a", "/data"]
     assert BATTERY_FILES == {
         "state": "/sys/class/power_supply/battery/status",
         "capacity_percent": "/sys/class/power_supply/battery/capacity",
         "voltage_uv": "/sys/class/power_supply/battery/voltage_now",
         "current_ua": "/sys/class/power_supply/battery/current_now",
         "temperature_tenths_c": "/sys/class/power_supply/battery/temp",
+        "health": "/sys/class/power_supply/battery/health",
+        "cycle_count": "/sys/class/power_supply/battery/cycle_count",
+        "learned_full_capacity_uah": "/sys/class/power_supply/battery/charge_full",
+        "design_capacity_uah": "/sys/class/power_supply/battery/charge_full_design",
+        "charge_counter_uah": "/sys/class/power_supply/battery/charge_counter",
+        "time_to_empty_seconds": "/sys/class/power_supply/battery/time_to_empty_avg",
+        "time_to_full_seconds": "/sys/class/power_supply/battery/time_to_full_avg",
     }
     assert THERMAL_FILES == {
         "cpu_0": "/sys/class/thermal/thermal_zone16/temp",
@@ -762,11 +993,19 @@ def self_test() -> None:
         "/proc/uptime": "1.0 0.0",
         "/proc/loadavg": "0.0 0.0 0.0 1/1 1",
         "/proc/version": "Linux version fixed",
+        "/proc/meminfo": "MemTotal: 1048576 kB\nMemAvailable: 262144 kB",
         "/sys/class/power_supply/battery/status": "Charging",
         "/sys/class/power_supply/battery/capacity": "80",
         "/sys/class/power_supply/battery/voltage_now": "4000000",
         "/sys/class/power_supply/battery/current_now": "0",
         "/sys/class/power_supply/battery/temp": "250",
+        "/sys/class/power_supply/battery/health": "Unknown",
+        "/sys/class/power_supply/battery/cycle_count": "-1",
+        "/sys/class/power_supply/battery/charge_full": "5432100",
+        "/sys/class/power_supply/battery/charge_full_design": "6000000",
+        "/sys/class/power_supply/battery/charge_counter": "0",
+        "/sys/class/power_supply/battery/time_to_empty_avg": "13641670",
+        "/sys/class/power_supply/battery/time_to_full_avg": "0",
         **{path: "35000" for path in THERMAL_FILES.values()},
     }
 
@@ -783,7 +1022,16 @@ def self_test() -> None:
             assert not strip_output
             return valid_web_version
         assert strip_output
+        if arguments == STORAGE_STAT_ARGUMENTS:
+            return "4096 16384 8192"
         if len(arguments) == 2 and arguments[0] == "cat":
+            if arguments[1] == "/proc/stat":
+                observed_count = observed_adb_arguments.count(arguments)
+                return (
+                    "cpu 100 0 100 800 100 0 0 0"
+                    if observed_count == 1
+                    else "cpu 150 0 150 850 150 0 0 0"
+                )
             return source_values[arguments[1]]
         raise AssertionError(f"unexpected ADB argv: {arguments!r}")
 
@@ -799,6 +1047,7 @@ def self_test() -> None:
     expected_observed = [
         expected_identity_arguments,
         *[["cat", path] for path in SYSTEM_FILES.values()],
+        STORAGE_STAT_ARGUMENTS,
         *[["cat", path] for path in BATTERY_FILES.values()],
         *[["cat", path] for path in THERMAL_FILES.values()],
     ]

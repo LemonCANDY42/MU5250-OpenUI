@@ -136,13 +136,32 @@ function parseDevice(value: unknown): V1Device {
 }
 
 function parseSystem(value: unknown): V1SystemStatus {
+  const validMemory =
+    value !== null &&
+    isRecord(value) &&
+    optionalCapacityGroup(
+      value.memory_total_mb,
+      value.memory_available_mb,
+      value.memory_used_percent,
+    )
+  const validStorage =
+    value !== null &&
+    isRecord(value) &&
+    optionalCapacityGroup(
+      value.storage_total_mb,
+      value.storage_available_mb,
+      value.storage_used_percent,
+    )
   if (
     !isRecord(value) ||
     !hasStrings(value, ['hostname', 'kernel']) ||
     !isNonNegativeInteger(value.uptime_seconds) ||
     !Array.isArray(value.load_average) ||
     value.load_average.length !== 3 ||
-    !value.load_average.every(isFiniteNumber)
+    !value.load_average.every(isFiniteNumber) ||
+    !optionalPercent(value.cpu_usage_percent) ||
+    !validMemory ||
+    !validStorage
   ) {
     throw new AgentError('The agent returned invalid system status')
   }
@@ -150,6 +169,10 @@ function parseSystem(value: unknown): V1SystemStatus {
 }
 
 function parseBattery(value: unknown): V1BatteryStatus {
+  const normalizedState =
+    isRecord(value) && typeof value.state === 'string'
+      ? value.state.trim().toLowerCase().replaceAll('_', ' ')
+      : ''
   if (
     !isRecord(value) ||
     typeof value.state !== 'string' ||
@@ -158,12 +181,43 @@ function parseBattery(value: unknown): V1BatteryStatus {
     !Number.isInteger(value.voltage_mv) ||
     !Number.isInteger(value.current_ma) ||
     !Number.isInteger(value.power_mw) ||
-    !isFiniteNumber(value.temperature_c)
+    !isFiniteNumber(value.temperature_c) ||
+    (value.health !== undefined && !BATTERY_HEALTH_VALUES.has(String(value.health))) ||
+    !optionalBoundedInteger(value.cycle_count, 1, 100_000) ||
+    !optionalBoundedInteger(value.learned_full_capacity_mah, 1, 1_000_000) ||
+    !optionalBoundedInteger(value.design_capacity_mah, 1, 1_000_000) ||
+    !optionalBoundedInteger(value.charge_counter_mah, -1_000_000, 1_000_000) ||
+    !optionalBoundedInteger(value.time_to_empty_seconds, 0, 2_592_000) ||
+    !optionalBoundedInteger(value.time_to_full_seconds, 0, 2_592_000) ||
+    (value.time_to_empty_seconds !== undefined && normalizedState !== 'discharging') ||
+    (value.time_to_full_seconds !== undefined &&
+      normalizedState !== 'charging' &&
+      !(normalizedState === 'full' && value.time_to_full_seconds === 0))
   ) {
     throw new AgentError('The agent returned invalid battery status')
   }
   return value as unknown as V1BatteryStatus
 }
+
+const BATTERY_HEALTH_VALUES = new Set([
+  'good',
+  'overheat',
+  'dead',
+  'over_voltage',
+  'under_voltage',
+  'unspecified_failure',
+  'cold',
+  'watchdog_timer_expire',
+  'safety_timer_expire',
+  'over_current',
+  'calibration_required',
+  'warm',
+  'cool',
+  'hot',
+  'no_battery',
+  'blown_fuse',
+  'cell_imbalance',
+])
 
 function parseThermal(value: unknown): V1ThermalStatus {
   if (
@@ -391,6 +445,32 @@ function optionalNonNegativeInteger(value: unknown): boolean {
 
 function optionalFiniteNumber(value: unknown): boolean {
   return value === undefined || isFiniteNumber(value)
+}
+
+function optionalPercent(value: unknown): boolean {
+  return value === undefined || (isFiniteNumber(value) && value >= 0 && value <= 100)
+}
+
+function optionalBoundedInteger(value: unknown, minimum: number, maximum: number): boolean {
+  return (
+    value === undefined ||
+    (typeof value === 'number' &&
+      Number.isSafeInteger(value) &&
+      value >= minimum &&
+      value <= maximum)
+  )
+}
+
+function optionalCapacityGroup(total: unknown, available: unknown, usedPercent: unknown): boolean {
+  if (total === undefined && available === undefined && usedPercent === undefined) return true
+  return (
+    isNonNegativeInteger(total) &&
+    isNonNegativeInteger(available) &&
+    available <= total &&
+    isFiniteNumber(usedPercent) &&
+    usedPercent >= 0 &&
+    usedPercent <= 100
+  )
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

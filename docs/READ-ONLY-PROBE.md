@@ -53,6 +53,14 @@ resource limits, client authentication or canary stability. The probe performs
 no UCI commit, ubus setter, filesystem write, process signal, USB-mode change,
 network route change or boot persistence.
 
+The normalized publication allowlist includes only the optional battery and
+system fields defined by the public V1 contract. Battery charge values are
+converted to integer milliamp-hours, health/cycle/capacity values are validated
+independently, the signed charge counter is named as relative, and kernel time
+estimates are state-gated and bounded to 30 days; cycle-count zero is omitted as
+the Linux ABI's unavailable value. System metrics are bounded normalized values rather
+than raw procfs or filesystem responses.
+
 Host-only validation is:
 
 ```sh
@@ -60,6 +68,7 @@ python3 scripts/probe-b04-readonly.py --self-test
 ```
 
 The self-test covers the fixed ADB argument/path allowlist, adapter-equivalent
-missing procfs and battery-state semantics, ICCID/credential-in-allowed-field
+missing procfs and battery-state semantics, extension unit/sentinel/state
+normalization, publication-key redaction, ICCID/credential-in-allowed-field
 rejection, approved SMB-source parsing, route/TUN drift refusal, mode-0600
 exclusive file creation and exclusive result-directory creation.

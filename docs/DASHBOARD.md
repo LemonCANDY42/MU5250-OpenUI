@@ -19,8 +19,8 @@ requests only supported or degraded read endpoints and displays:
 
 - normalized device identity;
 - capability status and recovery metadata;
-- system uptime, kernel and load average;
-- battery state, capacity, voltage, current, derived instantaneous power and temperature;
+- system uptime, kernel and load average, plus optional current CPU, memory and fixed `/data` storage usage;
+- battery state, capacity, voltage, current, derived instantaneous power and temperature, plus optional validated health, cycle, capacity and kernel-estimate details;
 - validated thermal sensors.
 
 An unsupported capability is shown explicitly and is not requested. A degraded
@@ -37,7 +37,12 @@ read-only cell-lock summaries; the fields remain optional so this client can
 read earlier V1 agents. The existing Wi-Fi card shows router-observed RSSI and
 rates when the request peer has one unique DHCP-to-station correlation. An
 unmatched or ambiguous peer leaves the optional context absent without failing
-Wi-Fi status. Battery health/cycle/capacity remain outside the public contract.
+Wi-Fi status. New system and battery fields are optional so the dashboard still
+accepts earlier V1 agents. The signed battery charge counter is labeled as a
+relative kernel counter rather than remaining capacity, and applicable time
+values are labeled as kernel estimates; a zero time-to-full at the charging/full
+boundary is shown as complete, while estimates beyond the 30-day plausibility
+window are omitted.
 
 ## Browser authentication
 

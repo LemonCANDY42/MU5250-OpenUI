@@ -42,6 +42,9 @@ struct DashboardPreferences: Codable, Equatable, Sendable {
 enum DashboardChartSeriesID {
     static let signalLTE = "signal.lte"
     static let signal5G = "signal.nr5g"
+    static let systemCPU = "system.cpu"
+    static let systemMemory = "system.memory"
+    static let systemStorage = "system.storage"
     static let thermalPrefix = "thermal."
 
     static func thermal(sensor: String) -> String {

@@ -68,17 +68,26 @@ chart visibility are remembered in device-local Keychain state. Manual refresh
 remains the default to minimize device and radio load, with explicit five-second,
 15-second, 30-second, one-minute and five-minute monitoring choices. Successful
 status refreshes append a bounded, up-to-seven-day local telemetry history used
-for battery, LTE/5G RSRP and multi-sensor thermal charts. Signal and thermal
-series can be shown or hidden independently; no background daemon or U60 write
-is involved. The five-second display option still respects the history store's
-bounded sampling window rather than growing the retained history without limit.
+for battery, LTE/5G RSRP, multi-sensor thermal and optional CPU/memory/storage
+usage charts. History is sampled at no less than one-minute spacing and capped
+at 10,080 samples, so it can retain a genuine seven-day window while remaining
+bounded even when the display refreshes every five seconds. Existing dense
+10-second history is migrated to the new one-minute spacing on load, and old
+samples without the optional system percentages remain decodable. Signal, thermal and
+system series can be shown or hidden independently and their visibility is
+remembered; no background daemon or U60 write is involved.
 Apple's public accessory-network API does not expose the current iPhone Wi-Fi
 RSSI. The existing Wi-Fi card instead uses optional request context and labels
 RSSI and rates as U60 router observations only when the HTTPS peer uniquely
 matches a DHCP lease and station. Missing or ambiguous correlation leaves the
 field absent without failing Wi-Fi status. Radio aggregation, selection and
 read-only cell-lock summaries are optional so new clients remain compatible
-with earlier V1 agents; battery health/cycle/capacity remain excluded.
+with earlier V1 agents. The battery card similarly shows optional validated
+health, cycle, learned/design capacity and applicable kernel-estimate fields.
+The signed charge counter is explicitly labeled as relative, never as remaining
+capacity, and is not charted. Zero time-to-full at the charging/full boundary is
+shown as complete; other kernel estimates are omitted beyond the 30-day
+plausibility window.
 
 English and Simplified Chinese resources cover this control hierarchy and its
 confirmation, warning and recovery text. SwiftUI literals use the string table;

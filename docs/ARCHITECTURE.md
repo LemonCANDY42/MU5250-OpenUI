@@ -118,7 +118,7 @@ upstream feature list wholesale:
 | Included V1 domain | Source value retained | Safety boundary |
 | --- | --- | --- |
 | Signal/cellular/dashboard | MU's compact device UI and open-u60-pro's richer normalized status | Optional bounded CA/network-selection/cell-lock summaries are read-only only; no cell-lock writes, raw AT or vendor JSON |
-| Traffic/battery/thermal | Proven firmware sources | Bounded reads; unaccepted battery health/cycle/capacity and time estimates stay hidden; charging is read-only |
+| Traffic/battery/thermal/system | Proven firmware and kernel sources | Bounded reads; optional battery extensions are unit-normalized, sentinel-filtered and state-gated; CPU is consecutive-snapshot only; memory and storage use fixed direct reads; charging is read-only |
 | Wi-Fi/LAN | Useful settings and connected-client views | A request peer may be uniquely correlated to DHCP plus fixed station data for router-observed link telemetry; no arbitrary UCI; Wi-Fi changes are persisted transactions with timeout rollback |
 | SMS | Listing and sending from both projects | Strict UTF-16/UCS-2 hex decoding (including surrogate pairs), bounded pages, UTF-8-safe flagged truncation and explicit malformed-record counts; no SQL fallback, bulk delete, forwarding plugin or arbitrary modem command |
 | Web/iOS clients | MU information density plus open-u60-pro SwiftUI navigation | One OpenAPI contract, capability hiding, pinned HTTPS and public-key login |

@@ -45,14 +45,17 @@ final class SecurityContractTests: XCTestCase {
             thermalTemperaturesC: ["cpu_0": 42]
         )
         let replacement = TelemetrySample(
-            timestamp: start.addingTimeInterval(5),
+            timestamp: start.addingTimeInterval(30),
             batteryPercent: 79,
             lteRSRPdBm: -91,
             nr5gRSRPdBm: -88,
-            thermalTemperaturesC: ["cpu_0": 43]
+            thermalTemperaturesC: ["cpu_0": 43],
+            cpuUsagePercent: 12.5,
+            memoryUsedPercent: 75,
+            storageUsedPercent: 50
         )
         let later = TelemetrySample(
-            timestamp: start.addingTimeInterval(10),
+            timestamp: start.addingTimeInterval(60),
             batteryPercent: 78,
             lteRSRPdBm: -92,
             nr5gRSRPdBm: -89,
@@ -66,7 +69,10 @@ final class SecurityContractTests: XCTestCase {
             batteryPercent: replacement.batteryPercent,
             lteRSRPdBm: replacement.lteRSRPdBm,
             nr5gRSRPdBm: replacement.nr5gRSRPdBm,
-            thermalTemperaturesC: replacement.thermalTemperaturesC
+            thermalTemperaturesC: replacement.thermalTemperaturesC,
+            cpuUsagePercent: replacement.cpuUsagePercent,
+            memoryUsedPercent: replacement.memoryUsedPercent,
+            storageUsedPercent: replacement.storageUsedPercent
         )
         XCTAssertEqual(history, [anchoredReplacement])
         history = store.append(later, to: history)
@@ -92,6 +98,9 @@ final class SecurityContractTests: XCTestCase {
             account: "history"
         )
         XCTAssertEqual(store.load(now: now).first?.thermalTemperaturesC, [:])
+        XCTAssertNil(store.load(now: now).first?.cpuUsagePercent)
+        XCTAssertNil(store.load(now: now).first?.memoryUsedPercent)
+        XCTAssertNil(store.load(now: now).first?.storageUsedPercent)
 
         let temperatures = Dictionary(uniqueKeysWithValues: (0 ..< 32).map { ("sensor_\($0)", Double($0)) })
         let history = store.append(
@@ -106,6 +115,84 @@ final class SecurityContractTests: XCTestCase {
         )
         XCTAssertEqual(history.first?.thermalTemperaturesC.count, TelemetryHistoryStore.maximumThermalSeries)
         XCTAssertNil(history.first?.thermalTemperaturesC["invalid"])
+    }
+
+    func testTelemetryHistoryCoversSevenDaysAtMinuteSpacingAndStaysBounded() throws {
+        let memory = MemorySecretStore()
+        let store = TelemetryHistoryStore(store: memory, account: "history")
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let count = TelemetryHistoryStore.maximumSamples + 5
+        let samples = (0 ..< count).map { index in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(index) * TelemetryHistoryStore.minimumSpacing),
+                batteryPercent: 50,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil,
+                cpuUsagePercent: index == count - 1 ? -1 : 25,
+                memoryUsedPercent: 50,
+                storageUsedPercent: index == count - 1 ? 101 : 75
+            )
+        }
+        try memory.write(JSONEncoder().encode(samples), account: "history")
+        let now = try XCTUnwrap(samples.last?.timestamp)
+        let loaded = store.load(now: now)
+
+        XCTAssertEqual(loaded.count, TelemetryHistoryStore.maximumSamples)
+        XCTAssertGreaterThanOrEqual(
+            loaded.first?.timestamp ?? .distantPast,
+            now.addingTimeInterval(-TelemetryHistoryStore.retention)
+        )
+        XCTAssertTrue(zip(loaded, loaded.dropFirst()).allSatisfy { pair in
+            pair.1.timestamp.timeIntervalSince(pair.0.timestamp) >= TelemetryHistoryStore.minimumSpacing
+        })
+        XCTAssertNil(loaded.last?.cpuUsagePercent)
+        XCTAssertNil(loaded.last?.storageUsedPercent)
+        XCTAssertEqual(loaded.last?.memoryUsedPercent, 50)
+    }
+
+    func testTelemetryHistoryMigratesLegacyTenSecondSamplesToMinuteSpacing() throws {
+        let memory = MemorySecretStore()
+        let store = TelemetryHistoryStore(store: memory, account: "history")
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let legacy = (0 ..< 13).map { index in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(index) * 10),
+                batteryPercent: 50 + index,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            )
+        }
+        try memory.write(JSONEncoder().encode(legacy), account: "history")
+
+        let loaded = store.load(now: start.addingTimeInterval(120))
+        XCTAssertEqual(loaded.map(\.timestamp), [start, start.addingTimeInterval(60), start.addingTimeInterval(120)])
+        XCTAssertEqual(loaded.map(\.batteryPercent), [55, 61, 62])
+
+        let migratedData = try XCTUnwrap(try memory.read(account: "history"))
+        XCTAssertEqual(try JSONDecoder().decode([TelemetrySample].self, from: migratedData), loaded)
+    }
+
+    func testGeneratedStatusTypesDecodeEarlierV1PayloadsWithoutOptionalMetrics() throws {
+        let system = try JSONDecoder().decode(
+            Components.Schemas.SystemStatus.self,
+            from: Data(
+                #"{"hostname":"u60","uptime_seconds":42,"load_average":[0,0,0],"kernel":"Linux"}"#.utf8
+            )
+        )
+        XCTAssertNil(system.cpuUsagePercent)
+        XCTAssertNil(system.memoryUsedPercent)
+        XCTAssertNil(system.storageUsedPercent)
+
+        let battery = try JSONDecoder().decode(
+            Components.Schemas.BatteryStatus.self,
+            from: Data(
+                #"{"state":"Charging","capacity_percent":80,"voltage_mv":4000,"current_ma":100,"power_mw":400,"temperature_c":30}"#.utf8
+            )
+        )
+        XCTAssertNil(battery.health)
+        XCTAssertNil(battery.cycleCount)
+        XCTAssertNil(battery.learnedFullCapacityMah)
+        XCTAssertNil(battery.timeToFullSeconds)
     }
 
     func testDashboardPreferencesPersistWithoutNetworkOrSharedStorage() {

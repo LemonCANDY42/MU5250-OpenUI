@@ -1,7 +1,9 @@
 use std::collections::BTreeMap;
+use std::ffi::CString;
 use std::fs;
+use std::mem::MaybeUninit;
 use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -77,6 +79,42 @@ pub struct SystemStatus {
     pub uptime_seconds: u64,
     pub load_average: [f64; 3],
     pub kernel: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cpu_usage_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_total_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_available_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub memory_used_percent: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_total_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_available_mb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub storage_used_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BatteryHealth {
+    Good,
+    Overheat,
+    Dead,
+    OverVoltage,
+    UnderVoltage,
+    UnspecifiedFailure,
+    Cold,
+    WatchdogTimerExpire,
+    SafetyTimerExpire,
+    OverCurrent,
+    CalibrationRequired,
+    Warm,
+    Cool,
+    Hot,
+    NoBattery,
+    BlownFuse,
+    CellImbalance,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -87,6 +125,20 @@ pub struct BatteryStatus {
     pub current_ma: i64,
     pub power_mw: i64,
     pub temperature_c: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<BatteryHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cycle_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub learned_full_capacity_mah: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub design_capacity_mah: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub charge_counter_mah: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_empty_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub time_to_full_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -308,6 +360,7 @@ pub trait DeviceAdapter: Send + Sync {
 /// structs above.
 pub struct B04Adapter {
     io: Arc<dyn B04Io>,
+    cpu_usage: CpuUsageTracker,
 }
 
 struct RawDeviceInfo {
@@ -325,10 +378,46 @@ struct RawBatteryInfo {
     temperature: i64,
 }
 
+#[derive(Default)]
+struct CpuUsageTracker {
+    previous: Mutex<Option<CpuSample>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CpuSample {
+    counters: [u64; 8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct MemoryMetrics {
+    total_mb: u64,
+    available_mb: u64,
+    used_percent: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct StorageMetrics {
+    total_mb: u64,
+    available_mb: u64,
+    used_percent: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct BatteryExtensions {
+    health: Option<BatteryHealth>,
+    cycle_count: Option<u64>,
+    learned_full_capacity_mah: Option<u64>,
+    design_capacity_mah: Option<u64>,
+    charge_counter_mah: Option<i64>,
+    time_to_empty_seconds: Option<u64>,
+    time_to_full_seconds: Option<u64>,
+}
+
 impl B04Adapter {
     pub fn new() -> Self {
         Self {
             io: Arc::new(SystemB04Io::new()),
+            cpu_usage: CpuUsageTracker::default(),
         }
     }
 
@@ -536,11 +625,22 @@ impl DeviceAdapter for B04Adapter {
                 },
             });
         }
+        let memory = read_memory_metrics();
+        let storage = read_storage_metrics();
         Ok(SystemStatus {
             hostname: info.hostname,
             uptime_seconds: info.uptime_secs,
             load_average: info.load_avg,
             kernel: info.kernel,
+            cpu_usage_percent: fs::read_to_string("/proc/stat")
+                .ok()
+                .and_then(|value| self.cpu_usage.observe(&value)),
+            memory_total_mb: memory.map(|value| value.total_mb),
+            memory_available_mb: memory.map(|value| value.available_mb),
+            memory_used_percent: memory.map(|value| value.used_percent),
+            storage_total_mb: storage.map(|value| value.total_mb),
+            storage_available_mb: storage.map(|value| value.available_mb),
+            storage_used_percent: storage.map(|value| value.used_percent),
         })
     }
 
@@ -580,6 +680,7 @@ impl DeviceAdapter for B04Adapter {
                     },
                 }
             })?;
+        let extensions = read_battery_extensions(&battery.status);
         Ok(BatteryStatus {
             state: battery.status,
             capacity_percent: battery.capacity,
@@ -587,6 +688,13 @@ impl DeviceAdapter for B04Adapter {
             current_ma: battery.current_ua / 1000,
             power_mw,
             temperature_c: battery.temperature as f64 / 10.0,
+            health: extensions.health,
+            cycle_count: extensions.cycle_count,
+            learned_full_capacity_mah: extensions.learned_full_capacity_mah,
+            design_capacity_mah: extensions.design_capacity_mah,
+            charge_counter_mah: extensions.charge_counter_mah,
+            time_to_empty_seconds: extensions.time_to_empty_seconds,
+            time_to_full_seconds: extensions.time_to_full_seconds,
         })
     }
 
@@ -1294,6 +1402,214 @@ fn battery_power_mw(voltage_uv: i64, current_ua: i64) -> Option<i64> {
     i64::try_from(microwatt_product / 1_000_000_000).ok()
 }
 
+impl CpuUsageTracker {
+    fn observe(&self, proc_stat: &str) -> Option<f64> {
+        let current = parse_cpu_sample(proc_stat)?;
+        let mut previous = self.previous.lock().ok()?;
+        let prior = previous.replace(current)?;
+        cpu_usage_between(prior, current)
+    }
+}
+
+fn parse_cpu_sample(proc_stat: &str) -> Option<CpuSample> {
+    let aggregate = proc_stat.lines().find(|line| line.starts_with("cpu "))?;
+    let mut values = aggregate.split_whitespace().skip(1);
+    let mut counters = [0_u64; 8];
+    for counter in &mut counters {
+        *counter = values.next()?.parse().ok()?;
+    }
+    Some(CpuSample { counters })
+}
+
+fn cpu_usage_between(previous: CpuSample, current: CpuSample) -> Option<f64> {
+    if current
+        .counters
+        .iter()
+        .zip(previous.counters)
+        .any(|(current, previous)| *current < previous)
+    {
+        return None;
+    }
+    let deltas: [u64; 8] =
+        std::array::from_fn(|index| current.counters[index] - previous.counters[index]);
+    let total = deltas
+        .iter()
+        .try_fold(0_u64, |total, value| total.checked_add(*value))?;
+    if total == 0 {
+        return None;
+    }
+    // Linux reports both idle and iowait as idle time for aggregate CPU usage.
+    let idle = deltas[3].checked_add(deltas[4])?;
+    let active = total.checked_sub(idle)?;
+    let percent = active as f64 * 100.0 / total as f64;
+    percent.is_finite().then_some(percent.clamp(0.0, 100.0))
+}
+
+fn read_memory_metrics() -> Option<MemoryMetrics> {
+    fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|value| parse_memory_metrics(&value))
+}
+
+fn parse_memory_metrics(meminfo: &str) -> Option<MemoryMetrics> {
+    let mut total_kb = None;
+    let mut available_kb = None;
+    for line in meminfo.lines() {
+        let mut parts = line.split_whitespace();
+        match parts.next()? {
+            "MemTotal:" if total_kb.is_none() => {
+                let value = parts.next()?.parse::<u64>().ok()?;
+                (parts.next() == Some("kB") && parts.next().is_none()).then_some(())?;
+                total_kb = Some(value);
+            }
+            "MemAvailable:" if available_kb.is_none() => {
+                let value = parts.next()?.parse::<u64>().ok()?;
+                (parts.next() == Some("kB") && parts.next().is_none()).then_some(())?;
+                available_kb = Some(value);
+            }
+            _ => {}
+        }
+    }
+    let total_kb = total_kb.filter(|value| *value > 0)?;
+    let available_kb = available_kb.filter(|value| *value <= total_kb)?;
+    Some(MemoryMetrics {
+        total_mb: total_kb / 1_024,
+        available_mb: available_kb / 1_024,
+        used_percent: (total_kb - available_kb) as f64 * 100.0 / total_kb as f64,
+    })
+}
+
+fn read_storage_metrics() -> Option<StorageMetrics> {
+    let path = CString::new("/data").ok()?;
+    let mut value = MaybeUninit::<libc::statvfs>::zeroed();
+    // SAFETY: `path` is a fixed NUL-terminated string and `value` points to
+    // writable storage for one libc `statvfs` result.
+    if unsafe { libc::statvfs(path.as_ptr(), value.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: libc returned success and initialized the output structure.
+    let value = unsafe { value.assume_init() };
+    let block_size = u128::from(if value.f_frsize > 0 {
+        value.f_frsize
+    } else {
+        value.f_bsize
+    });
+    let total_bytes = u128::from(value.f_blocks).checked_mul(block_size)?;
+    let available_bytes = u128::from(value.f_bavail).checked_mul(block_size)?;
+    storage_metrics_from_bytes(total_bytes, available_bytes)
+}
+
+fn storage_metrics_from_bytes(total_bytes: u128, available_bytes: u128) -> Option<StorageMetrics> {
+    if total_bytes == 0 || available_bytes > total_bytes {
+        return None;
+    }
+    let bytes_per_mb = 1_048_576_u128;
+    Some(StorageMetrics {
+        total_mb: u64::try_from(total_bytes / bytes_per_mb).ok()?,
+        available_mb: u64::try_from(available_bytes / bytes_per_mb).ok()?,
+        used_percent: (total_bytes - available_bytes) as f64 * 100.0 / total_bytes as f64,
+    })
+}
+
+fn read_battery_extensions(state: &str) -> BatteryExtensions {
+    let base = "/sys/class/power_supply/battery";
+    let read = |name: &str| {
+        fs::read_to_string(format!("{base}/{name}"))
+            .ok()
+            .map(|value| value.trim().to_owned())
+    };
+    let parse_i64 = |name: &str| read(name)?.parse::<i64>().ok();
+    normalize_battery_extensions(
+        state,
+        read("health").as_deref(),
+        parse_i64("cycle_count"),
+        parse_i64("charge_full"),
+        parse_i64("charge_full_design"),
+        parse_i64("charge_counter"),
+        parse_i64("time_to_empty_avg"),
+        parse_i64("time_to_full_avg"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_battery_extensions(
+    state: &str,
+    health: Option<&str>,
+    cycle_count: Option<i64>,
+    learned_full_capacity_uah: Option<i64>,
+    design_capacity_uah: Option<i64>,
+    charge_counter_uah: Option<i64>,
+    time_to_empty_seconds: Option<i64>,
+    time_to_full_seconds: Option<i64>,
+) -> BatteryExtensions {
+    const MAX_CAPACITY_MAH: u64 = 1_000_000;
+    // Longer values are not useful for this portable router and are commonly
+    // produced when a gauge divides by a near-zero current. Keep the valid
+    // zero boundary while omitting estimates whose accuracy cannot be
+    // distinguished from a sentinel or an idle-current artefact.
+    const MAX_ESTIMATE_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+    let capacity_mah = |value: Option<i64>| {
+        let value = u64::try_from(value?).ok()? / 1_000;
+        (1..=MAX_CAPACITY_MAH).contains(&value).then_some(value)
+    };
+    let charge_counter_mah = charge_counter_uah
+        .map(|value| value / 1_000)
+        .filter(|value| value.unsigned_abs() <= MAX_CAPACITY_MAH);
+    let cycle_count = cycle_count
+        .and_then(|value| u64::try_from(value).ok())
+        // The Linux power-supply ABI reserves zero for unavailable cycle data.
+        .filter(|value| (1..=100_000).contains(value));
+    let time_to_empty = time_to_empty_seconds
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value <= MAX_ESTIMATE_SECONDS);
+    let time_to_full = time_to_full_seconds
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value <= MAX_ESTIMATE_SECONDS);
+    let normalized_state = state.trim().to_ascii_lowercase();
+
+    BatteryExtensions {
+        health: health.and_then(parse_battery_health),
+        cycle_count,
+        learned_full_capacity_mah: capacity_mah(learned_full_capacity_uah),
+        design_capacity_mah: capacity_mah(design_capacity_uah),
+        charge_counter_mah,
+        time_to_empty_seconds: (normalized_state == "discharging")
+            .then_some(time_to_empty)
+            .flatten(),
+        time_to_full_seconds: match normalized_state.as_str() {
+            "charging" => time_to_full,
+            "full" => time_to_full.filter(|value| *value == 0),
+            _ => None,
+        },
+    }
+}
+
+fn parse_battery_health(value: &str) -> Option<BatteryHealth> {
+    match value {
+        "Good" => Some(BatteryHealth::Good),
+        "Overheat" => Some(BatteryHealth::Overheat),
+        "Dead" => Some(BatteryHealth::Dead),
+        "Over voltage" => Some(BatteryHealth::OverVoltage),
+        "Under voltage" => Some(BatteryHealth::UnderVoltage),
+        "Unspecified failure" => Some(BatteryHealth::UnspecifiedFailure),
+        "Cold" => Some(BatteryHealth::Cold),
+        "Watchdog timer expire" => Some(BatteryHealth::WatchdogTimerExpire),
+        "Safety timer expire" => Some(BatteryHealth::SafetyTimerExpire),
+        "Over current" => Some(BatteryHealth::OverCurrent),
+        "Calibration required" => Some(BatteryHealth::CalibrationRequired),
+        "Warm" => Some(BatteryHealth::Warm),
+        "Cool" => Some(BatteryHealth::Cool),
+        "Hot" => Some(BatteryHealth::Hot),
+        "No battery" => Some(BatteryHealth::NoBattery),
+        "Blown fuse" => Some(BatteryHealth::BlownFuse),
+        "Cell imbalance" => Some(BatteryHealth::CellImbalance),
+        // Linux's explicit Unknown sentinel and every unrecognized vendor value
+        // are omitted instead of being presented as a real health assessment.
+        _ => None,
+    }
+}
+
 fn read_device_info() -> RawDeviceInfo {
     let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
         .unwrap_or_default()
@@ -1484,6 +1800,145 @@ mod tests {
         assert_eq!(battery_power_mw(4_000_000, -500_000), Some(-2_000));
         assert_eq!(battery_power_mw(4_000_000, 0), Some(0));
         assert_eq!(battery_power_mw(i64::MAX, i64::MAX), None);
+    }
+
+    #[test]
+    fn cpu_usage_requires_a_valid_consecutive_delta_and_counts_iowait_as_idle() {
+        let tracker = CpuUsageTracker::default();
+        assert_eq!(
+            tracker.observe("cpu 100 0 100 800 100 0 0 0 0 0\ncpu0 1 2 3 4"),
+            None
+        );
+        let usage = tracker
+            .observe("cpu 150 0 150 850 150 0 0 0 0 0\ncpu0 1 2 3 4")
+            .unwrap();
+        assert!((usage - 50.0).abs() < f64::EPSILON);
+
+        // A per-counter rollback is a reset even if another counter increased.
+        assert_eq!(tracker.observe("cpu 149 0 250 950 150 0 0 0 0 0"), None);
+        let recovered = tracker.observe("cpu 199 0 300 1000 200 0 0 0 0 0").unwrap();
+        assert!((recovered - 50.0).abs() < f64::EPSILON);
+        assert_eq!(tracker.observe("cpu malformed"), None);
+    }
+
+    #[test]
+    fn memory_and_storage_metrics_validate_bounds() {
+        let memory = parse_memory_metrics(
+            "MemTotal:        1048576 kB\nMemFree:          1000 kB\nMemAvailable:     262144 kB\n",
+        )
+        .unwrap();
+        assert_eq!(memory.total_mb, 1024);
+        assert_eq!(memory.available_mb, 256);
+        assert!((memory.used_percent - 75.0).abs() < f64::EPSILON);
+        assert!(parse_memory_metrics("MemTotal: 1024 kB\nMemAvailable: 2048 kB\n").is_none());
+
+        let storage = storage_metrics_from_bytes(10 * 1_048_576, 4 * 1_048_576).unwrap();
+        assert_eq!(storage.total_mb, 10);
+        assert_eq!(storage.available_mb, 4);
+        assert!((storage.used_percent - 60.0).abs() < f64::EPSILON);
+        assert!(storage_metrics_from_bytes(0, 0).is_none());
+        assert!(storage_metrics_from_bytes(1, 2).is_none());
+    }
+
+    #[test]
+    fn battery_extensions_normalize_units_sentinels_and_state_gated_estimates() {
+        let charging = normalize_battery_extensions(
+            "Charging",
+            Some("Good"),
+            Some(321),
+            Some(5_432_100),
+            Some(6_000_000),
+            Some(-1_234_567),
+            Some(13_641_670),
+            Some(0),
+        );
+        assert_eq!(charging.health, Some(BatteryHealth::Good));
+        assert_eq!(charging.cycle_count, Some(321));
+        assert_eq!(charging.learned_full_capacity_mah, Some(5_432));
+        assert_eq!(charging.design_capacity_mah, Some(6_000));
+        assert_eq!(charging.charge_counter_mah, Some(-1_234));
+        assert_eq!(charging.time_to_empty_seconds, None);
+        assert_eq!(charging.time_to_full_seconds, Some(0));
+
+        let full = normalize_battery_extensions(
+            "Full",
+            Some("Unknown"),
+            Some(100_001),
+            Some(-1),
+            Some(6_000_000),
+            Some(1_000_001_000),
+            Some(13_641_670),
+            Some(0),
+        );
+        assert_eq!(full.health, None);
+        assert_eq!(full.cycle_count, None);
+        assert_eq!(full.learned_full_capacity_mah, None);
+        assert_eq!(full.design_capacity_mah, Some(6_000));
+        assert_eq!(full.charge_counter_mah, None);
+        assert_eq!(full.time_to_empty_seconds, None);
+        assert_eq!(full.time_to_full_seconds, Some(0));
+
+        let discharging = normalize_battery_extensions(
+            "Discharging",
+            Some("vendor-health"),
+            Some(-1),
+            None,
+            None,
+            None,
+            Some(7_200),
+            Some(10),
+        );
+        assert_eq!(discharging.health, None);
+        assert_eq!(discharging.time_to_empty_seconds, Some(7_200));
+        assert_eq!(discharging.time_to_full_seconds, None);
+
+        let implausible = normalize_battery_extensions(
+            "Discharging",
+            None,
+            Some(0),
+            None,
+            None,
+            None,
+            Some(13_641_670),
+            None,
+        );
+        assert_eq!(implausible.cycle_count, None);
+        assert_eq!(implausible.time_to_empty_seconds, None);
+
+        let empty_boundary = normalize_battery_extensions(
+            "Discharging",
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(0),
+            None,
+        );
+        assert_eq!(empty_boundary.time_to_empty_seconds, Some(0));
+
+        let inconsistent_full =
+            normalize_battery_extensions("Full", None, None, None, None, None, None, Some(1));
+        assert_eq!(inconsistent_full.time_to_full_seconds, None);
+    }
+
+    #[test]
+    fn battery_health_accepts_only_known_non_sentinel_linux_values() {
+        assert_eq!(
+            parse_battery_health("Calibration required"),
+            Some(BatteryHealth::CalibrationRequired)
+        );
+        assert_eq!(
+            parse_battery_health("Watchdog timer expire"),
+            Some(BatteryHealth::WatchdogTimerExpire)
+        );
+        assert_eq!(parse_battery_health("Unknown"), None);
+        assert_eq!(
+            parse_battery_health("Cell imbalance"),
+            Some(BatteryHealth::CellImbalance)
+        );
+        assert_eq!(parse_battery_health("good"), None);
+        assert_eq!(parse_battery_health("Excellent"), None);
     }
 
     #[test]

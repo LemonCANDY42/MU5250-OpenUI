@@ -6,6 +6,9 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
     let lteRSRPdBm: Double?
     let nr5gRSRPdBm: Double?
     let thermalTemperaturesC: [String: Double]
+    let cpuUsagePercent: Double?
+    let memoryUsedPercent: Double?
+    let storageUsedPercent: Double?
 
     var id: Date { timestamp }
 
@@ -14,13 +17,19 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         batteryPercent: Int?,
         lteRSRPdBm: Double?,
         nr5gRSRPdBm: Double?,
-        thermalTemperaturesC: [String: Double] = [:]
+        thermalTemperaturesC: [String: Double] = [:],
+        cpuUsagePercent: Double? = nil,
+        memoryUsedPercent: Double? = nil,
+        storageUsedPercent: Double? = nil
     ) {
         self.timestamp = timestamp
         self.batteryPercent = batteryPercent
         self.lteRSRPdBm = lteRSRPdBm
         self.nr5gRSRPdBm = nr5gRSRPdBm
         self.thermalTemperaturesC = thermalTemperaturesC
+        self.cpuUsagePercent = cpuUsagePercent
+        self.memoryUsedPercent = memoryUsedPercent
+        self.storageUsedPercent = storageUsedPercent
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -29,6 +38,9 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         case lteRSRPdBm
         case nr5gRSRPdBm
         case thermalTemperaturesC
+        case cpuUsagePercent
+        case memoryUsedPercent
+        case storageUsedPercent
     }
 
     init(from decoder: any Decoder) throws {
@@ -41,13 +53,16 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
             [String: Double].self,
             forKey: .thermalTemperaturesC
         ) ?? [:]
+        cpuUsagePercent = try values.decodeIfPresent(Double.self, forKey: .cpuUsagePercent)
+        memoryUsedPercent = try values.decodeIfPresent(Double.self, forKey: .memoryUsedPercent)
+        storageUsedPercent = try values.decodeIfPresent(Double.self, forKey: .storageUsedPercent)
     }
 }
 
 struct TelemetryHistoryStore {
     static let retention: TimeInterval = 7 * 24 * 60 * 60
-    static let minimumSpacing: TimeInterval = 10
-    static let maximumSamples = 4_096
+    static let minimumSpacing: TimeInterval = 60
+    static let maximumSamples = 10_080
     static let maximumThermalSeries = 16
 
     private let store: any SecretStore
@@ -65,7 +80,11 @@ struct TelemetryHistoryStore {
         guard let data = try? store.read(account: account),
               let decoded = try? JSONDecoder().decode([TelemetrySample].self, from: data)
         else { return [] }
-        return pruned(decoded, now: now)
+        let normalized = pruned(decoded, now: now)
+        if normalized != decoded, let migrated = try? JSONEncoder().encode(normalized) {
+            try? store.write(migrated, account: account)
+        }
+        return normalized
     }
 
     func append(_ sample: TelemetrySample, to history: [TelemetrySample]) -> [TelemetrySample] {
@@ -88,13 +107,22 @@ struct TelemetryHistoryStore {
 
     private func pruned(_ history: [TelemetrySample], now: Date) -> [TelemetrySample] {
         let cutoff = now.addingTimeInterval(-Self.retention)
-        return Array(
-            history
-                .filter { $0.timestamp >= cutoff && $0.timestamp <= now.addingTimeInterval(60) }
-                .map(sanitized)
-                .sorted { $0.timestamp < $1.timestamp }
-                .suffix(Self.maximumSamples)
-        )
+        let samples = history
+            .filter { $0.timestamp >= cutoff && $0.timestamp <= now.addingTimeInterval(60) }
+            .map(sanitized)
+            .sorted { $0.timestamp < $1.timestamp }
+        var coalesced: [TelemetrySample] = []
+        coalesced.reserveCapacity(min(samples.count, Self.maximumSamples))
+        for sample in samples {
+            if let last = coalesced.last,
+               sample.timestamp.timeIntervalSince(last.timestamp) < Self.minimumSpacing
+            {
+                coalesced[coalesced.count - 1] = replacingTimestamp(of: sample, with: last.timestamp)
+            } else {
+                coalesced.append(sample)
+            }
+        }
+        return Array(coalesced.suffix(Self.maximumSamples))
     }
 
     private func sanitized(_ sample: TelemetrySample) -> TelemetrySample {
@@ -109,7 +137,10 @@ struct TelemetryHistoryStore {
             batteryPercent: sample.batteryPercent,
             lteRSRPdBm: sample.lteRSRPdBm,
             nr5gRSRPdBm: sample.nr5gRSRPdBm,
-            thermalTemperaturesC: Dictionary(uniqueKeysWithValues: temperatures.map { ($0.key, $0.value) })
+            thermalTemperaturesC: Dictionary(uniqueKeysWithValues: temperatures.map { ($0.key, $0.value) }),
+            cpuUsagePercent: sanitizedPercent(sample.cpuUsagePercent),
+            memoryUsedPercent: sanitizedPercent(sample.memoryUsedPercent),
+            storageUsedPercent: sanitizedPercent(sample.storageUsedPercent)
         )
     }
 
@@ -119,7 +150,14 @@ struct TelemetryHistoryStore {
             batteryPercent: sample.batteryPercent,
             lteRSRPdBm: sample.lteRSRPdBm,
             nr5gRSRPdBm: sample.nr5gRSRPdBm,
-            thermalTemperaturesC: sample.thermalTemperaturesC
+            thermalTemperaturesC: sample.thermalTemperaturesC,
+            cpuUsagePercent: sample.cpuUsagePercent,
+            memoryUsedPercent: sample.memoryUsedPercent,
+            storageUsedPercent: sample.storageUsedPercent
         )
+    }
+
+    private func sanitizedPercent(_ value: Double?) -> Double? {
+        value.flatMap { $0.isFinite && (0 ... 100).contains($0) ? $0 : nil }
     }
 }

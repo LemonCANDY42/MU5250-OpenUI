@@ -480,6 +480,18 @@ export interface components {
                 number
             ];
             readonly kernel: string;
+            /** @description Aggregate CPU use from two consecutive /proc/stat samples. Omitted for the first sample and after invalid or reset counters; iowait is idle. */
+            readonly cpu_usage_percent?: number;
+            /** @description MemTotal from /proc/meminfo, normalized from KiB to MiB. */
+            readonly memory_total_mb?: number;
+            /** @description MemAvailable from /proc/meminfo, normalized from KiB to MiB. */
+            readonly memory_available_mb?: number;
+            readonly memory_used_percent?: number;
+            /** @description Total size of the fixed /data filesystem, normalized to MiB. */
+            readonly storage_total_mb?: number;
+            /** @description Space available on the fixed /data filesystem, normalized to MiB. */
+            readonly storage_available_mb?: number;
+            readonly storage_used_percent?: number;
         };
         readonly BatteryStatusResponse: {
             /** @constant */
@@ -494,7 +506,22 @@ export interface components {
             /** @description Signed instantaneous battery-side power derived from the fixed B04 voltage_now and current_now sources. The sign follows current_ma; this is not USB input or wall power. */
             readonly power_mw: number;
             readonly temperature_c: number;
+            readonly health?: components["schemas"]["BatteryHealth"];
+            /** @description Full charge/discharge cycles reported by the kernel. Linux reserves zero for unavailable cycle information, so zero is omitted. */
+            readonly cycle_count?: number;
+            /** @description Current learned full-charge threshold from charge_full, normalized from microamp-hours to integer milliamp-hours. */
+            readonly learned_full_capacity_mah?: number;
+            /** @description Design full-charge threshold from charge_full_design, normalized from microamp-hours to integer milliamp-hours. */
+            readonly design_capacity_mah?: number;
+            /** @description Signed relative kernel fuel-gauge counter from charge_counter, normalized from microamp-hours to integer milliamp-hours. It is not remaining battery capacity. */
+            readonly charge_counter_mah?: number;
+            /** @description Kernel estimate exposed only while discharging and within a bounded 30-day plausibility window. Zero is a valid boundary value; this is an estimate, not a client-derived forecast. */
+            readonly time_to_empty_seconds?: number;
+            /** @description Kernel estimate exposed only while charging, or as zero when full. Values beyond the bounded 30-day plausibility window are omitted. Zero is a valid completed boundary; this is not a client-derived forecast. */
+            readonly time_to_full_seconds?: number;
         };
+        /** @enum {string} */
+        readonly BatteryHealth: "good" | "overheat" | "dead" | "over_voltage" | "under_voltage" | "unspecified_failure" | "cold" | "watchdog_timer_expire" | "safety_timer_expire" | "over_current" | "calibration_required" | "warm" | "cool" | "hot" | "no_battery" | "blown_fuse" | "cell_imbalance";
         readonly ThermalStatusResponse: {
             /** @constant */
             readonly ok: true;

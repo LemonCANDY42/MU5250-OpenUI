@@ -226,6 +226,13 @@ mod tests {
                 uptime_seconds: 42,
                 load_average: [0.1, 0.2, 0.3],
                 kernel: "test".into(),
+                cpu_usage_percent: None,
+                memory_total_mb: None,
+                memory_available_mb: None,
+                memory_used_percent: None,
+                storage_total_mb: None,
+                storage_available_mb: None,
+                storage_used_percent: None,
             })
         }
 

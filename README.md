@@ -124,10 +124,12 @@ enabled.
 
 The source keeps the ten-capability contract and adds optional contextual
 router-observed client-link data to the existing Wi-Fi status, plus optional
-radio aggregation, selection and read-only cell-lock summaries. These fields
-are host-tested; the fixed sources have B04 read-only evidence, but the combined
-release has not been deployed or accepted on physical clients. Battery health,
-cycle and capacity fields remain excluded until their B04 semantics are accepted.
+radio aggregation, selection and read-only cell-lock summaries. The existing
+system and battery endpoints also accept backward-compatible optional current
+CPU/memory/`/data` storage metrics and independently validated battery
+health/cycle/capacity/counter/kernel-estimate fields. These fields are
+host-tested; the fixed sources have B04 read-only evidence, but the combined
+release has not been deployed or accepted on physical clients.
 SIM/APN and router-configuration summaries remain absent until their own
 redaction and B04 gates pass.
 

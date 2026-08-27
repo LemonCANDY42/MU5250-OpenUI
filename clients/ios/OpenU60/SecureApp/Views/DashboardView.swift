@@ -321,6 +321,88 @@ struct DashboardView: View {
             metric("Uptime", formatDuration(system.uptimeSeconds))
             metric("Load", system.loadAverage.map { String(format: "%.2f", $0) }.joined(separator: "  "))
             metric("Kernel", system.kernel)
+            if let cpu = system.cpuUsagePercent {
+                metric("CPU usage", formatPercent(cpu))
+            }
+            if let total = system.memoryTotalMb,
+               let available = system.memoryAvailableMb,
+               let used = system.memoryUsedPercent
+            {
+                metric("Memory used", formatPercent(used))
+                metric("Memory available", "\(available) / \(total) MiB")
+            }
+            if let total = system.storageTotalMb,
+               let available = system.storageAvailableMb,
+               let used = system.storageUsedPercent
+            {
+                metric("/data storage used", formatPercent(used))
+                metric("/data storage available", "\(available) / \(total) MiB")
+            }
+            let samples = visibleTelemetry.filter {
+                $0.cpuUsagePercent != nil || $0.memoryUsedPercent != nil || $0.storageUsedPercent != nil
+            }
+            if samples.count >= 2 {
+                Divider()
+                chartHeader(
+                    title: "System utilization history",
+                    accessibilityLabel: "Choose system chart series",
+                    series: systemChartSeries
+                )
+                let showsCPU = !hiddenChartSeries.contains(DashboardChartSeriesID.systemCPU)
+                let showsMemory = !hiddenChartSeries.contains(DashboardChartSeriesID.systemMemory)
+                let showsStorage = !hiddenChartSeries.contains(DashboardChartSeriesID.systemStorage)
+                if !showsCPU, !showsMemory, !showsStorage {
+                    Text("No chart series selected")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    Chart(samples) { sample in
+                        if showsCPU, let value = sample.cpuUsagePercent {
+                            LineMark(
+                                x: .value(String(localized: "Time"), sample.timestamp),
+                                y: .value(String(localized: "Utilization percentage"), value),
+                                series: .value(String(localized: "System metric"), String(localized: "CPU"))
+                            )
+                            .foregroundStyle(by: .value(String(localized: "System metric"), String(localized: "CPU")))
+                            .interpolationMethod(.monotone)
+                        }
+                        if showsMemory, let value = sample.memoryUsedPercent {
+                            LineMark(
+                                x: .value(String(localized: "Time"), sample.timestamp),
+                                y: .value(String(localized: "Utilization percentage"), value),
+                                series: .value(String(localized: "System metric"), String(localized: "Memory"))
+                            )
+                            .foregroundStyle(by: .value(String(localized: "System metric"), String(localized: "Memory")))
+                            .interpolationMethod(.monotone)
+                        }
+                        if showsStorage, let value = sample.storageUsedPercent {
+                            LineMark(
+                                x: .value(String(localized: "Time"), sample.timestamp),
+                                y: .value(String(localized: "Utilization percentage"), value),
+                                series: .value(String(localized: "System metric"), String(localized: "Storage"))
+                            )
+                            .foregroundStyle(by: .value(String(localized: "System metric"), String(localized: "Storage")))
+                            .interpolationMethod(.monotone)
+                        }
+                    }
+                    .chartYScale(domain: 0 ... 100)
+                    .chartForegroundStyleScale([
+                        String(localized: "CPU"): Color.purple,
+                        String(localized: "Memory"): Color.blue,
+                        String(localized: "Storage"): Color.orange,
+                    ])
+                    .chartLegend(position: .bottom, alignment: .leading)
+                    .frame(height: 190)
+                    .accessibilityLabel(Text("System utilization history"))
+                    .accessibilityValue(Text(systemChartAccessibilitySummary(
+                        system,
+                        showsCPU: showsCPU,
+                        showsMemory: showsMemory,
+                        showsStorage: showsStorage
+                    )))
+                }
+            }
         }
     }
 
@@ -337,6 +419,30 @@ struct DashboardView: View {
             metric("Current", "\(battery.currentMa) mA")
             metric("Power", String(format: "%.2f W", Double(battery.powerMw).magnitude / 1000))
             metric("Temperature", String(format: "%.1f °C", battery.temperatureC))
+            if let health = battery.health {
+                metric("Health", localizedBatteryHealth(health))
+            }
+            if let cycles = battery.cycleCount {
+                metric("Cycle count", cycles.formatted())
+            }
+            if let capacity = battery.learnedFullCapacityMah {
+                metric("Learned full capacity", "\(capacity) mAh")
+            }
+            if let capacity = battery.designCapacityMah {
+                metric("Design capacity", "\(capacity) mAh")
+            }
+            if let counter = battery.chargeCounterMah {
+                metric("Relative charge counter", "\(counter) mAh")
+                Text("The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if let seconds = battery.timeToEmptySeconds {
+                metric("Kernel estimate to empty", formatBatteryEstimate(seconds, zeroLabel: "Empty"))
+            }
+            if let seconds = battery.timeToFullSeconds {
+                metric("Kernel estimate to full", formatBatteryEstimate(seconds, zeroLabel: "Complete"))
+            }
             let samples = visibleTelemetry.filter { $0.batteryPercent != nil }
             if samples.count >= 2 {
                 Divider()
@@ -688,6 +794,14 @@ struct DashboardView: View {
         ]
     }
 
+    private var systemChartSeries: [DashboardChartSeries] {
+        [
+            DashboardChartSeries(id: DashboardChartSeriesID.systemCPU, label: String(localized: "CPU")),
+            DashboardChartSeries(id: DashboardChartSeriesID.systemMemory, label: String(localized: "Memory")),
+            DashboardChartSeries(id: DashboardChartSeriesID.systemStorage, label: String(localized: "Storage")),
+        ]
+    }
+
     private func thermalChartSeries(current: Components.Schemas.ThermalStatus) -> [DashboardChartSeries] {
         var sensorIDs = Set(current.sensors.map(\.sensor))
         for sample in model.telemetryHistory {
@@ -832,6 +946,64 @@ struct DashboardView: View {
         case "not charging", "not_charging": String(localized: "Not charging")
         default: state
         }
+    }
+
+    private func localizedBatteryHealth(_ health: Components.Schemas.BatteryHealth) -> String {
+        switch health {
+        case .good: String(localized: "Good")
+        case .overheat: String(localized: "Overheated")
+        case .dead: String(localized: "Dead")
+        case .overVoltage: String(localized: "Over voltage")
+        case .underVoltage: String(localized: "Under voltage")
+        case .unspecifiedFailure: String(localized: "Unspecified failure")
+        case .cold: String(localized: "Cold")
+        case .watchdogTimerExpire: String(localized: "Watchdog timer expired")
+        case .safetyTimerExpire: String(localized: "Safety timer expired")
+        case .overCurrent: String(localized: "Over current")
+        case .calibrationRequired: String(localized: "Calibration required")
+        case .warm: String(localized: "Warm")
+        case .cool: String(localized: "Cool")
+        case .hot: String(localized: "Hot")
+        case .noBattery: String(localized: "No battery")
+        case .blownFuse: String(localized: "Blown fuse")
+        case .cellImbalance: String(localized: "Cell imbalance")
+        }
+    }
+
+    private func formatBatteryEstimate(_ seconds: Int, zeroLabel: LocalizedStringResource) -> String {
+        seconds == 0 ? String(localized: zeroLabel) : formatDuration(seconds)
+    }
+
+    private func formatPercent(_ value: Double) -> String {
+        "\(value.formatted(.number.precision(.fractionLength(1))))%"
+    }
+
+    private func systemChartAccessibilitySummary(
+        _ system: Components.Schemas.SystemStatus,
+        showsCPU: Bool,
+        showsMemory: Bool,
+        showsStorage: Bool
+    ) -> String {
+        var values: [String] = []
+        let latest = visibleTelemetry.reversed()
+        if showsCPU, let cpu = system.cpuUsagePercent ?? latest.compactMap(\.cpuUsagePercent).first {
+            values.append(String(localized: "CPU \(formatPercent(cpu))"))
+        }
+        if showsMemory,
+           let memory = system.memoryUsedPercent ?? latest.compactMap(\.memoryUsedPercent).first
+        {
+            values.append(String(localized: "Memory \(formatPercent(memory))"))
+        }
+        if showsStorage,
+           let storage = system.storageUsedPercent ?? latest.compactMap(\.storageUsedPercent).first
+        {
+            values.append(String(localized: "Storage \(formatPercent(storage))"))
+        }
+        guard !values.isEmpty else {
+            return String(localized: "Historical samples are shown.")
+        }
+        let summary = values.formatted()
+        return String(localized: "Latest system utilization: \(summary).")
     }
 
     private func localizedNetworkSelection(_ mode: String) -> String {

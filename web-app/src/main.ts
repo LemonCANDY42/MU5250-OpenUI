@@ -587,23 +587,89 @@ function appendDevice(card: HTMLElement, value: V1Device): void {
 }
 
 function appendSystem(card: HTMLElement, value: V1SystemStatus): void {
-  appendDefinitionList(card, [
+  const metrics: [string, string][] = [
     ['Hostname', value.hostname],
     ['Kernel', value.kernel],
     ['Uptime', formatDuration(value.uptime_seconds)],
     ['Load average', value.load_average.map((item) => item.toFixed(2)).join(' · ')],
-  ])
+  ]
+  if (value.cpu_usage_percent !== undefined) {
+    metrics.push(['CPU usage', `${value.cpu_usage_percent.toFixed(1)}%`])
+  }
+  if (
+    value.memory_total_mb !== undefined &&
+    value.memory_available_mb !== undefined &&
+    value.memory_used_percent !== undefined
+  ) {
+    metrics.push([
+      'Memory',
+      `${value.memory_used_percent.toFixed(1)}% used · ${value.memory_available_mb} / ${value.memory_total_mb} MiB available`,
+    ])
+  }
+  if (
+    value.storage_total_mb !== undefined &&
+    value.storage_available_mb !== undefined &&
+    value.storage_used_percent !== undefined
+  ) {
+    metrics.push([
+      '/data storage',
+      `${value.storage_used_percent.toFixed(1)}% used · ${value.storage_available_mb} / ${value.storage_total_mb} MiB available`,
+    ])
+  }
+  appendDefinitionList(card, metrics)
 }
 
 function appendBattery(card: HTMLElement, value: V1BatteryStatus): void {
-  appendDefinitionList(card, [
+  const metrics: [string, string][] = [
     ['State', value.state],
     ['Capacity', `${value.capacity_percent}%`],
     ['Voltage', `${value.voltage_mv} mV`],
     ['Current', `${value.current_ma} mA`],
     ['Power', `${(Math.abs(value.power_mw) / 1000).toFixed(2)} W`],
     ['Temperature', `${value.temperature_c.toFixed(1)} °C`],
-  ])
+  ]
+  if (value.health !== undefined) metrics.push(['Health', humanizeSnakeCase(value.health)])
+  if (value.cycle_count !== undefined) metrics.push(['Cycle count', value.cycle_count.toString()])
+  if (value.learned_full_capacity_mah !== undefined) {
+    metrics.push(['Learned full capacity', `${value.learned_full_capacity_mah} mAh`])
+  }
+  if (value.design_capacity_mah !== undefined) {
+    metrics.push(['Design capacity', `${value.design_capacity_mah} mAh`])
+  }
+  if (value.charge_counter_mah !== undefined) {
+    metrics.push(['Relative charge counter', `${value.charge_counter_mah} mAh`])
+  }
+  if (value.time_to_empty_seconds !== undefined) {
+    metrics.push([
+      'Time to empty',
+      formatKernelEstimate(value.time_to_empty_seconds, 'Empty'),
+    ])
+  }
+  if (value.time_to_full_seconds !== undefined) {
+    metrics.push([
+      'Time to full',
+      formatKernelEstimate(value.time_to_full_seconds, 'Complete'),
+    ])
+  }
+  appendDefinitionList(card, metrics)
+  if (value.charge_counter_mah !== undefined) {
+    card.append(
+      element(
+        'p',
+        'hint',
+        'The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity.',
+      ),
+    )
+  }
+}
+
+function formatKernelEstimate(seconds: number, zeroLabel: string): string {
+  return `${seconds === 0 ? zeroLabel : formatDuration(seconds)} · kernel estimate`
+}
+
+function humanizeSnakeCase(value: string): string {
+  const text = value.replaceAll('_', ' ')
+  return text.charAt(0).toUpperCase() + text.slice(1)
 }
 
 function appendThermal(card: HTMLElement, value: V1ThermalStatus): void {

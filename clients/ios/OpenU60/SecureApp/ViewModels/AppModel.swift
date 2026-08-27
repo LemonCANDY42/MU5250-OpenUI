@@ -274,7 +274,10 @@ final class AppModel {
                 nr5gRSRPdBm: snapshot.signal?.nr5g?.rsrpDbm.map(Double.init),
                 thermalTemperaturesC: snapshot.thermal?.sensors.reduce(into: [:]) { temperatures, sensor in
                     temperatures[sensor.sensor] = sensor.temperatureC
-                } ?? [:]
+                } ?? [:],
+                cpuUsagePercent: snapshot.system?.cpuUsagePercent,
+                memoryUsedPercent: snapshot.system?.memoryUsedPercent,
+                storageUsedPercent: snapshot.system?.storageUsedPercent
             ),
             to: telemetryHistory
         )

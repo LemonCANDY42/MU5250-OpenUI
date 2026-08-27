@@ -862,6 +862,37 @@ components:
             type: number
         kernel:
           type: string
+        cpu_usage_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+          description: >-
+            Aggregate CPU use from two consecutive /proc/stat samples. Omitted
+            for the first sample and after invalid or reset counters; iowait is idle.
+        memory_total_mb:
+          type: integer
+          minimum: 0
+          description: MemTotal from /proc/meminfo, normalized from KiB to MiB.
+        memory_available_mb:
+          type: integer
+          minimum: 0
+          description: MemAvailable from /proc/meminfo, normalized from KiB to MiB.
+        memory_used_percent:
+          type: number
+          minimum: 0
+          maximum: 100
+        storage_total_mb:
+          type: integer
+          minimum: 0
+          description: Total size of the fixed /data filesystem, normalized to MiB.
+        storage_available_mb:
+          type: integer
+          minimum: 0
+          description: Space available on the fixed /data filesystem, normalized to MiB.
+        storage_used_percent:
+          type: number
+          minimum: 0
+          maximum: 100
     BatteryStatusResponse:
       type: object
       additionalProperties: false
@@ -894,6 +925,73 @@ components:
             this is not USB input or wall power.
         temperature_c:
           type: number
+        health:
+          $ref: "#/components/schemas/BatteryHealth"
+        cycle_count:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          description: >-
+            Full charge/discharge cycles reported by the kernel. Linux reserves
+            zero for unavailable cycle information, so zero is omitted.
+        learned_full_capacity_mah:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: >-
+            Current learned full-charge threshold from charge_full, normalized
+            from microamp-hours to integer milliamp-hours.
+        design_capacity_mah:
+          type: integer
+          minimum: 1
+          maximum: 1000000
+          description: >-
+            Design full-charge threshold from charge_full_design, normalized
+            from microamp-hours to integer milliamp-hours.
+        charge_counter_mah:
+          type: integer
+          minimum: -1000000
+          maximum: 1000000
+          description: >-
+            Signed relative kernel fuel-gauge counter from charge_counter,
+            normalized from microamp-hours to integer milliamp-hours. It is not
+            remaining battery capacity.
+        time_to_empty_seconds:
+          type: integer
+          minimum: 0
+          maximum: 2592000
+          description: >-
+            Kernel estimate exposed only while discharging and within a bounded
+            30-day plausibility window. Zero is a valid boundary value; this is
+            an estimate, not a client-derived forecast.
+        time_to_full_seconds:
+          type: integer
+          minimum: 0
+          maximum: 2592000
+          description: >-
+            Kernel estimate exposed only while charging, or as zero when full.
+            Values beyond the bounded 30-day plausibility window are omitted.
+            Zero is a valid completed boundary; this is not a client-derived forecast.
+    BatteryHealth:
+      type: string
+      enum:
+        - good
+        - overheat
+        - dead
+        - over_voltage
+        - under_voltage
+        - unspecified_failure
+        - cold
+        - watchdog_timer_expire
+        - safety_timer_expire
+        - over_current
+        - calibration_required
+        - warm
+        - cool
+        - hot
+        - no_battery
+        - blown_fuse
+        - cell_imbalance
     ThermalStatusResponse:
       type: object
       additionalProperties: false

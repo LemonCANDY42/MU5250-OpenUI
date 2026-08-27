@@ -15,8 +15,8 @@ authentication paths:
 |---|---|
 | `GET /v1/device` | Normalized model, adapter target and best-effort firmware/hardware identity |
 | `GET /v1/capabilities` | `available`, `degraded` or `unsupported` state plus reason/recovery metadata |
-| `GET /v1/status/system` | Hostname, kernel, uptime and load average |
-| `GET /v1/status/battery` | Normalized capacity, voltage, current, derived battery-side power, temperature and state |
+| `GET /v1/status/system` | Hostname, kernel, uptime and load average, with optional current CPU, memory and `/data` storage metrics |
+| `GET /v1/status/battery` | Normalized capacity, voltage, current, derived battery-side power, temperature and state, with optional validated health, cycle, capacity-counter and kernel-estimate fields |
 | `GET /v1/status/thermal` | Validated readings from the fixed B04 sensor map |
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
@@ -58,9 +58,25 @@ does not trust the PMIC's `power_now` node, matching the proven behavior of the
 original MU5250 tooling. Its sign follows `current_ma`; it is neither USB input
 power nor a wall-power measurement.
 
-Battery health, cycle count, remaining/learned/design capacity and time estimates
-remain excluded because their B04 units, sentinels and accuracy have not completed
-semantic acceptance.
+Battery extensions are independently best-effort and never make the required
+battery status fail. Charge values are converted from the kernel's microamp-hour
+units to integer milliamp-hours. `charge_full` is labeled learned full capacity,
+`charge_full_design` is design capacity, and the signed `charge_counter` is
+published only as a relative counter; it is not remaining capacity. Health is
+limited to recognized Linux `power_supply` values, cycle count is bounded and
+the ABI's zero/unavailable value is omitted. Unknown or malformed values are
+omitted. Kernel time estimates are state-gated and limited to a 30-day
+plausibility window so maximum-value sentinels and near-zero-current artefacts
+are not presented as durations:
+discharging may report time to empty, charging may report time to full, and full
+may report only a completed zero time to full. Zero is a valid boundary value.
+
+System metrics are likewise optional. CPU usage is derived without sleeping or
+a background worker from consecutive aggregate `/proc/stat` samples, with
+`iowait` treated as idle; the first sample and invalid/reset deltas are omitted.
+Memory uses `MemTotal` and `MemAvailable` from `/proc/meminfo`. Storage is a
+direct `statvfs` read of the fixed `/data` filesystem. Any individual optional
+source failure leaves the required system status intact.
 
 `/v1/status/wifi` never accepts an address or MAC from the client. Its optional
 `current_client_link` context uses the handler-supplied HTTPS peer IPv4 address,
