@@ -12,6 +12,11 @@ import {
 import type { BrowserCredential } from './auth/credential-store'
 import { AgentError, getJson, hasSessionToken, postJson, putJson } from './data/client'
 import { loadDashboard, type DashboardPanel, type DashboardSnapshot } from './data/dashboard'
+import {
+  clearPendingWifiConfirmation,
+  loadPendingWifiConfirmation,
+  savePendingWifiConfirmation,
+} from './data/pending-wifi-store'
 import type {
   V1BatteryStatus,
   V1ChargingStatus,
@@ -32,12 +37,6 @@ if (rootElement === null) {
   throw new Error('dashboard root is missing')
 }
 const root: HTMLElement = rootElement
-const WIFI_PENDING_KEY = 'u60.pending-wifi-confirmation-v1'
-
-interface PersistedWifiConfirmation {
-  transactionId: string
-  expiresAt: number
-}
 
 void renderLogin()
 
@@ -327,53 +326,16 @@ function smsForm(status: HTMLElement, error: HTMLElement): HTMLFormElement {
   return form
 }
 
-function chargingForm(status: HTMLElement, error: HTMLElement): HTMLFormElement {
-  const form = controlForm('Charging')
-  const current = element('p', 'hint', 'Loading charging policy…')
-  const limit = element('input', '')
-  limit.id = 'charge-limit'
-  limit.type = 'number'
-  limit.min = '50'
-  limit.max = '95'
-  limit.value = '80'
-  const label = recipientLabel(limit, 'Automatic limit (%)')
-  const buttons = element('div', 'actions')
-  const setLimit = button('Set limit', 'primary')
-  const disable = button('Disable limit', 'quiet')
-  disable.type = 'button'
-  buttons.append(setLimit, disable)
-  form.append(current, label, limit, buttons)
+function chargingForm(_status: HTMLElement, error: HTMLElement): HTMLFormElement {
+  const form = controlForm('Charging status')
+  const current = element('p', 'hint', 'Loading charging status…')
+  form.append(current)
   const updateCurrent = (value: V1ChargingStatus) => {
-    current.textContent = `${value.capacity_percent}% · ${value.paused ? 'paused at limit' : 'charging allowed'} · ${value.automatic_limit_percent === undefined ? 'automatic limit disabled' : `limit ${value.automatic_limit_percent}%`}`
+    current.textContent = `${value.capacity_percent}% · ${value.paused ? 'charging stopped' : 'charging allowed'}`
   }
   void getJson('/v1/charging')
     .then((value) => updateCurrent(value as V1ChargingStatus))
     .catch((reason: unknown) => setError(error, errorMessage(reason)))
-  const operation = async (body: unknown, success: string) => {
-    clearMessages(status, error)
-    try {
-      updateCurrent((await putJson('/v1/charging', body)) as V1ChargingStatus)
-      status.textContent = success
-    } catch (reason) {
-      setError(error, errorMessage(reason))
-    }
-  }
-  disable.addEventListener('click', () =>
-    void operation(
-      { operation: 'disable_limit' },
-      'Automatic charging limit disabled. Charging is allowed.',
-    ),
-  )
-  bindForm(form, setLimit, status, error, 'Applying…', 'Set limit', async () => {
-    const value = Number(limit.value)
-    updateCurrent(
-      (await putJson('/v1/charging', {
-        operation: 'set_limit',
-        limit_percent: value,
-      })) as V1ChargingStatus,
-    )
-    return 'Automatic charging limit applied.'
-  })
   return form
 }
 
@@ -411,9 +373,8 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
   const submit = button('Apply for 2 minutes', 'secondary')
   const confirm = button('Confirm current Wi-Fi', 'primary')
   confirm.type = 'button'
-  const restoredPending = loadPendingWifiConfirmation()
-  confirm.disabled = restoredPending === undefined
-  let pendingId = restoredPending?.transactionId
+  confirm.disabled = true
+  let pendingId: string | undefined
   form.append(
     recipientLabel(ssid2g, '2.4 GHz SSID (optional)'),
     ssid2g,
@@ -426,13 +387,21 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
     submit,
     confirm,
   )
+  void loadPendingWifiConfirmation()
+    .then((restoredPending) => {
+      pendingId = restoredPending?.transactionId
+      confirm.disabled = restoredPending === undefined
+    })
+    .catch((reason: unknown) => {
+      setError(error, `Wi-Fi recovery metadata is unavailable: ${errorMessage(reason)}`)
+    })
   bindForm(form, submit, status, error, 'Applying…', 'Apply for 2 minutes', async () => {
     const transactionId = makeWifiTransactionId()
     const pending = {
       transactionId,
       expiresAt: Date.now() + 120_000,
     }
-    savePendingWifiConfirmation(pending)
+    await savePendingWifiConfirmation(pending)
     pendingId = transactionId
     confirm.disabled = false
     const body: Record<string, string> = { transaction_id: transactionId }
@@ -445,7 +414,7 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
       grant = (await postJson('/v1/wifi/transaction', body)) as V1WifiTransactionGrant
     } catch (reason: unknown) {
       if (reason instanceof AgentError && reason.status === 400) {
-        clearPendingWifiConfirmation()
+        await clearPendingWifiConfirmation()
         pendingId = undefined
         confirm.disabled = true
       }
@@ -464,9 +433,9 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
     clearMessages(status, error)
     confirm.disabled = true
     void postJson('/v1/wifi/transaction/confirm', { transaction_id: pendingId })
-      .then(() => {
+      .then(async () => {
         pendingId = undefined
-        clearPendingWifiConfirmation()
+        await clearPendingWifiConfirmation()
         status.textContent =
           'Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.'
       })
@@ -483,34 +452,6 @@ function makeWifiTransactionId(): string {
   let binary = ''
   for (const byte of bytes) binary += String.fromCharCode(byte)
   return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
-}
-
-function savePendingWifiConfirmation(pending: PersistedWifiConfirmation): void {
-  localStorage.setItem(WIFI_PENDING_KEY, JSON.stringify(pending))
-}
-
-function loadPendingWifiConfirmation(): PersistedWifiConfirmation | undefined {
-  const raw = localStorage.getItem(WIFI_PENDING_KEY)
-  if (raw === null) return undefined
-  try {
-    const parsed = JSON.parse(raw) as Partial<PersistedWifiConfirmation>
-    if (
-      typeof parsed.transactionId === 'string' &&
-      /^[A-Za-z0-9_-]{24}$/.test(parsed.transactionId) &&
-      typeof parsed.expiresAt === 'number' &&
-      parsed.expiresAt > Date.now()
-    ) {
-      return { transactionId: parsed.transactionId, expiresAt: parsed.expiresAt }
-    }
-  } catch {
-    // Invalid non-secret recovery metadata is discarded below.
-  }
-  clearPendingWifiConfirmation()
-  return undefined
-}
-
-function clearPendingWifiConfirmation(): void {
-  localStorage.removeItem(WIFI_PENDING_KEY)
 }
 
 function controlForm(title: string): HTMLFormElement {

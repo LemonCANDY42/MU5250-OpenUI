@@ -244,25 +244,6 @@ final class AgentService: Sendable {
         }
     }
 
-    func updateChargingLimit(
-        _ limitPercent: Int?
-    ) async throws -> Components.Schemas.ChargingStatus {
-        let output = try await client.updateCharging(.init(body: .json(.init(
-            operation: limitPercent == nil ? .disableLimit : .setLimit,
-            limitPercent: limitPercent
-        ))))
-        switch output {
-        case let .ok(response): return try response.body.json.data
-        case let .badRequest(response):
-            let body = try response.body.json
-            throw AgentServiceError.rejected(status: 400, message: body.error.message)
-        case let .serviceUnavailable(response):
-            let body = try response.body.json
-            throw AgentServiceError.rejected(status: 503, message: body.error.message)
-        default: throw AgentServiceError.invalidResponse
-        }
-    }
-
     func updateTrafficCycle(resetDay: Int, enabled: Bool) async throws {
         let output = try await client.updateTrafficCycle(.init(body: .json(.init(
             resetDay: resetDay,

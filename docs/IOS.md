@@ -37,9 +37,9 @@ preferred stable name and future RP-aligned endpoint.
 ## Native control hierarchy and localization
 
 The authenticated Control tab uses native SwiftUI navigation rather than one
-flat mutation form. Its landing page summarizes charging, Wi-Fi, traffic-cycle
-and SMS state; each operation owns a separate detail screen and confirmation
-flow. The Wi-Fi screen mirrors the useful hierarchy of the imported MIT client
+flat mutation form. Its landing page summarizes read-only charging state plus
+Wi-Fi, traffic-cycle and SMS controls; each write operation owns a separate
+detail screen and centered confirmation alert. The Wi-Fi screen mirrors the useful hierarchy of the imported MIT client
 while keeping the V1 safety boundary: typed primary and guest fields only,
 fixed channel/bandwidth/transmit-power choices, no raw UCI/ubus surface, no
 prefilled password, and a visible two-minute reconnect confirmation backed by
@@ -50,11 +50,26 @@ switches, app foregrounding and process relaunch. Each probe uses a fresh pinned
 HTTPS session so a connection from before the radio reload cannot count as
 reconnection proof. Confirmation re-reads the requested fields before
 cancelling rollback, refreshes the client status, and then shows an explicit
-reconnection-and-verification success message. The charging screen
-offers only the 50–95% automatic limit and its disable action; manual pause and
-resume are not public controls. B04 exposes Wi-Fi 7 through its EHT
+reconnection-and-verification success message. The charging screen is read-only;
+V1 exposes no charger mutation because B04 write-result and recovery semantics
+are not sufficiently proven. B04 exposes Wi-Fi 7 through its EHT
 radio mode but no independent switch source, so the client reports that state
-without presenting a nonfunctional toggle.
+without presenting a nonfunctional toggle. The B04 capability source explicitly
+reports MLO as unsupported and band steering as supported and enabled; those are
+shown as read-only facts. The 5 GHz radio exposes fixed 20, 40, 80 and 160 MHz
+widths rather than a combined automatic-width value.
+
+The Wi-Fi detail uses a native segmented Status/Modify view so observed state is
+not mixed with editable values. The authenticated dashboard uses collapsible
+cards and a dedicated reorder sheet; card order, collapsed state, monitoring
+interval and graph range are remembered in device-local Keychain state. Manual
+refresh remains the default to minimize device and radio load, with explicit
+15-second, 30-second, one-minute and five-minute monitoring choices. Successful
+status refreshes append a bounded, up-to-seven-day local telemetry history used for
+battery and LTE/5G RSRP charts; no background daemon or U60 write is involved.
+Apple's public accessory-network API does not expose the current iPhone Wi-Fi
+RSSI, so the UI states that limitation rather than displaying an inferred or
+router-side substitute.
 
 English and Simplified Chinese resources cover this control hierarchy and its
 confirmation, warning and recovery text. SwiftUI literals use the string table;
@@ -149,17 +164,11 @@ substitute for certificate verification.
 
 ## Current evidence boundary
 
-Current evidence establishes XcodeGen generation, build-plugin model
-generation, a clean iOS simulator build and launch, unit tests for pairing
-validation, local-key signing/storage and exact SPKI pin construction, plus an
-owner-signed physical-device build, install and successful process launch. The
-physical build used command-local team and bundle-identifier overrides; neither
-identifier is committed to this public repository. It does not establish:
-
-- Secure Enclave behavior on the owner's physical iPhone;
-- installation or full trust of a real owner CA;
-- a handshake with a real U60 certificate or live agent;
-- QR pairing against a real maintenance window;
-- a completed authenticated physical-device session.
-
-Those remain later acceptance gates and do not authorize device changes.
+Current evidence establishes XcodeGen generation, generated-contract simulator
+tests, owner-signed physical-device build/install/launch, owner-CA full trust,
+Secure Enclave QR pairing through a real maintenance window and a completed
+authenticated physical-device session against the nonpersistent LAN canary.
+Those accepted read/session gates do not authorize daily writes or persistent
+installation. Each remaining mutation requires its own explicit owner approval,
+device readback and recovery acceptance; stable activation, boot integration
+and the final soak remain separate gates.

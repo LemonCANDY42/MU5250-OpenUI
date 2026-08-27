@@ -31,7 +31,6 @@ pub enum UbusWrite {
         encoded_message: String,
         encoding: &'static str,
     },
-    ChargePaused(bool),
     TrafficCycle {
         reset_day: u8,
         enabled: bool,
@@ -108,6 +107,7 @@ pub trait B04Io: Send + Sync {
     fn ubus_read(&self, operation: UbusRead) -> Result<Value, String>;
     fn ubus_write(&self, operation: UbusWrite) -> Result<Value, String>;
     fn wireless_config(&self) -> Result<BTreeMap<String, String>, String>;
+    fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String>;
     fn station_count(&self, interface: WifiInterface) -> Result<u32, String>;
     fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String>;
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String>;
@@ -202,14 +202,6 @@ impl B04Io for SystemB04Io {
                     "sms_no_decode_flag": "0"
                 }),
             ),
-            UbusWrite::ChargePaused(paused) => (
-                "charging control",
-                "zwrt_bsp.charger",
-                "set",
-                json!({
-                    "direct_power_supply_mode": if paused { "enable" } else { "disable" }
-                }),
-            ),
             UbusWrite::TrafficCycle { reset_day, enabled } => (
                 "traffic cycle",
                 "zwrt_data",
@@ -233,7 +225,14 @@ impl B04Io for SystemB04Io {
         let output = run_fixed("Wi-Fi configuration", "uci", &["show", "wireless"])?;
         let text = String::from_utf8(output)
             .map_err(|_| "Wi-Fi configuration was not UTF-8".to_string())?;
-        Ok(parse_uci_show(&text))
+        Ok(parse_uci_show("wireless", &text))
+    }
+
+    fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String> {
+        let output = run_fixed("Wi-Fi capabilities", "uci", &["show", "zwrt_wifi"])?;
+        let text = String::from_utf8(output)
+            .map_err(|_| "Wi-Fi capabilities were not UTF-8".to_string())?;
+        Ok(parse_uci_show("zwrt_wifi", &text))
     }
 
     fn station_count(&self, interface: WifiInterface) -> Result<u32, String> {
@@ -298,14 +297,15 @@ impl B04Io for SystemB04Io {
     }
 }
 
-fn parse_ubus_write_response(label: &str, output: &[u8]) -> Result<Value, String> {
-    // Several accepted B04 write methods acknowledge success with an empty
-    // stdout stream. The command exit status remains mandatory, and every
-    // state-changing caller performs an independent readback afterwards.
+fn parse_ubus_write_response(_label: &str, output: &[u8]) -> Result<Value, String> {
+    // Accepted B04 write methods may acknowledge a zero exit status with empty
+    // output or a vendor text token instead of JSON. Every caller performs a
+    // separate typed device readback before reporting success, so stdout is
+    // diagnostic only and never substitutes for verification.
     if output.iter().all(u8::is_ascii_whitespace) {
         return Ok(json!({}));
     }
-    serde_json::from_slice(output).map_err(|_| format!("{label} returned invalid JSON"))
+    Ok(serde_json::from_slice(output).unwrap_or_else(|_| json!({})))
 }
 
 fn run_fixed(label: &str, program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
@@ -359,11 +359,11 @@ fn run_fixed(label: &str, program: &str, args: &[&str]) -> Result<Vec<u8>, Strin
     Ok(output)
 }
 
-fn parse_uci_show(text: &str) -> BTreeMap<String, String> {
+fn parse_uci_show(package: &str, text: &str) -> BTreeMap<String, String> {
     text.lines()
         .filter_map(|line| {
             let (key, value) = line.split_once('=')?;
-            let key = key.strip_prefix("wireless.")?;
+            let key = key.strip_prefix(&format!("{package}."))?;
             Some((key.to_owned(), uci_unquote(value)))
         })
         .collect()
@@ -385,6 +385,7 @@ mod tests {
     #[test]
     fn uci_parser_keeps_named_values_without_shell_evaluation() {
         let parsed = parse_uci_show(
+            "wireless",
             "wireless.main_2g.ssid='Home'\n\
              wireless.main_2g.key='pass'\\''word'\n\
              unrelated.value='ignored'\n",
@@ -432,7 +433,7 @@ mod tests {
     }
 
     #[test]
-    fn ubus_writes_accept_empty_success_but_reject_non_json_output() {
+    fn ubus_write_stdout_is_diagnostic_because_callers_require_readback() {
         assert_eq!(parse_ubus_write_response("write", b"").unwrap(), json!({}));
         assert_eq!(
             parse_ubus_write_response("write", b" \r\n").unwrap(),
@@ -443,8 +444,8 @@ mod tests {
             json!({"ok": true})
         );
         assert_eq!(
-            parse_ubus_write_response("write", b"not-json").unwrap_err(),
-            "write returned invalid JSON"
+            parse_ubus_write_response("write", b"vendor success token").unwrap(),
+            json!({})
         );
     }
 }

@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -13,17 +12,11 @@ use crate::state_store::StateStore;
 
 const WIFI_TRANSACTION_FILE: &str = "wifi-transaction.json";
 const WIFI_TRANSACTION_LOCK: &str = "wifi-transaction.lock";
-const CHARGE_POLICY_FILE: &str = "charge-policy.json";
-const CHARGE_LOCK: &str = "charge.lock";
 const TRAFFIC_LOCK: &str = "traffic.lock";
 const SMS_LOCK: &str = "sms.lock";
 const DAILY_AUDIT_FILE: &str = "daily-audit.json";
 const DAILY_AUDIT_LOCK: &str = "daily-audit.lock";
 const WIFI_CONFIRM_SECONDS: u64 = 120;
-const CHARGE_HYSTERESIS_PERCENT: u8 = 5;
-const CHARGE_POLL_SECONDS: u64 = 30;
-const CHARGE_READBACK_ATTEMPTS: usize = 8;
-const CHARGE_READBACK_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_DAILY_AUDIT_EVENTS: usize = 128;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -42,24 +35,6 @@ pub struct SmsSendRequest {
 pub struct ChargingStatus {
     pub capacity_percent: u8,
     pub paused: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub automatic_limit_percent: Option<u8>,
-    pub hysteresis_percent: u8,
-}
-
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ChargingOperation {
-    SetLimit,
-    DisableLimit,
-}
-
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ChargingRequest {
-    pub operation: ChargingOperation,
-    #[serde(default)]
-    pub limit_percent: Option<u8>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -134,11 +109,6 @@ struct PendingWifiTransaction {
     new_values: BTreeMap<WifiField, String>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-struct ChargePolicy {
-    automatic_limit_percent: Option<u8>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DailyAuditEvent {
     timestamp: u64,
@@ -149,7 +119,6 @@ struct DailyAuditEvent {
 pub struct DailyService {
     store: StateStore,
     io: Arc<dyn B04Io>,
-    charge_enforcer_started: AtomicBool,
 }
 
 impl DailyService {
@@ -165,29 +134,16 @@ impl DailyService {
         let service = Self {
             store,
             io: Arc::new(crate::b04_io::SystemB04Io::new()),
-            charge_enforcer_started: AtomicBool::new(false),
         };
         service.rollback_pending_wifi(Some(transaction_id))
     }
 
     fn with_io(store: StateStore, io: Arc<dyn B04Io>) -> Result<Self, String> {
-        let service = Self {
-            store,
-            io,
-            charge_enforcer_started: AtomicBool::new(false),
-        };
+        let service = Self { store, io };
         // A reboot or service restart during an unconfirmed Wi-Fi transaction
         // must restore the saved values before the listener can start.
         service.rollback_pending_wifi(None)?;
         Ok(service)
-    }
-
-    pub fn start_charge_enforcer(self: &Arc<Self>) {
-        if self.charge_enforcer_started.swap(true, Ordering::AcqRel) {
-            return;
-        }
-        let weak = Arc::downgrade(self);
-        thread::spawn(move || charge_enforcer(weak));
     }
 
     pub fn sms_send(&self, request: SmsSendRequest) -> Result<WriteResult, String> {
@@ -223,62 +179,10 @@ impl DailyService {
     }
 
     pub fn charging_status(&self) -> Result<ChargingStatus, String> {
-        let policy = self.charge_policy()?;
         Ok(ChargingStatus {
             capacity_percent: self.io.battery_capacity()?,
             paused: charger_paused(self.io.as_ref())?,
-            automatic_limit_percent: policy.automatic_limit_percent,
-            hysteresis_percent: CHARGE_HYSTERESIS_PERCENT,
         })
-    }
-
-    pub fn charging_update(&self, request: ChargingRequest) -> Result<ChargingStatus, String> {
-        validate_charging_request(&request)?;
-        let _lock = self.store.lock_exclusive(CHARGE_LOCK)?;
-        let previous_policy = self.charge_policy()?;
-        let previous_paused = charger_paused(self.io.as_ref())?;
-        let result = (|| {
-            match request.operation {
-                ChargingOperation::SetLimit => {
-                    let limit = request
-                        .limit_percent
-                        .filter(|value| (50..=95).contains(value))
-                        .ok_or_else(|| "limit_percent must be between 50 and 95".to_string())?;
-                    self.persist_charge_policy(&ChargePolicy {
-                        automatic_limit_percent: Some(limit),
-                    })?;
-                    self.enforce_charge_policy_locked()?;
-                }
-                ChargingOperation::DisableLimit => {
-                    self.persist_charge_policy(&ChargePolicy::default())?;
-                    if charger_paused(self.io.as_ref())? {
-                        self.set_charge_paused(false)?;
-                    }
-                }
-            }
-            self.charging_status()
-        })();
-        match result {
-            Ok(status) => {
-                self.audit("charging_update", "success");
-                Ok(status)
-            }
-            Err(cause) => {
-                let recovery = self.restore_charge_state(&previous_policy, previous_paused);
-                match recovery {
-                    Ok(()) => {
-                        self.audit("charging_update", "rolled_back");
-                        Err(format!("charging update was rolled back: {cause}"))
-                    }
-                    Err(rollback_error) => {
-                        self.audit("charging_update", "rollback_failed");
-                        Err(format!(
-                            "charging update failed and recovery is still pending: {cause}; {rollback_error}"
-                        ))
-                    }
-                }
-            }
-        }
     }
 
     pub fn traffic_cycle_update(
@@ -449,62 +353,6 @@ impl DailyService {
         }
     }
 
-    fn charge_policy(&self) -> Result<ChargePolicy, String> {
-        Ok(self
-            .store
-            .read_json(CHARGE_POLICY_FILE)?
-            .unwrap_or_default())
-    }
-
-    fn persist_charge_policy(&self, policy: &ChargePolicy) -> Result<(), String> {
-        self.store.write_json(CHARGE_POLICY_FILE, policy)
-    }
-
-    fn enforce_charge_policy(&self) -> Result<(), String> {
-        let _lock = self.store.lock_exclusive(CHARGE_LOCK)?;
-        self.enforce_charge_policy_locked()
-    }
-
-    fn enforce_charge_policy_locked(&self) -> Result<(), String> {
-        let Some(limit) = self.charge_policy()?.automatic_limit_percent else {
-            return Ok(());
-        };
-        let capacity = self.io.battery_capacity()?;
-        let paused = charger_paused(self.io.as_ref())?;
-        if capacity >= limit && !paused {
-            self.set_charge_paused(true)?;
-        } else if capacity <= limit.saturating_sub(CHARGE_HYSTERESIS_PERCENT) && paused {
-            self.set_charge_paused(false)?;
-        }
-        Ok(())
-    }
-
-    fn set_charge_paused(&self, paused: bool) -> Result<(), String> {
-        self.io.ubus_write(UbusWrite::ChargePaused(paused))?;
-        let mut last_error = None;
-        for attempt in 0..CHARGE_READBACK_ATTEMPTS {
-            match charger_paused(self.io.as_ref()) {
-                Ok(current) if current == paused => return Ok(()),
-                Ok(_) => last_error = None,
-                Err(error) => last_error = Some(error),
-            }
-            if attempt + 1 < CHARGE_READBACK_ATTEMPTS {
-                thread::sleep(CHARGE_READBACK_INTERVAL);
-            }
-        }
-        Err(last_error.unwrap_or_else(|| {
-            "charging control readback did not match the requested state".into()
-        }))
-    }
-
-    fn restore_charge_state(&self, policy: &ChargePolicy, paused: bool) -> Result<(), String> {
-        self.persist_charge_policy(policy)?;
-        match charger_paused(self.io.as_ref()) {
-            Ok(current) if current == paused => Ok(()),
-            _ => self.set_charge_paused(paused),
-        }
-    }
-
     fn restore_traffic_cycle(&self, previous: (u8, bool)) -> Result<(), String> {
         self.io.ubus_write(UbusWrite::TrafficCycle {
             reset_day: previous.0,
@@ -538,16 +386,6 @@ impl DailyService {
                 "[daily-audit] persistence degraded: {error}; event={event}; outcome={outcome}"
             );
         }
-    }
-}
-
-fn charge_enforcer(weak: Weak<DailyService>) {
-    while let Some(service) = weak.upgrade() {
-        if let Err(error) = service.enforce_charge_policy() {
-            eprintln!("[charging] automatic policy degraded: {error}");
-        }
-        drop(service);
-        thread::sleep(Duration::from_secs(CHARGE_POLL_SECONDS));
     }
 }
 
@@ -742,25 +580,6 @@ fn validate_passphrase(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_charging_request(request: &ChargingRequest) -> Result<(), String> {
-    match request.operation {
-        ChargingOperation::SetLimit => {
-            if !request
-                .limit_percent
-                .is_some_and(|value| (50..=95).contains(&value))
-            {
-                return Err("limit_percent must be between 50 and 95".into());
-            }
-        }
-        ChargingOperation::DisableLimit => {
-            if request.limit_percent.is_some() {
-                return Err("limit_percent is only valid with set_limit".into());
-            }
-        }
-    }
-    Ok(())
-}
-
 fn validate_recipient(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.len() > 32
@@ -917,7 +736,7 @@ fn unix_now() -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Mutex;
 
     use serde_json::json;
@@ -930,10 +749,6 @@ mod tests {
         paused: Mutex<bool>,
         capacity: Mutex<u8>,
         cycle: Mutex<(u8, bool)>,
-        fail_next_charge_readback: AtomicBool,
-        corrupt_charge_readback: AtomicBool,
-        stale_charge_readbacks: AtomicUsize,
-        stale_after_next_charge_write: AtomicUsize,
         fail_next_cycle_readback: AtomicBool,
         corrupt_cycle_readback: AtomicBool,
     }
@@ -970,10 +785,6 @@ mod tests {
                 paused: Mutex::new(false),
                 capacity: Mutex::new(80),
                 cycle: Mutex::new((1, false)),
-                fail_next_charge_readback: AtomicBool::new(false),
-                corrupt_charge_readback: AtomicBool::new(false),
-                stale_charge_readbacks: AtomicUsize::new(0),
-                stale_after_next_charge_write: AtomicUsize::new(0),
                 fail_next_cycle_readback: AtomicBool::new(false),
                 corrupt_cycle_readback: AtomicBool::new(false),
             }
@@ -984,25 +795,9 @@ mod tests {
         fn ubus_read(&self, operation: UbusRead) -> Result<Value, String> {
             match operation {
                 UbusRead::SmsCommandStatus { .. } => Ok(json!({"sms_cmd_status_result": 3})),
-                UbusRead::ChargerStatus => {
-                    if self.corrupt_charge_readback.swap(false, Ordering::SeqCst) {
-                        return Ok(json!({"direct_power_supply_mode": "unknown"}));
-                    }
-                    if self
-                        .stale_charge_readbacks
-                        .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |value| {
-                            value.checked_sub(1)
-                        })
-                        .is_ok()
-                    {
-                        return Ok(json!({
-                            "direct_power_supply_mode": if *self.paused.lock().unwrap() { "disable" } else { "enable" }
-                        }));
-                    }
-                    Ok(json!({
-                        "direct_power_supply_mode": if *self.paused.lock().unwrap() { "enable" } else { "disable" }
-                    }))
-                }
+                UbusRead::ChargerStatus => Ok(json!({
+                    "direct_power_supply_mode": if *self.paused.lock().unwrap() { "enable" } else { "disable" }
+                })),
                 UbusRead::DataCycle => {
                     if self.corrupt_cycle_readback.swap(false, Ordering::SeqCst) {
                         return Ok(json!({"clearday": 0, "enable": 7}));
@@ -1017,17 +812,6 @@ mod tests {
         fn ubus_write(&self, operation: UbusWrite) -> Result<Value, String> {
             match operation {
                 UbusWrite::SmsSend { .. } => Ok(json!({})),
-                UbusWrite::ChargePaused(value) => {
-                    *self.paused.lock().unwrap() = value;
-                    let stale = self.stale_after_next_charge_write.swap(0, Ordering::SeqCst);
-                    if stale > 0 {
-                        self.stale_charge_readbacks.store(stale, Ordering::SeqCst);
-                    }
-                    if self.fail_next_charge_readback.swap(false, Ordering::SeqCst) {
-                        self.corrupt_charge_readback.store(true, Ordering::SeqCst);
-                    }
-                    Ok(json!({}))
-                }
                 UbusWrite::TrafficCycle { reset_day, enabled } => {
                     *self.cycle.lock().unwrap() = (reset_day, enabled);
                     if self.fail_next_cycle_readback.swap(false, Ordering::SeqCst) {
@@ -1039,6 +823,10 @@ mod tests {
         }
 
         fn wireless_config(&self) -> Result<BTreeMap<String, String>, String> {
+            Err("unused".into())
+        }
+
+        fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String> {
             Err("unused".into())
         }
 
@@ -1141,17 +929,11 @@ mod tests {
     }
 
     #[test]
-    fn charge_and_traffic_writes_require_readback() {
+    fn charging_is_read_only_and_traffic_writes_require_readback() {
         let (_temp, io, service) = service();
-        let status = service
-            .charging_update(ChargingRequest {
-                operation: ChargingOperation::SetLimit,
-                limit_percent: Some(80),
-            })
-            .unwrap();
-        assert!(status.paused);
-        assert_eq!(status.automatic_limit_percent, Some(80));
-        assert!(*io.paused.lock().unwrap());
+        let status = service.charging_status().unwrap();
+        assert_eq!(status.capacity_percent, 80);
+        assert!(!status.paused);
         service
             .traffic_cycle_update(TrafficCycleRequest {
                 reset_day: 15,
@@ -1162,20 +944,8 @@ mod tests {
     }
 
     #[test]
-    fn charge_and_traffic_restore_previous_state_after_bad_readback() {
+    fn traffic_restores_previous_state_after_bad_readback() {
         let (_temp, io, service) = service();
-        io.stale_after_next_charge_write
-            .store(CHARGE_READBACK_ATTEMPTS, Ordering::SeqCst);
-        let charge_error = service
-            .charging_update(ChargingRequest {
-                operation: ChargingOperation::SetLimit,
-                limit_percent: Some(80),
-            })
-            .unwrap_err();
-        assert!(charge_error.contains("rolled back"));
-        assert!(!*io.paused.lock().unwrap());
-        assert_eq!(service.charge_policy().unwrap(), ChargePolicy::default());
-
         io.fail_next_cycle_readback.store(true, Ordering::SeqCst);
         let cycle_error = service
             .traffic_cycle_update(TrafficCycleRequest {
@@ -1185,58 +955,6 @@ mod tests {
             .unwrap_err();
         assert!(cycle_error.contains("rolled back"));
         assert_eq!(*io.cycle.lock().unwrap(), (1, false));
-    }
-
-    #[test]
-    fn charging_write_accepts_delayed_b04_readback() {
-        let (_temp, io, service) = service();
-        io.stale_after_next_charge_write.store(2, Ordering::SeqCst);
-        let status = service
-            .charging_update(ChargingRequest {
-                operation: ChargingOperation::SetLimit,
-                limit_percent: Some(80),
-            })
-            .unwrap();
-        assert!(status.paused);
-        assert!(*io.paused.lock().unwrap());
-    }
-
-    #[test]
-    fn invalid_charge_request_is_rejected_before_any_state_change() {
-        let (_temp, io, service) = service();
-        let error = service
-            .charging_update(ChargingRequest {
-                operation: ChargingOperation::DisableLimit,
-                limit_percent: Some(80),
-            })
-            .unwrap_err();
-        assert_eq!(error, "limit_percent is only valid with set_limit");
-        assert!(!*io.paused.lock().unwrap());
-        assert_eq!(service.charge_policy().unwrap(), ChargePolicy::default());
-    }
-
-    #[test]
-    fn public_charging_contract_rejects_manual_pause_and_disable_resumes() {
-        assert!(serde_json::from_str::<ChargingRequest>(r#"{"operation":"pause"}"#).is_err());
-        assert!(serde_json::from_str::<ChargingRequest>(r#"{"operation":"resume"}"#).is_err());
-
-        let (_temp, io, service) = service();
-        service
-            .charging_update(ChargingRequest {
-                operation: ChargingOperation::SetLimit,
-                limit_percent: Some(80),
-            })
-            .unwrap();
-        assert!(*io.paused.lock().unwrap());
-        let status = service
-            .charging_update(ChargingRequest {
-                operation: ChargingOperation::DisableLimit,
-                limit_percent: None,
-            })
-            .unwrap();
-        assert!(!status.paused);
-        assert_eq!(status.automatic_limit_percent, None);
-        assert!(!*io.paused.lock().unwrap());
     }
 
     #[test]

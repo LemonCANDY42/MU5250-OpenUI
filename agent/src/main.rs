@@ -87,9 +87,6 @@ async fn serve(web_root: Option<PathBuf>) -> Result<(), String> {
     let auth = AuthService::open(store.clone())?;
     let daily = daily::DailyService::open(store)?;
     let state = AppState::with_daily(auth, daily);
-    if let Some(service) = &state.daily {
-        service.start_charge_enforcer();
-    }
     server::start(bind, state, tls, web_root)
         .await
         .map_err(|error| format!("HTTPS listener failed: {error}"))

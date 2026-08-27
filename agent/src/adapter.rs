@@ -185,8 +185,20 @@ pub struct WifiBandStatus {
 pub struct WifiStatus {
     pub enabled: bool,
     pub bands: Vec<WifiBandStatus>,
+    pub features: WifiFeatureStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub guest: Option<WifiGuestStatus>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WifiFeatureStatus {
+    pub wifi7_active: bool,
+    pub version_switch_reported_supported: bool,
+    pub version_switch_state_available: bool,
+    pub mlo_supported: bool,
+    pub mlo_enabled: bool,
+    pub band_steering_supported: bool,
+    pub band_steering_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -603,9 +615,17 @@ impl DeviceAdapter for B04Adapter {
                 "verify the B04 wireless UCI configuration",
             )
         })?;
+        let capabilities = self.io.wifi_capabilities().map_err(|message| {
+            source_error(
+                "wifi_source_unavailable",
+                message,
+                "verify the B04 Wi-Fi capability UCI configuration",
+            )
+        })?;
         let report = self.io.ubus_read(UbusRead::WifiReport).ok();
         parse_wifi_status(
             &config,
+            &capabilities,
             report.as_ref(),
             self.io.station_count(WifiInterface::TwoG).ok(),
             self.io.station_count(WifiInterface::FiveG).ok(),
@@ -815,6 +835,7 @@ fn parse_traffic_period(
 
 fn parse_wifi_status(
     config: &BTreeMap<String, String>,
+    capabilities: &BTreeMap<String, String>,
     report: Option<&Value>,
     clients_2g: Option<u32>,
     clients_5g: Option<u32>,
@@ -868,6 +889,22 @@ fn parse_wifi_status(
     })();
     Ok(WifiStatus {
         enabled: report_enabled.unwrap_or_else(|| bands.iter().any(|band| band.enabled)),
+        features: WifiFeatureStatus {
+            wifi7_active: bands.iter().any(|band| band.bandwidth.starts_with("EHT")),
+            version_switch_reported_supported: boolish_string(
+                capabilities.get("capability.wifi_attr_support_wifi6_switch"),
+            )
+            .unwrap_or(false),
+            version_switch_state_available: config.contains_key("zte_mbb.wifi6_switch"),
+            mlo_supported: boolish_string(capabilities.get("capability.wifi_attr_support_mlo"))
+                .unwrap_or(false),
+            mlo_enabled: boolish_string(config.get("zte_mbb.mlo")).unwrap_or(false),
+            band_steering_supported: boolish_string(
+                capabilities.get("capability.wifi_attr_support_lbd"),
+            )
+            .unwrap_or(false),
+            band_steering_enabled: boolish_string(config.get("zte_mbb.lbd")).unwrap_or(false),
+        },
         bands,
         guest,
     })
@@ -1349,10 +1386,31 @@ mod tests {
             ("guest_2g.isolate".into(), "1".into()),
             ("guest_2g.active_time".into(), "120".into()),
             ("guest_5g.disabled".into(), "1".into()),
+            ("zte_mbb.mlo".into(), "0".into()),
+            ("zte_mbb.lbd".into(), "1".into()),
         ]);
-        let wifi =
-            parse_wifi_status(&config, Some(&json!({"wifi_onoff":"1"})), Some(1), Some(2)).unwrap();
+        let capabilities = BTreeMap::from([
+            (
+                "capability.wifi_attr_support_wifi6_switch".into(),
+                "1".into(),
+            ),
+            ("capability.wifi_attr_support_mlo".into(), "0".into()),
+            ("capability.wifi_attr_support_lbd".into(), "1".into()),
+        ]);
+        let wifi = parse_wifi_status(
+            &config,
+            &capabilities,
+            Some(&json!({"wifi_onoff":"1"})),
+            Some(1),
+            Some(2),
+        )
+        .unwrap();
         assert!(wifi.enabled);
+        assert!(!wifi.features.wifi7_active);
+        assert!(wifi.features.version_switch_reported_supported);
+        assert!(!wifi.features.version_switch_state_available);
+        assert!(!wifi.features.mlo_supported);
+        assert!(wifi.features.band_steering_enabled);
         assert_eq!(wifi.bands[1].clients, Some(2));
         assert!(wifi.bands[1].hidden);
         let guest = wifi.guest.unwrap();

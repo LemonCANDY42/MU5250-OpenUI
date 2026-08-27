@@ -24,14 +24,16 @@ struct SettingsView: View {
                 }
             }
             .navigationTitle("Settings")
-            .confirmationDialog(
+            .alert(
                 "Discard this local key and certificate pin?",
-                isPresented: $confirmsForget,
-                titleVisibility: .visible
+                isPresented: $confirmsForget
             ) {
                 Button("Discard local credential", role: .destructive) {
                     Task { await model.discardLocalPairing() }
                 }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This removes only the credential stored on this iPhone; it does not revoke the public key on the U60.")
             }
         }
     }

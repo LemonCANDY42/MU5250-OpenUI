@@ -36,6 +36,7 @@ final class AppModel {
     private(set) var profile: DeviceProfile?
     private(set) var credential: CredentialMetadata?
     private(set) var charging: Components.Schemas.ChargingStatus?
+    private(set) var telemetryHistory: [TelemetrySample]
     private(set) var pendingWifiConfirmation: PendingWifiConfirmation?
     private(set) var wifiConfirmationMessage: String?
     private(set) var isConfirmingWifi = false
@@ -46,17 +47,21 @@ final class AppModel {
     private let credentials: DeviceCredentialStore
     private let vault: SessionVault
     private let wifiConfirmations: WifiConfirmationStore
+    private let telemetryHistoryStore: TelemetryHistoryStore
     private var service: AgentService?
     @ObservationIgnored private var wifiConfirmationTask: Task<Void, Never>?
 
     init(
         credentials: DeviceCredentialStore = DeviceCredentialStore(),
         vault: SessionVault = SessionVault(),
-        wifiConfirmations: WifiConfirmationStore = WifiConfirmationStore()
+        wifiConfirmations: WifiConfirmationStore = WifiConfirmationStore(),
+        telemetryHistoryStore: TelemetryHistoryStore = TelemetryHistoryStore()
     ) {
         self.credentials = credentials
         self.vault = vault
         self.wifiConfirmations = wifiConfirmations
+        self.telemetryHistoryStore = telemetryHistoryStore
+        telemetryHistory = telemetryHistoryStore.load()
         if let pending = try? wifiConfirmations.load() {
             pendingWifiConfirmation = pending
         }
@@ -140,14 +145,6 @@ final class AppModel {
         await perform {
             guard let service else { throw LocalSecurityError.missingCredential }
             try await service.sendSMS(recipient: recipient, message: message)
-            try await refreshThrowing()
-        }
-    }
-
-    func setChargingLimit(_ limit: Int?) async {
-        await perform {
-            guard let service else { throw LocalSecurityError.missingCredential }
-            charging = try await service.updateChargingLimit(limit)
             try await refreshThrowing()
         }
     }
@@ -266,8 +263,18 @@ final class AppModel {
 
     private func refreshThrowing() async throws {
         guard let service else { throw LocalSecurityError.missingCredential }
-        dashboard = try await service.dashboard()
+        let snapshot = try await service.dashboard()
+        dashboard = snapshot
         charging = try? await service.chargingStatus()
+        telemetryHistory = telemetryHistoryStore.append(
+            TelemetrySample(
+                timestamp: .now,
+                batteryPercent: snapshot.battery?.capacityPercent,
+                lteRSRPdBm: snapshot.signal?.lte?.rsrpDbm.map(Double.init),
+                nr5gRSRPdBm: snapshot.signal?.nr5g?.rsrpDbm.map(Double.init)
+            ),
+            to: telemetryHistory
+        )
     }
 
     private func startWifiConfirmationLoop() {

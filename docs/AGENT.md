@@ -8,7 +8,7 @@ records before stable installation.
 ## Compiled public surface
 
 `openapi/u60-v1.yaml` is the contract authority. `agent/src/server.rs` routes
-ten read-only capabilities, five bounded daily operations and five versioned
+ten read-only capabilities, four bounded daily operations and five versioned
 authentication paths:
 
 | Endpoint | Meaning |
@@ -25,7 +25,7 @@ authentication paths:
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
-| `GET/PUT /v1/charging` | Set or disable a 50–95% automatic threshold with bounded delayed-state readback; no public manual pause |
+| `GET /v1/charging` | Read-only battery capacity and stock charging-permission state; no public charging writes |
 | `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
 | `POST /v1/wifi/transaction` | Apply allowlisted primary/guest fields with a client-persisted transaction ID known before restart and 120-second rollback |
 | `POST /v1/wifi/transaction/confirm` | Re-read the requested fields and commit only a matching pending Wi-Fi transaction |

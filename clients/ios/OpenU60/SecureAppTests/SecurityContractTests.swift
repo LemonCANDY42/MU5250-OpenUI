@@ -5,6 +5,35 @@ import Security
 import XCTest
 
 final class SecurityContractTests: XCTestCase {
+    func testTelemetryHistoryIsBoundedDeviceLocalAndReplacesRapidSamples() throws {
+        let memory = MemorySecretStore()
+        let store = TelemetryHistoryStore(store: memory, account: "history")
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let first = TelemetrySample(timestamp: start, batteryPercent: 80, lteRSRPdBm: -90, nr5gRSRPdBm: nil)
+        let replacement = TelemetrySample(timestamp: start.addingTimeInterval(5), batteryPercent: 79, lteRSRPdBm: -91, nr5gRSRPdBm: -88)
+        let later = TelemetrySample(timestamp: start.addingTimeInterval(20), batteryPercent: 78, lteRSRPdBm: -92, nr5gRSRPdBm: -89)
+
+        var history = store.append(first, to: [])
+        history = store.append(replacement, to: history)
+        XCTAssertEqual(history, [replacement])
+        history = store.append(later, to: history)
+        XCTAssertEqual(history, [replacement, later])
+        XCTAssertEqual(store.load(now: later.timestamp), history)
+    }
+
+    func testDashboardPreferencesPersistWithoutNetworkOrSharedStorage() {
+        let memory = MemorySecretStore()
+        let store = DashboardPreferencesStore(store: memory, account: "dashboard")
+        let value = DashboardPreferences(
+            sectionOrder: ["signal", "battery"],
+            collapsedSections: ["Capabilities"],
+            refreshSeconds: 30,
+            historyRangeSeconds: 604_800
+        )
+        store.save(value)
+        XCTAssertEqual(store.load(), value)
+    }
+
     func testWifiConfirmationIdentifierExistsBeforeNetworkMutationAndPersists() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let pending = PendingWifiConfirmation.make(now: now)

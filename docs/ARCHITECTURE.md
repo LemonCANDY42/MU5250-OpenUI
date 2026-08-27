@@ -84,7 +84,7 @@ loopback canary is evidence for a stage, not completion of V1.
    requires owner-confirmed physical-iPhone CA installation/full trust, followed
    by key pairing and handshake acceptance. The
    web and iOS clients share generated `/v1` models and capability-driven UI. Daily
-   writes are SMS send, automatic charging-threshold policy, traffic-cycle reset and
+   writes are SMS send, traffic-cycle reset and
    transactional Wi-Fi primary/guest settings with fixed B04 field paths, strict
    channel/bandwidth/power allowlists, a client-generated identifier persisted
    before mutation, a roughly 120-second confirmation window, reconnect retries
@@ -118,7 +118,7 @@ upstream feature list wholesale:
 | Included V1 domain | Source value retained | Safety boundary |
 | --- | --- | --- |
 | Signal/cellular/dashboard | MU's compact device UI and open-u60-pro's richer normalized status | Read-only typed values; no raw AT or vendor JSON |
-| Traffic/battery/thermal | Proven firmware sources and charge-policy semantics | Bounded reads; charge writes use fixed enum/state transitions |
+| Traffic/battery/thermal | Proven firmware sources | Bounded reads; charging is read-only because B04 write-result and recovery semantics are not proven |
 | Wi-Fi/LAN | Useful settings and connected-client views | No arbitrary UCI; Wi-Fi changes are persisted transactions with timeout rollback |
 | SMS | Listing and sending from both projects | Strict UTF-16/UCS-2 hex decoding (including surrogate pairs), bounded pages, UTF-8-safe flagged truncation and explicit malformed-record counts; no SQL fallback, bulk delete, forwarding plugin or arbitrary modem command |
 | Web/iOS clients | MU information density plus open-u60-pro SwiftUI navigation | One OpenAPI contract, capability hiding, pinned HTTPS and public-key login |

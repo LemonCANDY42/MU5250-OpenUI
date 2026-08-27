@@ -196,7 +196,7 @@ pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) ->
         .route("/v1/lan/clients", get(lan_clients))
         .route("/v1/sms", get(sms_list))
         .route("/v1/sms/send", post(sms_send))
-        .route("/v1/charging", get(charging_status).put(charging_update))
+        .route("/v1/charging", get(charging_status))
         .route("/v1/traffic/cycle", put(traffic_cycle_update))
         .route("/v1/wifi/transaction", post(wifi_transaction_begin))
         .route(
@@ -338,16 +338,6 @@ async fn sms_send(
 async fn charging_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
     protected(&state, &headers, Scope::Read, || {
         api_v1::charging_status(&state)
-    })
-}
-
-async fn charging_update(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
-    protected_body(&state, &headers, Scope::Daily, body, |body| {
-        api_v1::charging_update(&state, body)
     })
 }
 
@@ -786,11 +776,6 @@ mod tests {
             ),
             (
                 Method::PUT,
-                "/v1/charging",
-                r#"{"operation":"set_limit","limit_percent":80}"#,
-            ),
-            (
-                Method::PUT,
                 "/v1/traffic/cycle",
                 r#"{"reset_day":1,"enabled":false}"#,
             ),
@@ -812,23 +797,11 @@ mod tests {
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
         }
 
-        let password = "host test management password";
-        state.auth.set_password(password).unwrap();
-        let session = state.auth.password_session(password, "127.0.0.1").unwrap();
-        let mut request = request(
-            Method::PUT,
-            "/v1/charging",
-            r#"{"operation":"set_limit","limit_percent":80}"#,
-        );
-        request.headers_mut().insert(
-            AUTHORIZATION,
-            format!("Bearer {}", session.token).parse().unwrap(),
-        );
         let response = router_with_web_root(state, None)
-            .oneshot(request)
+            .oneshot(request(Method::PUT, "/v1/charging", "{}"))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
     }
 
     #[tokio::test]

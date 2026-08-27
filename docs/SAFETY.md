@@ -114,10 +114,10 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
 
 - **Airplane mode bug**: `nwinfo_set_mode ONLINE` does NOT recover the modem
   from low-power mode. Only fix: reboot.
-- **Charge policy inversion**: `zwrt_bsp.charger set
-  {"direct_power_supply_mode":"enable"}` STOPS charging; `"disable"` STARTS
-  it. Historical code accounts for this inversion, but the route is dormant
-  until a typed transaction and B04 recovery test exist.
+- **Charging remains read-only**: B04 exposes the stock charging state, but its
+  write-result and recovery semantics are not sufficiently proven. V1 does not
+  call the charger `set` method, run a charging-policy enforcer, or expose a
+  charging mutation route.
 - **procd lifecycle**: signalling or stopping a managed service can cause a
   respawn or block firmware synchronization. The integrated platform performs
   neither operation.
@@ -200,8 +200,10 @@ device-recovery evidence, not as approval to bypass the disabled deploy guards.
 - `B04Adapter` reads only the fixed `/usr/zte_web/web/version` identity file
   plus fixed proc/sysfs paths. No public request can select an object, method,
   command, key or path.
-- Legacy TTL, USB, Wi-Fi, charge, SMS, routing and logger modules remain only as
-  dormant provenance files and are not in the compiled module graph.
+- Legacy TTL, USB, routing and logger modules remain only as dormant provenance
+  files and are not in the compiled module graph. Wi-Fi and SMS are exposed only
+  through their typed, allowlisted V1 operations; charging is read-only and the
+  historical charging-policy implementation has been removed.
 
 ## 3. Findings acted on (2026-08-09)
 
@@ -221,9 +223,9 @@ device-recovery evidence, not as approval to bypass the disabled deploy guards.
 
 The upstream snapshot contained charge control, USB powerbank, SMS
 SQLite-delete fallback, raw AT-port discovery and Wi-Fi UCI behavior. In the
-B04 V1 integration these legacy routes are dormant; none is accepted for B04
-until it is represented by a typed `/v1` capability and passes its own backup,
-readback and recovery gate.
+B04 V1 integration the charger write path is rejected; other functionality is
+accepted only when represented by a typed `/v1` capability and after its own
+backup, readback and recovery gate.
 
 **Rejected from v2.1 (safety regressions):**
 

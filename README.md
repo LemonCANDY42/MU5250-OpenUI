@@ -32,7 +32,7 @@ authorize daily mutations or a stable install.
 
 - `B04Adapter` contains firmware-specific reads and returns normalized domain
   types rather than vendor JSON.
-- `openapi/u60-v1.yaml` defines ten read-only capabilities, five bounded daily
+- `openapi/u60-v1.yaml` defines ten read-only capabilities, four bounded daily
   management operations, plus password,
   pairing and challenge-based authentication under `/v1`.
 - The TLS 1.3 listener can explicitly serve `web-app/dist` with

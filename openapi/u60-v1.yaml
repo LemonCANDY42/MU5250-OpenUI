@@ -394,10 +394,10 @@ paths:
   /v1/charging:
     get:
       operationId: getChargingStatus
-      summary: Read the automatic charging-limit state and current enforcement result
+      summary: Read the current battery capacity and charging permission state
       responses:
         "200":
-          description: Charging state and policy
+          description: Read-only charging state
           content:
             application/json:
               schema:
@@ -406,34 +406,6 @@ paths:
           $ref: "#/components/responses/AuthenticationFailed"
         "403":
           $ref: "#/components/responses/Forbidden"
-        "500":
-          $ref: "#/components/responses/AuthInternalError"
-        "503":
-          $ref: "#/components/responses/DailySourceUnavailable"
-    put:
-      operationId: updateCharging
-      summary: Set or disable the bounded automatic charging threshold
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/ChargingRequest"
-      responses:
-        "200":
-          description: Applied charging state and policy
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ChargingStatusResponse"
-        "400":
-          $ref: "#/components/responses/InvalidRequest"
-        "401":
-          $ref: "#/components/responses/AuthenticationFailed"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/AuthInternalError"
         "503":
@@ -1091,7 +1063,7 @@ components:
     WifiStatus:
       type: object
       additionalProperties: false
-      required: [enabled, bands]
+      required: [enabled, bands, features]
       properties:
         enabled:
           type: boolean
@@ -1100,8 +1072,38 @@ components:
           maxItems: 2
           items:
             $ref: "#/components/schemas/WifiBandStatus"
+        features:
+          $ref: "#/components/schemas/WifiFeatureStatus"
         guest:
           $ref: "#/components/schemas/WifiGuestStatus"
+    WifiFeatureStatus:
+      type: object
+      additionalProperties: false
+      required:
+        - wifi7_active
+        - version_switch_reported_supported
+        - version_switch_state_available
+        - mlo_supported
+        - mlo_enabled
+        - band_steering_supported
+        - band_steering_enabled
+      properties:
+        wifi7_active:
+          type: boolean
+        version_switch_reported_supported:
+          type: boolean
+          description: B04 capability table advertises a Wi-Fi generation switch
+        version_switch_state_available:
+          type: boolean
+          description: A fixed current-state source exists; false means no control may be shown
+        mlo_supported:
+          type: boolean
+        mlo_enabled:
+          type: boolean
+        band_steering_supported:
+          type: boolean
+        band_steering_enabled:
+          type: boolean
     WifiGuestStatus:
       type: object
       additionalProperties: false
@@ -1257,7 +1259,7 @@ components:
     ChargingStatus:
       type: object
       additionalProperties: false
-      required: [capacity_percent, paused, hysteresis_percent]
+      required: [capacity_percent, paused]
       properties:
         capacity_percent:
           type: integer
@@ -1265,25 +1267,6 @@ components:
           maximum: 100
         paused:
           type: boolean
-        automatic_limit_percent:
-          type: integer
-          minimum: 50
-          maximum: 95
-        hysteresis_percent:
-          type: integer
-          const: 5
-    ChargingRequest:
-      type: object
-      additionalProperties: false
-      required: [operation]
-      properties:
-        operation:
-          type: string
-          enum: [set_limit, disable_limit]
-        limit_percent:
-          type: integer
-          minimum: 50
-          maximum: 95
     TrafficCycleRequest:
       type: object
       additionalProperties: false

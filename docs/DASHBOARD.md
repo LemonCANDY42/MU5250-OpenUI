@@ -25,7 +25,10 @@ requests only supported or degraded read endpoints and displays:
 
 An unsupported capability is shown explicitly and is not requested. A degraded
 capability retains its reason and maintenance action. There are no raw commands,
-firmware dictionaries, device mutations or legacy endpoint bindings.
+firmware dictionaries or legacy endpoint bindings. The authenticated controls
+remain limited to the typed V1 daily-operation surface; charging is read-only,
+and Wi-Fi changes keep a client-generated confirmation identifier in IndexedDB
+before mutation so a page reload can resume the bounded rollback handshake.
 
 ## Browser authentication
 

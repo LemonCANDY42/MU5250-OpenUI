@@ -4,8 +4,7 @@ use serde_json::{json, Value};
 
 use crate::adapter::AdapterError;
 use crate::daily::{
-    ChargingRequest, SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest,
-    WifiTransactionRequest,
+    SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiTransactionRequest,
 };
 use crate::handlers::AppState;
 
@@ -104,12 +103,6 @@ pub fn charging_status(state: &AppState) -> (u16, Value) {
             .ok_or_else(|| "daily management service is unavailable".to_string())
             .and_then(|service| service.charging_status()),
     )
-}
-
-pub fn charging_update(state: &AppState, body: &[u8]) -> (u16, Value) {
-    daily_request::<ChargingRequest, _>(state, body, |service, request| {
-        service.charging_update(request)
-    })
 }
 
 pub fn traffic_cycle_update(state: &AppState, body: &[u8]) -> (u16, Value) {

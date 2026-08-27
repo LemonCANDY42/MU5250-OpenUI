@@ -300,10 +300,9 @@ export interface paths {
             readonly path?: never;
             readonly cookie?: never;
         };
-        /** Read the automatic charging-limit state and current enforcement result */
+        /** Read the current battery capacity and charging permission state */
         readonly get: operations["getChargingStatus"];
-        /** Set or disable the bounded automatic charging threshold */
-        readonly put: operations["updateCharging"];
+        readonly put?: never;
         readonly post?: never;
         readonly delete?: never;
         readonly options?: never;
@@ -578,7 +577,19 @@ export interface components {
                 components["schemas"]["WifiBandStatus"],
                 components["schemas"]["WifiBandStatus"]
             ];
+            readonly features: components["schemas"]["WifiFeatureStatus"];
             readonly guest?: components["schemas"]["WifiGuestStatus"];
+        };
+        readonly WifiFeatureStatus: {
+            readonly wifi7_active: boolean;
+            /** @description B04 capability table advertises a Wi-Fi generation switch */
+            readonly version_switch_reported_supported: boolean;
+            /** @description A fixed current-state source exists; false means no control may be shown */
+            readonly version_switch_state_available: boolean;
+            readonly mlo_supported: boolean;
+            readonly mlo_enabled: boolean;
+            readonly band_steering_supported: boolean;
+            readonly band_steering_enabled: boolean;
         };
         readonly WifiGuestStatus: {
             readonly enabled_2g: boolean;
@@ -644,14 +655,6 @@ export interface components {
         readonly ChargingStatus: {
             readonly capacity_percent: number;
             readonly paused: boolean;
-            readonly automatic_limit_percent?: number;
-            /** @constant */
-            readonly hysteresis_percent: 5;
-        };
-        readonly ChargingRequest: {
-            /** @enum {string} */
-            readonly operation: "set_limit" | "disable_limit";
-            readonly limit_percent?: number;
         };
         readonly TrafficCycleRequest: {
             readonly reset_day: number;
@@ -1290,7 +1293,7 @@ export interface operations {
         };
         readonly requestBody?: never;
         readonly responses: {
-            /** @description Charging state and policy */
+            /** @description Read-only charging state */
             readonly 200: {
                 headers: {
                     readonly [name: string]: unknown;
@@ -1301,36 +1304,6 @@ export interface operations {
             };
             readonly 401: components["responses"]["AuthenticationFailed"];
             readonly 403: components["responses"]["Forbidden"];
-            readonly 500: components["responses"]["AuthInternalError"];
-            readonly 503: components["responses"]["DailySourceUnavailable"];
-        };
-    };
-    readonly updateCharging: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["ChargingRequest"];
-            };
-        };
-        readonly responses: {
-            /** @description Applied charging state and policy */
-            readonly 200: {
-                headers: {
-                    readonly [name: string]: unknown;
-                };
-                content: {
-                    readonly "application/json": components["schemas"]["ChargingStatusResponse"];
-                };
-            };
-            readonly 400: components["responses"]["InvalidRequest"];
-            readonly 401: components["responses"]["AuthenticationFailed"];
-            readonly 403: components["responses"]["Forbidden"];
-            readonly 413: components["responses"]["PayloadTooLarge"];
             readonly 500: components["responses"]["AuthInternalError"];
             readonly 503: components["responses"]["DailySourceUnavailable"];
         };
