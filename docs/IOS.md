@@ -84,6 +84,10 @@ field absent without failing Wi-Fi status. Radio aggregation, selection and
 read-only cell-lock summaries are optional so new clients remain compatible
 with earlier V1 agents. The battery card similarly shows optional validated
 health, cycle, learned/design capacity and applicable kernel-estimate fields.
+When both capacity fields are available, it derives battery health as learned
+full capacity divided by design capacity without capping the result at 100%; it
+keeps the kernel-reported condition as a separate status and omits the derived
+percentage when either input is unavailable or invalid.
 The signed charge counter is explicitly labeled as relative, never as remaining
 capacity, and is not charted. Zero time-to-full at the charging/full boundary is
 shown as complete; other kernel estimates are omitted beyond the 30-day

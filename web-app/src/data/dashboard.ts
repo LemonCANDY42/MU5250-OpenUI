@@ -38,6 +38,24 @@ export interface DashboardSnapshot {
   panels: readonly DashboardPanel[]
 }
 
+export function batteryCapacityHealthPercent(
+  learnedFullCapacityMah: number | undefined,
+  designCapacityMah: number | undefined,
+): number | undefined {
+  if (
+    learnedFullCapacityMah === undefined ||
+    designCapacityMah === undefined ||
+    !Number.isFinite(learnedFullCapacityMah) ||
+    !Number.isFinite(designCapacityMah) ||
+    learnedFullCapacityMah <= 0 ||
+    designCapacityMah <= 0
+  ) {
+    return undefined
+  }
+  const percent = (learnedFullCapacityMah / designCapacityMah) * 100
+  return Number.isFinite(percent) ? percent : undefined
+}
+
 const ENDPOINTS: Readonly<
   Record<CapabilityId, { path: string; parse: (value: unknown) => PanelValue }>
 > = {

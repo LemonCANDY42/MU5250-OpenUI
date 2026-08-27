@@ -195,6 +195,31 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(battery.timeToFullSeconds)
     }
 
+    func testBatteryCapacityHealthUsesDesignCapacityWithoutClamping() throws {
+        XCTAssertEqual(
+            try XCTUnwrap(
+                batteryCapacityHealthPercent(
+                    learnedFullCapacityMah: 5_250,
+                    designCapacityMah: 5_000
+                )
+            ),
+            105,
+            accuracy: 0.000_001
+        )
+        XCTAssertNil(
+            batteryCapacityHealthPercent(
+                learnedFullCapacityMah: nil,
+                designCapacityMah: 5_000
+            )
+        )
+        XCTAssertNil(
+            batteryCapacityHealthPercent(
+                learnedFullCapacityMah: 5_000,
+                designCapacityMah: 0
+            )
+        )
+    }
+
     func testDashboardPreferencesPersistWithoutNetworkOrSharedStorage() {
         let memory = MemorySecretStore()
         let store = DashboardPreferencesStore(store: memory, account: "dashboard")

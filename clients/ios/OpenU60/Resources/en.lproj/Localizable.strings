@@ -243,6 +243,8 @@
 "Memory" = "Memory";
 "Storage" = "Storage";
 "Health" = "Health";
+"Battery health" = "Battery health";
+"Reported condition" = "Reported condition";
 "Cycle count" = "Cycle count";
 "Learned full capacity" = "Learned full capacity";
 "Design capacity" = "Design capacity";

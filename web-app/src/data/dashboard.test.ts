@@ -6,7 +6,7 @@ vi.mock('./client', async (importOriginal) => {
 })
 
 import { AgentError, getJson } from './client'
-import { loadDashboard } from './dashboard'
+import { batteryCapacityHealthPercent, loadDashboard } from './dashboard'
 
 const getJsonMock = vi.mocked(getJson)
 
@@ -172,6 +172,18 @@ describe('capability-driven dashboard loading', () => {
     expect(
       snapshot.panels.find((panel) => panel.capability.id === 'battery_status')?.error,
     ).toBeUndefined()
+  })
+})
+
+describe('battery capacity health', () => {
+  it('uses design capacity as the baseline without clamping above 100 percent', () => {
+    expect(batteryCapacityHealthPercent(5250, 5000)).toBe(105)
+  })
+
+  it('omits the metric when either capacity is unavailable or invalid', () => {
+    expect(batteryCapacityHealthPercent(undefined, 5000)).toBeUndefined()
+    expect(batteryCapacityHealthPercent(5000, undefined)).toBeUndefined()
+    expect(batteryCapacityHealthPercent(5000, 0)).toBeUndefined()
   })
 })
 

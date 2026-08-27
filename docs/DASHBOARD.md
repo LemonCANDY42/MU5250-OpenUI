@@ -42,7 +42,10 @@ accepts earlier V1 agents. The signed battery charge counter is labeled as a
 relative kernel counter rather than remaining capacity, and applicable time
 values are labeled as kernel estimates; a zero time-to-full at the charging/full
 boundary is shown as complete, while estimates beyond the 30-day plausibility
-window are omitted.
+window are omitted. When both normalized capacity fields are present, battery
+health is displayed as learned full capacity divided by design capacity. The
+derived percentage is not capped at 100%, because a learned threshold can be
+higher than the nominal design threshold; missing or invalid inputs omit it.
 
 ## Browser authentication
 

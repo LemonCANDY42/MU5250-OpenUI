@@ -419,8 +419,14 @@ struct DashboardView: View {
             metric("Current", "\(battery.currentMa) mA")
             metric("Power", String(format: "%.2f W", Double(battery.powerMw).magnitude / 1000))
             metric("Temperature", String(format: "%.1f °C", battery.temperatureC))
+            if let healthPercent = batteryCapacityHealthPercent(
+                learnedFullCapacityMah: battery.learnedFullCapacityMah,
+                designCapacityMah: battery.designCapacityMah
+            ) {
+                metric("Battery health", formatPercent(healthPercent))
+            }
             if let health = battery.health {
-                metric("Health", localizedBatteryHealth(health))
+                metric("Reported condition", localizedBatteryHealth(health))
             }
             if let cycles = battery.cycleCount {
                 metric("Cycle count", cycles.formatted())

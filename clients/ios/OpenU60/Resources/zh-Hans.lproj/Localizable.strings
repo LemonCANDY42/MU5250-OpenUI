@@ -243,6 +243,8 @@
 "Memory" = "内存";
 "Storage" = "存储";
 "Health" = "健康状态";
+"Battery health" = "电池健康度";
+"Reported condition" = "系统报告状态";
 "Cycle count" = "循环次数";
 "Learned full capacity" = "当前学习满充容量";
 "Design capacity" = "设计容量";

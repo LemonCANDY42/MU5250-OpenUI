@@ -14,3 +14,20 @@ struct DashboardSnapshot: Sendable {
     let sms: Components.Schemas.SmsPage?
     let failures: [String: String]
 }
+
+func batteryCapacityHealthPercent(
+    learnedFullCapacityMah: Int?,
+    designCapacityMah: Int?
+) -> Double? {
+    guard
+        let learnedFullCapacityMah,
+        let designCapacityMah,
+        learnedFullCapacityMah > 0,
+        designCapacityMah > 0
+    else {
+        return nil
+    }
+
+    let percent = Double(learnedFullCapacityMah) / Double(designCapacityMah) * 100
+    return percent.isFinite ? percent : nil
+}

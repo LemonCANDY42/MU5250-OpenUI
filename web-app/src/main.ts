@@ -11,7 +11,12 @@ import {
 } from './auth/auth-service'
 import type { BrowserCredential } from './auth/credential-store'
 import { AgentError, getJson, hasSessionToken, postJson, putJson } from './data/client'
-import { loadDashboard, type DashboardPanel, type DashboardSnapshot } from './data/dashboard'
+import {
+  batteryCapacityHealthPercent,
+  loadDashboard,
+  type DashboardPanel,
+  type DashboardSnapshot,
+} from './data/dashboard'
 import {
   clearPendingWifiConfirmation,
   loadPendingWifiConfirmation,
@@ -628,7 +633,16 @@ function appendBattery(card: HTMLElement, value: V1BatteryStatus): void {
     ['Power', `${(Math.abs(value.power_mw) / 1000).toFixed(2)} W`],
     ['Temperature', `${value.temperature_c.toFixed(1)} °C`],
   ]
-  if (value.health !== undefined) metrics.push(['Health', humanizeSnakeCase(value.health)])
+  const healthPercent = batteryCapacityHealthPercent(
+    value.learned_full_capacity_mah,
+    value.design_capacity_mah,
+  )
+  if (healthPercent !== undefined) {
+    metrics.push(['Battery health', `${healthPercent.toFixed(1)}%`])
+  }
+  if (value.health !== undefined) {
+    metrics.push(['Reported condition', humanizeSnakeCase(value.health)])
+  }
   if (value.cycle_count !== undefined) metrics.push(['Cycle count', value.cycle_count.toString()])
   if (value.learned_full_capacity_mah !== undefined) {
     metrics.push(['Learned full capacity', `${value.learned_full_capacity_mah} mAh`])
