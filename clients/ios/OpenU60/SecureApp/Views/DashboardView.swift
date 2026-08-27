@@ -335,6 +335,7 @@ struct DashboardView: View {
             metric("State", localizedBatteryState(battery.state))
             metric("Voltage", String(format: "%.3f V", Double(battery.voltageMv) / 1000))
             metric("Current", "\(battery.currentMa) mA")
+            metric("Power", String(format: "%.2f W", Double(battery.powerMw).magnitude / 1000))
             metric("Temperature", String(format: "%.1f °C", battery.temperatureC))
             let samples = visibleTelemetry.filter { $0.batteryPercent != nil }
             if samples.count >= 2 {

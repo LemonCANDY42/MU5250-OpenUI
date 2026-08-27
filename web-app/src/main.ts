@@ -601,6 +601,7 @@ function appendBattery(card: HTMLElement, value: V1BatteryStatus): void {
     ['Capacity', `${value.capacity_percent}%`],
     ['Voltage', `${value.voltage_mv} mV`],
     ['Current', `${value.current_ma} mA`],
+    ['Power', `${(Math.abs(value.power_mw) / 1000).toFixed(2)} W`],
     ['Temperature', `${value.temperature_c.toFixed(1)} °C`],
   ])
 }

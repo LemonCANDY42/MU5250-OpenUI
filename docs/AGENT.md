@@ -16,7 +16,7 @@ authentication paths:
 | `GET /v1/device` | Normalized model, adapter target and best-effort firmware/hardware identity |
 | `GET /v1/capabilities` | `available`, `degraded` or `unsupported` state plus reason/recovery metadata |
 | `GET /v1/status/system` | Hostname, kernel, uptime and load average |
-| `GET /v1/status/battery` | Normalized capacity, voltage, current, temperature and state |
+| `GET /v1/status/battery` | Normalized capacity, voltage, current, derived battery-side power, temperature and state |
 | `GET /v1/status/thermal` | Validated readings from the fixed B04 sensor map |
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
@@ -51,6 +51,12 @@ surface.
 parsing. Handlers receive only typed domain structures. Vendor JSON must never
 cross into `/v1`, and clients must never provide a vendor object, command, key
 or path.
+
+Battery `power_mw` is a signed instantaneous battery-side value derived from
+the fixed B04 `voltage_now` and `current_now` sources. The adapter deliberately
+does not trust the PMIC's `power_now` node, matching the proven behavior of the
+original MU5250 tooling. Its sign follows `current_ma`; it is neither USB input
+power nor a wall-power measurement.
 
 Capability reporting is fail-closed:
 

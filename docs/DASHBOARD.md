@@ -20,7 +20,7 @@ requests only supported or degraded read endpoints and displays:
 - normalized device identity;
 - capability status and recovery metadata;
 - system uptime, kernel and load average;
-- battery state, capacity, voltage, current and temperature;
+- battery state, capacity, voltage, current, derived instantaneous power and temperature;
 - validated thermal sensors.
 
 An unsupported capability is shown explicitly and is not requested. A degraded
@@ -29,6 +29,9 @@ firmware dictionaries or legacy endpoint bindings. The authenticated controls
 remain limited to the typed V1 daily-operation surface; charging is read-only,
 and Wi-Fi changes keep a client-generated confirmation identifier in IndexedDB
 before mutation so a page reload can resume the bounded rollback handshake.
+The battery card displays the magnitude of signed `power_mw`; the API retains
+direction through the separate current and state fields. This is a battery-side
+estimate derived from voltage and current, not USB or wall power.
 
 ## Browser authentication
 

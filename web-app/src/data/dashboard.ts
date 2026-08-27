@@ -157,6 +157,7 @@ function parseBattery(value: unknown): V1BatteryStatus {
     value.capacity_percent > 100 ||
     !Number.isInteger(value.voltage_mv) ||
     !Number.isInteger(value.current_ma) ||
+    !Number.isInteger(value.power_mw) ||
     !isFiniteNumber(value.temperature_c)
   ) {
     throw new AgentError('The agent returned invalid battery status')

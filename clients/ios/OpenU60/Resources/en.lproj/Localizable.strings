@@ -148,6 +148,7 @@
 "Capacity" = "Capacity";
 "Voltage" = "Voltage";
 "Current" = "Current";
+"Power" = "Power";
 "Temperature" = "Temperature";
 "Uptime" = "Uptime";
 "Load" = "Load";

@@ -118,6 +118,7 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
       capacity_percent: 80,
       voltage_mv: 4000,
       current_ma: 100,
+      power_mw: 400,
       temperature_c: 30,
     },
     '/v1/status/thermal': {

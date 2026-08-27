@@ -149,6 +149,7 @@
 "Capacity" = "电量";
 "Voltage" = "电压";
 "Current" = "电流";
+"Power" = "即时功率";
 "Temperature" = "温度";
 "Uptime" = "运行时间";
 "Load" = "负载";

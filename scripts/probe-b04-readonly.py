@@ -89,6 +89,7 @@ ALLOWED_PUBLISHED_KEYS = {
     "manufacturer",
     "model",
     "path",
+    "power_mw",
     "procfs",
     "reason",
     "recovery",
@@ -209,6 +210,12 @@ def parse_int(value: str | None) -> int | None:
         return None
 
 
+def truncate_toward_zero(numerator: int, denominator: int) -> int:
+    """Match Rust signed integer division without converting through float."""
+    magnitude = abs(numerator) // denominator
+    return -magnitude if numerator < 0 else magnitude
+
+
 def normalize_system(values: dict[str, str | None]) -> dict[str, Any] | None:
     hostname_present = bool((values["hostname"] or "").strip())
     kernel_present = bool((values["kernel"] or "").strip())
@@ -270,6 +277,7 @@ def normalize_battery(values: dict[str, str | None]) -> dict[str, Any] | None:
         "capacity_percent": capacity,
         "voltage_mv": voltage_uv // 1_000,
         "current_ma": current_ua // 1_000,
+        "power_mw": truncate_toward_zero(voltage_uv * current_ua, 1_000_000_000),
         "temperature_c": temperature / 10,
     }
 
@@ -712,11 +720,15 @@ def self_test() -> None:
             "state": "",
             "capacity_percent": "80",
             "voltage_uv": "4000000",
-            "current_ua": "0",
+            "current_ua": "-500000",
             "temperature_tenths_c": "250",
         }
     )
     assert battery is not None and battery["state_category"] == "other"
+    assert battery["power_mw"] == -2_000
+    assert_redacted({"battery": battery})
+    assert truncate_toward_zero(1_999_999_999, 1_000_000_000) == 1
+    assert truncate_toward_zero(-1_999_999_999, 1_000_000_000) == -1
 
     expected_identity_arguments = ["cat", WEB_VERSION_FILE]
     assert WEB_VERSION_FILE == "/usr/zte_web/web/version"

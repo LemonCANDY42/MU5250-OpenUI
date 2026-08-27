@@ -85,6 +85,7 @@ pub struct BatteryStatus {
     pub capacity_percent: i64,
     pub voltage_mv: i64,
     pub current_ma: i64,
+    pub power_mw: i64,
     pub temperature_c: f64,
 }
 
@@ -528,11 +529,26 @@ impl DeviceAdapter for B04Adapter {
                 },
             });
         }
+        let power_mw =
+            battery_power_mw(battery.voltage_uv, battery.current_ua).ok_or_else(|| {
+                AdapterError {
+                    code: "invalid_source_data",
+                    message: "battery voltage and current produced an out-of-range power value"
+                        .into(),
+                    recovery: RecoveryMetadata {
+                        required: true,
+                        action: Some(
+                            "verify the B04 battery voltage_now and current_now sources".into(),
+                        ),
+                    },
+                }
+            })?;
         Ok(BatteryStatus {
             state: battery.status,
             capacity_percent: battery.capacity,
             voltage_mv: battery.voltage_uv / 1000,
             current_ma: battery.current_ua / 1000,
+            power_mw,
             temperature_c: battery.temperature as f64 / 10.0,
         })
     }
@@ -1125,6 +1141,14 @@ fn valid_battery(battery: &RawBatteryInfo) -> bool {
         && (-400..=1500).contains(&battery.temperature)
 }
 
+/// Derive signed instantaneous battery-side power from the fixed B04 voltage
+/// and current sources. `power_now` is intentionally not used because the old
+/// MU5250 implementation found it unreliable on this PMIC.
+fn battery_power_mw(voltage_uv: i64, current_ua: i64) -> Option<i64> {
+    let microwatt_product = i128::from(voltage_uv) * i128::from(current_ua);
+    i64::try_from(microwatt_product / 1_000_000_000).ok()
+}
+
 fn read_device_info() -> RawDeviceInfo {
     let hostname = fs::read_to_string("/proc/sys/kernel/hostname")
         .unwrap_or_default()
@@ -1307,6 +1331,14 @@ mod tests {
             ..valid
         };
         assert!(!valid_battery(&missing_voltage));
+    }
+
+    #[test]
+    fn battery_power_uses_voltage_times_current_and_preserves_direction() {
+        assert_eq!(battery_power_mw(4_000_000, 500_000), Some(2_000));
+        assert_eq!(battery_power_mw(4_000_000, -500_000), Some(-2_000));
+        assert_eq!(battery_power_mw(4_000_000, 0), Some(0));
+        assert_eq!(battery_power_mw(i64::MAX, i64::MAX), None);
     }
 
     #[test]

@@ -874,7 +874,7 @@ components:
     BatteryStatus:
       type: object
       additionalProperties: false
-      required: [state, capacity_percent, voltage_mv, current_ma, temperature_c]
+      required: [state, capacity_percent, voltage_mv, current_ma, power_mw, temperature_c]
       properties:
         state:
           type: string
@@ -886,6 +886,12 @@ components:
           type: integer
         current_ma:
           type: integer
+        power_mw:
+          type: integer
+          description: >-
+            Signed instantaneous battery-side power derived from the fixed B04
+            voltage_now and current_now sources. The sign follows current_ma;
+            this is not USB input or wall power.
         temperature_c:
           type: number
     ThermalStatusResponse:

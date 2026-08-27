@@ -491,6 +491,8 @@ export interface components {
             readonly capacity_percent: number;
             readonly voltage_mv: number;
             readonly current_ma: number;
+            /** @description Signed instantaneous battery-side power derived from the fixed B04 voltage_now and current_now sources. The sign follows current_ma; this is not USB input or wall power. */
+            readonly power_mw: number;
             readonly temperature_c: number;
         };
         readonly ThermalStatusResponse: {
