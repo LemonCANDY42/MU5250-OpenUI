@@ -258,6 +258,8 @@
 "Storage" = "Storage";
 "Health" = "Health";
 "Battery health" = "Battery health";
+"Connection is weak. Showing the latest available status." = "Connection is weak. Showing the latest available status.";
+"U60 disconnected. Updates will resume after you return to its Wi-Fi." = "U60 disconnected. Updates will resume after you return to its Wi-Fi.";
 "Reported condition" = "Reported condition";
 "Cycle count" = "Cycle count";
 "Learned full capacity" = "Learned full capacity";

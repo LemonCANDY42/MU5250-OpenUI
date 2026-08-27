@@ -258,6 +258,8 @@
 "Storage" = "存储";
 "Health" = "健康状态";
 "Battery health" = "电池健康度";
+"Connection is weak. Showing the latest available status." = "连接较弱，暂时显示最近一次状态。";
+"U60 disconnected. Updates will resume after you return to its Wi-Fi." = "U60 连接已断开。回到 U60 Wi‑Fi 后会自动恢复更新。";
 "Reported condition" = "系统报告状态";
 "Cycle count" = "循环次数";
 "Learned full capacity" = "当前学习满充容量";

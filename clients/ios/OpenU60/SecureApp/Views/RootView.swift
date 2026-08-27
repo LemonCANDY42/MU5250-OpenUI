@@ -16,6 +16,15 @@ struct RootView: View {
                 MainView(model: model)
             }
         }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if let issue = model.connectionIssue {
+                ConnectionIssueBanner(issue: issue)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: model.connectionIssue)
         .alert(
             model.notice?.title ?? "OpenU60",
             isPresented: Binding(
@@ -31,5 +40,36 @@ struct RootView: View {
         } message: {
             Text(model.errorMessage ?? model.notice?.message ?? "")
         }
+    }
+}
+
+private struct ConnectionIssueBanner: View {
+    let issue: ConnectionIssue
+
+    private var tint: Color {
+        switch issue {
+        case .weak: .orange
+        case .disconnected: .red
+        }
+    }
+
+    var body: some View {
+        Label {
+            Text(issue.message)
+                .font(.footnote)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } icon: {
+            Image(systemName: issue.systemImage)
+                .foregroundStyle(tint)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(tint.opacity(0.3), lineWidth: 1)
+        }
+        .accessibilityElement(children: .combine)
     }
 }

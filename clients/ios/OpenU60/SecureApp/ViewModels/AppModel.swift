@@ -42,6 +42,7 @@ final class AppModel {
     private(set) var isConfirmingWifi = false
     private(set) var isWorking = false
     private(set) var notice: Notice?
+    private(set) var connectionIssue: ConnectionIssue?
     var errorMessage: String?
 
     private let credentials: DeviceCredentialStore
@@ -50,6 +51,9 @@ final class AppModel {
     private let telemetryHistoryStore: TelemetryHistoryStore
     private var service: AgentService?
     @ObservationIgnored private var wifiConfirmationTask: Task<Void, Never>?
+    @ObservationIgnored private var connectionRecoveryTask: Task<Void, Never>?
+    @ObservationIgnored private var connectionRecoveryGeneration = 0
+    @ObservationIgnored private var appIsActive = true
 
     init(
         credentials: DeviceCredentialStore = DeviceCredentialStore(),
@@ -138,7 +142,15 @@ final class AppModel {
     }
 
     func refresh() async {
-        await perform { try await refreshThrowing() }
+        guard !isWorking else { return }
+        notice = nil
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            try await refreshThrowing()
+        } catch {
+            handleReadFailure(error)
+        }
     }
 
     func sendSMS(recipient: String, message: String) async {
@@ -213,12 +225,26 @@ final class AppModel {
         startWifiConfirmationLoop()
     }
 
+    func setAppActive(_ isActive: Bool) {
+        appIsActive = isActive
+        if isActive {
+            resumeWifiConfirmation()
+            if connectionIssue != nil {
+                startConnectionRecoveryLoop(retryImmediately: true)
+            }
+        } else {
+            cancelConnectionRecovery()
+        }
+    }
+
     func dismissPresentedMessage() {
         errorMessage = nil
         notice = nil
     }
 
     func signOut() async {
+        cancelConnectionRecovery()
+        connectionIssue = nil
         wifiConfirmationTask?.cancel()
         wifiConfirmationTask = nil
         await vault.clear()
@@ -230,6 +256,8 @@ final class AppModel {
 
     func discardLocalPairing() async {
         do {
+            cancelConnectionRecovery()
+            connectionIssue = nil
             try credentials.removeLocalCredential()
             await vault.clear()
             dashboard = nil
@@ -246,8 +274,17 @@ final class AppModel {
     }
 
     private func signInWithDeviceKey(credential: CredentialMetadata) async {
-        await perform {
+        guard !isWorking else { return }
+        notice = nil
+        isWorking = true
+        defer { isWorking = false }
+        do {
             try await signInWithDeviceKeyThrowing(credential: credential)
+        } catch {
+            if phase == .booting {
+                phase = profile == nil ? .needsPairing : .signedOut
+            }
+            handleReadFailure(error)
         }
     }
 
@@ -263,9 +300,24 @@ final class AppModel {
 
     private func refreshThrowing() async throws {
         guard let service else { throw LocalSecurityError.missingCredential }
+        let result = try await loadDashboard(using: service)
+        applyDashboard(result.snapshot, charging: result.charging)
+    }
+
+    private func loadDashboard(
+        using service: AgentService
+    ) async throws -> (snapshot: DashboardSnapshot, charging: Components.Schemas.ChargingStatus?) {
         let snapshot = try await service.dashboard()
+        let charging = try? await service.chargingStatus()
+        return (snapshot, charging)
+    }
+
+    private func applyDashboard(
+        _ snapshot: DashboardSnapshot,
+        charging newCharging: Components.Schemas.ChargingStatus?
+    ) {
         dashboard = snapshot
-        charging = try? await service.chargingStatus()
+        charging = newCharging
         telemetryHistory = telemetryHistoryStore.append(
             TelemetrySample(
                 timestamp: .now,
@@ -282,6 +334,107 @@ final class AppModel {
             ),
             to: telemetryHistory
         )
+        clearConnectionIssue()
+    }
+
+    private func handleReadFailure(_ error: any Error) {
+        guard !Task.isCancelled else { return }
+        guard let issue = ConnectionIssue.classify(error) else {
+            errorMessage = error.localizedDescription
+            return
+        }
+        connectionIssue = issue
+        startConnectionRecoveryLoop(retryImmediately: false)
+    }
+
+    private func startConnectionRecoveryLoop(retryImmediately: Bool) {
+        guard appIsActive,
+              connectionIssue != nil,
+              phase == .signedOut || phase == .authenticated,
+              connectionRecoveryTask == nil
+        else { return }
+
+        connectionRecoveryGeneration += 1
+        let generation = connectionRecoveryGeneration
+        connectionRecoveryTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if self.connectionRecoveryGeneration == generation {
+                    self.connectionRecoveryTask = nil
+                }
+            }
+
+            let delays: [Duration] = [.seconds(3), .seconds(5), .seconds(10), .seconds(15), .seconds(30)]
+            var attempt = 0
+            if !retryImmediately {
+                try? await Task.sleep(for: delays[0])
+            }
+
+            while !Task.isCancelled,
+                  self.appIsActive,
+                  self.connectionIssue != nil
+            {
+                if self.isWorking {
+                    try? await Task.sleep(for: .seconds(1))
+                    continue
+                }
+
+                self.isWorking = true
+                do {
+                    guard let profile = self.profile else {
+                        throw LocalSecurityError.missingCredential
+                    }
+                    let recoveryService = try AgentService(profile: profile, vault: self.vault)
+                    if self.phase == .signedOut {
+                        guard let credential = self.credential else {
+                            throw LocalSecurityError.missingCredential
+                        }
+                        try await recoveryService.signIn(credentialID: credential.id) { message in
+                            try self.credentials.sign(message)
+                        }
+                    }
+                    let result = try await self.loadDashboard(using: recoveryService)
+                    guard !Task.isCancelled,
+                          self.connectionRecoveryGeneration == generation
+                    else {
+                        self.isWorking = false
+                        return
+                    }
+                    self.isWorking = false
+                    self.service = recoveryService
+                    self.phase = .authenticated
+                    self.applyDashboard(result.snapshot, charging: result.charging)
+                    self.resumeWifiConfirmation()
+                    return
+                } catch {
+                    self.isWorking = false
+                    guard !Task.isCancelled,
+                          self.connectionRecoveryGeneration == generation
+                    else { return }
+                    guard let issue = ConnectionIssue.classify(error) else {
+                        self.connectionIssue = nil
+                        self.errorMessage = error.localizedDescription
+                        return
+                    }
+                    self.connectionIssue = issue
+                }
+
+                let delay = delays[min(attempt, delays.count - 1)]
+                attempt += 1
+                try? await Task.sleep(for: delay)
+            }
+        }
+    }
+
+    private func clearConnectionIssue() {
+        connectionIssue = nil
+        cancelConnectionRecovery()
+    }
+
+    private func cancelConnectionRecovery() {
+        connectionRecoveryGeneration += 1
+        connectionRecoveryTask?.cancel()
+        connectionRecoveryTask = nil
     }
 
     private func startWifiConfirmationLoop() {

@@ -6,6 +6,31 @@ import Security
 import XCTest
 
 final class SecurityContractTests: XCTestCase {
+    func testConnectionIssueClassifiesExpectedReadPathFailures() {
+        let offline = ClientError(
+            operationID: "getCapabilities",
+            operationInput: "test",
+            causeDescription: "transport failed",
+            underlyingError: URLError(.notConnectedToInternet)
+        )
+        XCTAssertEqual(ConnectionIssue.classify(offline), .disconnected)
+        XCTAssertEqual(ConnectionIssue.classify(URLError(.timedOut)), .weak)
+
+        let nested = NSError(
+            domain: "OpenU60Tests",
+            code: 1,
+            userInfo: [NSUnderlyingErrorKey: URLError(.cannotConnectToHost)]
+        )
+        XCTAssertEqual(ConnectionIssue.classify(nested), .disconnected)
+    }
+
+    func testConnectionIssueDoesNotHideCancellationOrTransportSecurityFailures() {
+        XCTAssertNil(ConnectionIssue.classify(URLError(.cancelled)))
+        XCTAssertNil(ConnectionIssue.classify(URLError(.secureConnectionFailed)))
+        XCTAssertNil(ConnectionIssue.classify(AgentServiceError.transportSecurity("certificate rejected")))
+        XCTAssertNil(ConnectionIssue.classify(AgentServiceError.invalidResponse))
+    }
+
     func testWrappedWifiFeaturesDecodeFailureReportsAgentReleaseMismatch() throws {
         let key = try XCTUnwrap(TestCodingKey(stringValue: "features"))
         let decodingError = DecodingError.keyNotFound(

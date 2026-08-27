@@ -9,10 +9,8 @@ struct OpenU60SecureApp: App {
         WindowGroup {
             RootView(model: model)
                 .task { await model.boot() }
-                .onChange(of: scenePhase) {
-                    if scenePhase == .active {
-                        model.resumeWifiConfirmation()
-                    }
+                .onChange(of: scenePhase, initial: true) {
+                    model.setAppActive(scenePhase == .active)
                 }
         }
     }

@@ -86,6 +86,14 @@ samples without the optional Wi-Fi signal or system percentages remain
 decodable. Wi-Fi, LTE, 5G, thermal and system series can be shown or hidden
 independently and their visibility is remembered; no background daemon or U60
 write is involved.
+Expected read-path connectivity failures from weak Wi-Fi, locking the phone or
+leaving the U60 network retain the last successful dashboard instead of opening
+a blocking alert. A compact status banner distinguishes weak and disconnected
+paths, while bounded foreground retries use fresh pinned HTTPS sessions and
+clear the banner after recovery. Retries pause outside the foreground. Trust,
+authentication, response-contract and write-operation failures remain explicit
+errors; the connectivity banner never turns an ambiguous write result into an
+assumed success.
 Apple's public accessory-network API does not expose the current iPhone Wi-Fi
 RSSI. The dashboard instead uses optional request context and labels RSSI and
 link rates as U60 router observations only when the HTTPS peer uniquely matches
