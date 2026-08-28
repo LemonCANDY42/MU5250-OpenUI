@@ -137,13 +137,12 @@
 "Done" = "Done";
 "Refresh frequency" = "Refresh frequency";
 "Manual only" = "Manual only";
+"Every 2 seconds" = "Every 2 seconds";
 "Every 15 seconds" = "Every 15 seconds";
 "Every 30 seconds" = "Every 30 seconds";
 "Every minute" = "Every minute";
-"Every 5 minutes" = "Every 5 minutes";
 "Chart range" = "Chart range";
 "6 hours" = "6 hours";
-"7 days" = "7 days";
 "Battery history" = "Battery history";
 "Signal history" = "Signal history";
 "Capacity" = "Capacity";
@@ -199,6 +198,11 @@
 "Choose signal chart series" = "Choose signal chart series";
 "No chart series selected" = "No chart series selected";
 "Time" = "Time";
+"System metric segment" = "System metric segment";
+"Battery segment" = "Battery segment";
+"Sensor segment" = "Sensor segment";
+"Wi-Fi signal segment" = "Wi-Fi signal segment";
+"Radio segment" = "Radio segment";
 "Battery level" = "Battery level";
 "Signal strength" = "Signal strength";
 "Wi-Fi information" = "Wi-Fi information";

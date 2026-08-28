@@ -53,6 +53,7 @@ final class AppModel {
     @ObservationIgnored private var wifiConfirmationTask: Task<Void, Never>?
     @ObservationIgnored private var connectionRecoveryTask: Task<Void, Never>?
     @ObservationIgnored private var connectionRecoveryGeneration = 0
+    @ObservationIgnored private var telemetryContinuityID = 0
     @ObservationIgnored private var appIsActive = true
 
     init(
@@ -65,7 +66,9 @@ final class AppModel {
         self.vault = vault
         self.wifiConfirmations = wifiConfirmations
         self.telemetryHistoryStore = telemetryHistoryStore
-        telemetryHistory = telemetryHistoryStore.load()
+        let restoredTelemetry = telemetryHistoryStore.load()
+        telemetryHistory = restoredTelemetry
+        telemetryContinuityID = restoredTelemetry.last?.continuityID ?? 0
         if let pending = try? wifiConfirmations.load() {
             pendingWifiConfirmation = pending
         }
@@ -313,6 +316,7 @@ final class AppModel {
         telemetryHistory = telemetryHistoryStore.append(
             TelemetrySample(
                 timestamp: .now,
+                continuityID: telemetryContinuityID,
                 batteryPercent: snapshot.battery?.capacityPercent,
                 lteRSRPdBm: snapshot.signal?.lte?.rsrpDbm.map(Double.init),
                 nr5gRSRPdBm: snapshot.signal?.nr5g?.rsrpDbm.map(Double.init),
@@ -334,6 +338,9 @@ final class AppModel {
         guard let issue = ConnectionIssue.classify(error) else {
             errorMessage = error.localizedDescription
             return
+        }
+        if connectionIssue == nil, telemetryContinuityID < .max {
+            telemetryContinuityID += 1
         }
         connectionIssue = issue
         startConnectionRecoveryLoop(retryImmediately: false)

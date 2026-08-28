@@ -37,6 +37,7 @@ struct ControlView: View {
                     Text("Every change is sent through the typed v1 control plane. Wi-Fi changes require reconnection confirmation or are restored automatically.")
                 }
             }
+            .connectionIssueInset(model.connectionIssue)
             .navigationTitle("Control")
             .refreshable { await model.refresh() }
         }

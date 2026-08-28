@@ -16,15 +16,6 @@ struct RootView: View {
                 MainView(model: model)
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if let issue = model.connectionIssue {
-                ConnectionIssueBanner(issue: issue)
-                    .padding(.horizontal)
-                    .padding(.vertical, 8)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-            }
-        }
-        .animation(.easeInOut(duration: 0.2), value: model.connectionIssue)
         .alert(
             model.notice?.title ?? "OpenU60",
             isPresented: Binding(
@@ -40,6 +31,21 @@ struct RootView: View {
         } message: {
             Text(model.errorMessage ?? model.notice?.message ?? "")
         }
+    }
+}
+
+extension View {
+    func connectionIssueInset(_ issue: ConnectionIssue?) -> some View {
+        safeAreaInset(edge: .top, spacing: 0) {
+            if let issue {
+                ConnectionIssueBanner(issue: issue)
+                    .padding(.horizontal)
+                    .padding(.vertical, 8)
+                    .allowsHitTesting(false)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: issue)
     }
 }
 

@@ -23,6 +23,7 @@ struct SettingsView: View {
                     Text("Forgetting this app does not revoke the public key on the U60. Revoke it separately through USB maintenance.")
                 }
             }
+            .connectionIssueInset(model.connectionIssue)
             .navigationTitle("Settings")
             .alert(
                 "Discard this local key and certificate pin?",

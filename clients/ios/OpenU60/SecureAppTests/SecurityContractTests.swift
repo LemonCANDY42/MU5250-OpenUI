@@ -60,7 +60,7 @@ final class SecurityContractTests: XCTestCase {
             thermalTemperaturesC: ["cpu_0": 42]
         )
         let replacement = TelemetrySample(
-            timestamp: start.addingTimeInterval(30),
+            timestamp: start.addingTimeInterval(2),
             batteryPercent: 79,
             lteRSRPdBm: -91,
             nr5gRSRPdBm: -88,
@@ -71,7 +71,7 @@ final class SecurityContractTests: XCTestCase {
             storageUsedPercent: 50
         )
         let later = TelemetrySample(
-            timestamp: start.addingTimeInterval(60),
+            timestamp: start.addingTimeInterval(5),
             batteryPercent: 78,
             lteRSRPdBm: -92,
             nr5gRSRPdBm: -89,
@@ -81,8 +81,8 @@ final class SecurityContractTests: XCTestCase {
 
         var history = store.append(first, to: [])
         history = store.append(replacement, to: history)
-        let anchoredReplacement = TelemetrySample(
-            timestamp: start,
+        let retainedReplacement = TelemetrySample(
+            timestamp: replacement.timestamp,
             batteryPercent: replacement.batteryPercent,
             lteRSRPdBm: replacement.lteRSRPdBm,
             nr5gRSRPdBm: replacement.nr5gRSRPdBm,
@@ -92,9 +92,9 @@ final class SecurityContractTests: XCTestCase {
             memoryUsedPercent: replacement.memoryUsedPercent,
             storageUsedPercent: replacement.storageUsedPercent
         )
-        XCTAssertEqual(history, [anchoredReplacement])
+        XCTAssertEqual(history, [retainedReplacement])
         history = store.append(later, to: history)
-        XCTAssertEqual(history, [anchoredReplacement, later])
+        XCTAssertEqual(history, [retainedReplacement, later])
         XCTAssertEqual(history.last?.wifiSignalDbm, -53)
         XCTAssertEqual(store.load(now: later.timestamp), history)
     }
@@ -127,8 +127,8 @@ final class SecurityContractTests: XCTestCase {
             TelemetrySample(
                 timestamp: now.addingTimeInterval(10),
                 batteryPercent: nil,
-                lteRSRPdBm: nil,
-                nr5gRSRPdBm: nil,
+                lteRSRPdBm: 0,
+                nr5gRSRPdBm: -200,
                 wifiSignalDbm: 1,
                 thermalTemperaturesC: temperatures.merging(["invalid": .infinity]) { current, _ in current }
             ),
@@ -137,46 +137,52 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertEqual(history.first?.thermalTemperaturesC.count, TelemetryHistoryStore.maximumThermalSeries)
         XCTAssertNil(history.first?.thermalTemperaturesC["invalid"])
         XCTAssertNil(history.first?.wifiSignalDbm)
+        XCTAssertNil(history.first?.lteRSRPdBm)
+        XCTAssertNil(history.first?.nr5gRSRPdBm)
     }
 
-    func testTelemetryHistoryCoversSevenDaysAtMinuteSpacingAndStaysBounded() throws {
+    func testTelemetryHistoryUsesTieredRetentionAndStaysBounded() throws {
         let memory = MemorySecretStore()
         let store = TelemetryHistoryStore(store: memory, account: "history")
-        let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let count = TelemetryHistoryStore.maximumSamples + 5
-        let samples = (0 ..< count).map { index in
+        let now = Date(timeIntervalSince1970: 1_800_086_400)
+        var ages = Array(stride(from: 0, through: 3_600, by: 2))
+        ages.append(contentsOf: stride(from: 3_602, through: 21_600, by: 15))
+        ages.append(contentsOf: stride(from: 21_615, through: 86_400, by: 60))
+        let samples = ages.map { age in
             TelemetrySample(
-                timestamp: start.addingTimeInterval(Double(index) * TelemetryHistoryStore.minimumSpacing),
+                timestamp: now.addingTimeInterval(-TimeInterval(age)),
                 batteryPercent: 50,
-                lteRSRPdBm: nil,
+                lteRSRPdBm: -90,
                 nr5gRSRPdBm: nil,
-                cpuUsagePercent: index == count - 1 ? -1 : 25,
+                cpuUsagePercent: age == 0 ? -1 : 25,
                 memoryUsedPercent: 50,
-                storageUsedPercent: index == count - 1 ? 101 : 75
+                storageUsedPercent: age == 0 ? 101 : 75
             )
         }
         try memory.write(JSONEncoder().encode(samples), account: "history")
-        let now = try XCTUnwrap(samples.last?.timestamp)
         let loaded = store.load(now: now)
 
-        XCTAssertEqual(loaded.count, TelemetryHistoryStore.maximumSamples)
+        XCTAssertLessThanOrEqual(loaded.count, TelemetryHistoryStore.maximumSamples)
+        XCTAssertGreaterThan(loaded.count, 1_700)
         XCTAssertGreaterThanOrEqual(
             loaded.first?.timestamp ?? .distantPast,
             now.addingTimeInterval(-TelemetryHistoryStore.retention)
         )
-        XCTAssertTrue(zip(loaded, loaded.dropFirst()).allSatisfy { pair in
-            pair.1.timestamp.timeIntervalSince(pair.0.timestamp) >= TelemetryHistoryStore.minimumSpacing
-        })
+        let buckets = loaded.map { sample in
+            let spacing = TelemetryHistoryStore.retainedSpacing(for: sample.timestamp, now: now)
+            return "\(Int(spacing)):\(Int64(floor(sample.timestamp.timeIntervalSince1970 / spacing))):\(sample.continuityID)"
+        }
+        XCTAssertEqual(Set(buckets).count, buckets.count)
         XCTAssertNil(loaded.last?.cpuUsagePercent)
         XCTAssertNil(loaded.last?.storageUsedPercent)
         XCTAssertEqual(loaded.last?.memoryUsedPercent, 50)
     }
 
-    func testTelemetryHistoryMigratesLegacyTenSecondSamplesToMinuteSpacing() throws {
+    func testTelemetryHistoryMigratesDenseLegacySamplesToTieredSpacing() throws {
         let memory = MemorySecretStore()
         let store = TelemetryHistoryStore(store: memory, account: "history")
         let start = Date(timeIntervalSince1970: 1_800_000_000)
-        let legacy = (0 ..< 13).map { index in
+        let legacy = (0 ... 60).map { index in
             TelemetrySample(
                 timestamp: start.addingTimeInterval(Double(index) * 10),
                 batteryPercent: 50 + index,
@@ -186,12 +192,121 @@ final class SecurityContractTests: XCTestCase {
         }
         try memory.write(JSONEncoder().encode(legacy), account: "history")
 
-        let loaded = store.load(now: start.addingTimeInterval(120))
-        XCTAssertEqual(loaded.map(\.timestamp), [start, start.addingTimeInterval(60), start.addingTimeInterval(120)])
-        XCTAssertEqual(loaded.map(\.batteryPercent), [55, 61, 62])
+        let loaded = store.load(now: start.addingTimeInterval(7 * 3_600))
+        XCTAssertEqual(loaded.map(\.timestamp), [
+            start.addingTimeInterval(110),
+            start.addingTimeInterval(230),
+            start.addingTimeInterval(350),
+            start.addingTimeInterval(470),
+            start.addingTimeInterval(590),
+            start.addingTimeInterval(600),
+        ])
+        XCTAssertEqual(loaded.map(\.batteryPercent), [61, 73, 85, 97, 109, 110])
 
         let migratedData = try XCTUnwrap(try memory.read(account: "history"))
         XCTAssertEqual(try JSONDecoder().decode([TelemetrySample].self, from: migratedData), loaded)
+    }
+
+    func testTelemetryChartProjectionUsesRangeGranularityAndBreaksMissingIntervals() {
+        XCTAssertEqual(TelemetryChartProjection.spacing(forRangeSeconds: 3_600), 5)
+        XCTAssertEqual(TelemetryChartProjection.spacing(forRangeSeconds: 21_600), 30)
+        XCTAssertEqual(TelemetryChartProjection.spacing(forRangeSeconds: 86_400), 120)
+
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = [
+            TelemetrySample(timestamp: start, batteryPercent: 50, lteRSRPdBm: nil, nr5gRSRPdBm: nil),
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(30),
+                batteryPercent: 51,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            ),
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(60),
+                batteryPercent: 52,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            ),
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(6 * 3_600),
+                continuityID: 1,
+                batteryPercent: 53,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            ),
+        ]
+
+        let segments = TelemetryChartProjection.segments(
+            from: samples,
+            rangeSeconds: 86_400,
+            expectedRefreshSeconds: 15,
+            now: start.addingTimeInterval(6 * 3_600),
+            value: { $0.batteryPercent.map(Double.init) }
+        )
+
+        XCTAssertEqual(segments.count, 2)
+        XCTAssertEqual(segments.map(\.points.count), [1, 1])
+        XCTAssertEqual(segments.map { $0.points[0].value }, [52, 53])
+    }
+
+    func testTelemetryChartProjectionDownsamplesTwoSecondRefreshToFiveSecondPoints() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = (0 ... 30).map { index in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(index) * 2),
+                batteryPercent: 50 + index,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            )
+        }
+        let segments = TelemetryChartProjection.segments(
+            from: samples,
+            rangeSeconds: 3_600,
+            expectedRefreshSeconds: 2,
+            now: start.addingTimeInterval(60),
+            value: { $0.batteryPercent.map(Double.init) }
+        )
+
+        XCTAssertEqual(segments.count, 1)
+        XCTAssertEqual(segments[0].points.count, 13)
+        XCTAssertEqual(segments[0].points.first?.value, 52)
+        XCTAssertEqual(segments[0].points.last?.value, 80)
+    }
+
+    func testTelemetryChartProjectionBreaksOnKnownConnectionLoss() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let samples = [
+            TelemetrySample(
+                timestamp: start,
+                continuityID: 0,
+                batteryPercent: 50,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            ),
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(5),
+                continuityID: 0,
+                batteryPercent: 51,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            ),
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(10),
+                continuityID: 1,
+                batteryPercent: 52,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            ),
+        ]
+        let segments = TelemetryChartProjection.segments(
+            from: samples,
+            rangeSeconds: 3_600,
+            expectedRefreshSeconds: 2,
+            now: start.addingTimeInterval(10),
+            value: { $0.batteryPercent.map(Double.init) }
+        )
+
+        XCTAssertEqual(segments.map(\.points.count), [2, 1])
     }
 
     func testGeneratedStatusTypesDecodeEarlierV1PayloadsWithoutOptionalMetrics() throws {
@@ -249,7 +364,7 @@ final class SecurityContractTests: XCTestCase {
             sectionOrder: ["signal", "battery"],
             collapsedSections: ["Capabilities"],
             refreshSeconds: 30,
-            historyRangeSeconds: 604_800,
+            historyRangeSeconds: 86_400,
             hiddenChartSeries: [
                 DashboardChartSeriesID.signalLTE,
                 DashboardChartSeriesID.thermal(sensor: "cpu_0"),

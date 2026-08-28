@@ -84,7 +84,6 @@ private enum TelemetryRange: Int, CaseIterable, Identifiable {
     case hour = 3_600
     case sixHours = 21_600
     case day = 86_400
-    case week = 604_800
 
     var id: Self { self }
 
@@ -93,7 +92,6 @@ private enum TelemetryRange: Int, CaseIterable, Identifiable {
         case .hour: "1 hour"
         case .sixHours: "6 hours"
         case .day: "24 hours"
-        case .week: "7 days"
         }
     }
 }
@@ -101,6 +99,12 @@ private enum TelemetryRange: Int, CaseIterable, Identifiable {
 private struct DashboardChartSeries: Identifiable {
     let id: String
     let label: String
+}
+
+private struct DashboardTelemetrySeries: Identifiable {
+    let id: String
+    let label: String
+    let segments: [TelemetryChartSegment]
 }
 
 struct DashboardView: View {
@@ -144,6 +148,7 @@ struct DashboardView: View {
                 }
             }
             .background(Color(.systemGroupedBackground))
+            .connectionIssueInset(model.connectionIssue)
             .navigationTitle("Dashboard")
             .refreshable { await model.refresh() }
             .toolbar {
@@ -151,11 +156,11 @@ struct DashboardView: View {
                     Menu {
                         Picker("Refresh frequency", selection: $refreshSeconds) {
                             Text("Manual only").tag(0)
+                            Text("Every 2 seconds").tag(2)
                             Text("Every 5 seconds").tag(5)
                             Text("Every 15 seconds").tag(15)
                             Text("Every 30 seconds").tag(30)
                             Text("Every minute").tag(60)
-                            Text("Every 5 minutes").tag(300)
                         }
                         Picker("Chart range", selection: $historyRangeSeconds) {
                             ForEach(TelemetryRange.allCases) { range in
@@ -327,7 +332,15 @@ struct DashboardView: View {
     }
 
     private func systemCard(_ system: Components.Schemas.SystemStatus) -> some View {
-        statusCard(id: DashboardSection.system.rawValue, title: "System status", icon: "cpu", tint: .purple) {
+        let cpuSegments = telemetrySegments(\TelemetrySample.cpuUsagePercent)
+        let memorySegments = telemetrySegments(\TelemetrySample.memoryUsedPercent)
+        let storageSegments = telemetrySegments(\TelemetrySample.storageUsedPercent)
+        let historyPointCount = max(
+            cpuSegments.reduce(0) { $0 + $1.points.count },
+            memorySegments.reduce(0) { $0 + $1.points.count },
+            storageSegments.reduce(0) { $0 + $1.points.count }
+        )
+        return statusCard(id: DashboardSection.system.rawValue, title: "System status", icon: "cpu", tint: .purple) {
             metric("Uptime", formatDuration(system.uptimeSeconds))
             metric("Load", system.loadAverage.map { String(format: "%.2f", $0) }.joined(separator: "  "))
             metric("Kernel", system.kernel)
@@ -348,10 +361,7 @@ struct DashboardView: View {
                 metric("/data storage used", formatPercent(used))
                 metric("/data storage available", "\(available) / \(total) MiB")
             }
-            let samples = visibleTelemetry.filter {
-                $0.cpuUsagePercent != nil || $0.memoryUsedPercent != nil || $0.storageUsedPercent != nil
-            }
-            if samples.count >= 2 {
+            if historyPointCount >= 2 {
                 Divider()
                 chartHeader(
                     title: "System utilization history",
@@ -367,35 +377,99 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Chart(samples) { sample in
-                        if showsCPU, let value = sample.cpuUsagePercent {
-                            LineMark(
-                                x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Utilization percentage"), value),
-                                series: .value(String(localized: "System metric"), String(localized: "CPU"))
-                            )
-                            .foregroundStyle(by: .value(String(localized: "System metric"), String(localized: "CPU")))
-                            .interpolationMethod(.monotone)
+                    Chart {
+                        if showsCPU {
+                            ForEach(cpuSegments) { segment in
+                                let seriesKey = segmentSeriesKey("cpu", segment)
+                                ForEach(segment.points) { point in
+                                    LineMark(
+                                        x: .value("Time", point.timestamp),
+                                        y: .value("Utilization percentage", point.value),
+                                        series: .value(
+                                            "System metric segment",
+                                            seriesKey
+                                        )
+                                    )
+                                    .foregroundStyle(by: .value(
+                                        String(localized: "System metric"),
+                                        String(localized: "CPU")
+                                    ))
+                                    .interpolationMethod(.monotone)
+                                }
+                                if segment.points.count == 1, let point = segment.points.first {
+                                    PointMark(
+                                        x: .value(String(localized: "Time"), point.timestamp),
+                                        y: .value(String(localized: "Utilization percentage"), point.value)
+                                    )
+                                    .foregroundStyle(by: .value(
+                                        String(localized: "System metric"),
+                                        String(localized: "CPU")
+                                    ))
+                                }
+                            }
                         }
-                        if showsMemory, let value = sample.memoryUsedPercent {
-                            LineMark(
-                                x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Utilization percentage"), value),
-                                series: .value(String(localized: "System metric"), String(localized: "Memory"))
-                            )
-                            .foregroundStyle(by: .value(String(localized: "System metric"), String(localized: "Memory")))
-                            .interpolationMethod(.monotone)
+                        if showsMemory {
+                            ForEach(memorySegments) { segment in
+                                let seriesKey = segmentSeriesKey("memory", segment)
+                                ForEach(segment.points) { point in
+                                    LineMark(
+                                        x: .value("Time", point.timestamp),
+                                        y: .value("Utilization percentage", point.value),
+                                        series: .value(
+                                            "System metric segment",
+                                            seriesKey
+                                        )
+                                    )
+                                    .foregroundStyle(by: .value(
+                                        String(localized: "System metric"),
+                                        String(localized: "Memory")
+                                    ))
+                                    .interpolationMethod(.monotone)
+                                }
+                                if segment.points.count == 1, let point = segment.points.first {
+                                    PointMark(
+                                        x: .value(String(localized: "Time"), point.timestamp),
+                                        y: .value(String(localized: "Utilization percentage"), point.value)
+                                    )
+                                    .foregroundStyle(by: .value(
+                                        String(localized: "System metric"),
+                                        String(localized: "Memory")
+                                    ))
+                                }
+                            }
                         }
-                        if showsStorage, let value = sample.storageUsedPercent {
-                            LineMark(
-                                x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Utilization percentage"), value),
-                                series: .value(String(localized: "System metric"), String(localized: "Storage"))
-                            )
-                            .foregroundStyle(by: .value(String(localized: "System metric"), String(localized: "Storage")))
-                            .interpolationMethod(.monotone)
+                        if showsStorage {
+                            ForEach(storageSegments) { segment in
+                                let seriesKey = segmentSeriesKey("storage", segment)
+                                ForEach(segment.points) { point in
+                                    LineMark(
+                                        x: .value("Time", point.timestamp),
+                                        y: .value("Utilization percentage", point.value),
+                                        series: .value(
+                                            "System metric segment",
+                                            seriesKey
+                                        )
+                                    )
+                                    .foregroundStyle(by: .value(
+                                        String(localized: "System metric"),
+                                        String(localized: "Storage")
+                                    ))
+                                    .interpolationMethod(.monotone)
+                                }
+                                if segment.points.count == 1, let point = segment.points.first {
+                                    PointMark(
+                                        x: .value(String(localized: "Time"), point.timestamp),
+                                        y: .value(String(localized: "Utilization percentage"), point.value)
+                                    )
+                                    .foregroundStyle(by: .value(
+                                        String(localized: "System metric"),
+                                        String(localized: "Storage")
+                                    ))
+                                }
+                            }
                         }
                     }
+                    .chartXScale(domain: telemetryWindow)
                     .chartYScale(domain: 0 ... 100)
                     .chartForegroundStyleScale([
                         String(localized: "CPU"): Color.purple,
@@ -417,7 +491,11 @@ struct DashboardView: View {
     }
 
     private func batteryCard(_ battery: Components.Schemas.BatteryStatus) -> some View {
-        statusCard(
+        let batterySegments = telemetrySegments { sample in
+            sample.batteryPercent.map(Double.init)
+        }
+        let batteryPointCount = batterySegments.reduce(0) { $0 + $1.points.count }
+        return statusCard(
             id: DashboardSection.battery.rawValue,
             title: "Battery",
             icon: batteryIcon(battery.capacityPercent),
@@ -459,20 +537,34 @@ struct DashboardView: View {
             if let seconds = battery.timeToFullSeconds {
                 metric("Kernel estimate to full", formatBatteryEstimate(seconds, zeroLabel: "Complete"))
             }
-            let samples = visibleTelemetry.filter { $0.batteryPercent != nil }
-            if samples.count >= 2 {
+            if batteryPointCount >= 2 {
                 Divider()
                 Text("Battery history").font(.subheadline.weight(.semibold))
-                Chart(samples) { sample in
-                    if let value = sample.batteryPercent {
-                        LineMark(
-                            x: .value(String(localized: "Time"), sample.timestamp),
-                            y: .value(String(localized: "Battery level"), value)
-                        )
-                        .foregroundStyle(.green)
-                        .interpolationMethod(.monotone)
+                Chart {
+                    ForEach(batterySegments) { segment in
+                        let seriesKey = segmentSeriesKey("battery", segment)
+                        ForEach(segment.points) { point in
+                            LineMark(
+                                x: .value("Time", point.timestamp),
+                                y: .value("Battery level", point.value),
+                                series: .value(
+                                    "Battery segment",
+                                    seriesKey
+                                )
+                            )
+                            .foregroundStyle(.green)
+                            .interpolationMethod(.monotone)
+                        }
+                        if segment.points.count == 1, let point = segment.points.first {
+                            PointMark(
+                                x: .value(String(localized: "Time"), point.timestamp),
+                                y: .value(String(localized: "Battery level"), point.value)
+                            )
+                            .foregroundStyle(.green)
+                        }
                     }
                 }
+                .chartXScale(domain: telemetryWindow)
                 .chartYScale(domain: 0 ... 100)
                 .frame(height: 150)
             }
@@ -482,6 +574,16 @@ struct DashboardView: View {
     private func thermalCard(_ thermal: Components.Schemas.ThermalStatus) -> some View {
         let series = thermalChartSeries(current: thermal)
         let samples = visibleTelemetry.filter { !$0.thermalTemperaturesC.isEmpty }
+        let visibleSeries = series.filter { !hiddenChartSeries.contains($0.id) }
+        let chartSeries = visibleSeries.map { item in
+            DashboardTelemetrySeries(
+                id: item.id,
+                label: item.label,
+                segments: telemetrySegments { sample in
+                    sample.thermalTemperaturesC[thermalSensorID(for: item.id)]
+                }
+            )
+        }
         return statusCard(id: DashboardSection.thermal.rawValue, title: "Thermal", icon: "thermometer.medium", tint: .orange) {
             if thermal.sensors.isEmpty {
                 Text("No sensors reported").foregroundStyle(.secondary)
@@ -497,26 +599,39 @@ struct DashboardView: View {
                     accessibilityLabel: "Choose thermal chart series",
                     series: series
                 )
-                let visibleSeries = series.filter { !hiddenChartSeries.contains($0.id) }
                 if visibleSeries.isEmpty {
                     Text("No chart series selected")
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Chart(samples) { sample in
-                        ForEach(visibleSeries) { item in
-                            if let value = sample.thermalTemperaturesC[thermalSensorID(for: item.id)] {
-                                LineMark(
-                                    x: .value(String(localized: "Time"), sample.timestamp),
-                                    y: .value(String(localized: "Sensor temperature"), value),
-                                    series: .value(String(localized: "Sensor"), item.label)
-                                )
-                                .foregroundStyle(by: .value(String(localized: "Sensor"), item.label))
-                                .interpolationMethod(.monotone)
+                    Chart {
+                        ForEach(chartSeries) { item in
+                            ForEach(item.segments) { segment in
+                                let seriesKey = segmentSeriesKey(item.id, segment)
+                                ForEach(segment.points) { point in
+                                    LineMark(
+                                        x: .value("Time", point.timestamp),
+                                        y: .value("Sensor temperature", point.value),
+                                        series: .value(
+                                            "Sensor segment",
+                                            seriesKey
+                                        )
+                                    )
+                                    .foregroundStyle(by: .value(String(localized: "Sensor"), item.label))
+                                    .interpolationMethod(.monotone)
+                                }
+                                if segment.points.count == 1, let point = segment.points.first {
+                                    PointMark(
+                                        x: .value(String(localized: "Time"), point.timestamp),
+                                        y: .value(String(localized: "Sensor temperature"), point.value)
+                                    )
+                                    .foregroundStyle(by: .value(String(localized: "Sensor"), item.label))
+                                }
                             }
                         }
                     }
+                    .chartXScale(domain: telemetryWindow)
                     .chartLegend(position: .bottom, alignment: .leading)
                     .frame(height: 200)
                 }
@@ -528,8 +643,14 @@ struct DashboardView: View {
         signal: Components.Schemas.SignalStatus?,
         wifi: Components.Schemas.WifiStatus?
     ) -> some View {
-        let wifiSamples = visibleTelemetry.filter { $0.wifiSignalDbm != nil }
-        let cellularSamples = visibleTelemetry.filter { $0.lteRSRPdBm != nil || $0.nr5gRSRPdBm != nil }
+        let wifiSegments = telemetrySegments(\TelemetrySample.wifiSignalDbm)
+        let lteSegments = telemetrySegments(\TelemetrySample.lteRSRPdBm)
+        let nr5gSegments = telemetrySegments(\TelemetrySample.nr5gRSRPdBm)
+        let wifiPointCount = wifiSegments.reduce(0) { $0 + $1.points.count }
+        let cellularPointCount = max(
+            lteSegments.reduce(0) { $0 + $1.points.count },
+            nr5gSegments.reduce(0) { $0 + $1.points.count }
+        )
         return statusCard(
             id: DashboardSection.signal.rawValue,
             title: "Signal strength",
@@ -546,7 +667,7 @@ struct DashboardView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if wifiSamples.count >= 2 {
+            if wifiPointCount >= 2 {
                 Divider()
                 chartHeader(
                     title: "Wi-Fi signal history",
@@ -559,16 +680,31 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Chart(wifiSamples) { sample in
-                        if let value = sample.wifiSignalDbm {
-                            LineMark(
-                                x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Wi-Fi signal strength"), value)
-                            )
-                            .foregroundStyle(.indigo)
-                            .interpolationMethod(.monotone)
+                    Chart {
+                        ForEach(wifiSegments) { segment in
+                            let seriesKey = segmentSeriesKey("wifi", segment)
+                            ForEach(segment.points) { point in
+                                LineMark(
+                                    x: .value("Time", point.timestamp),
+                                    y: .value("Wi-Fi signal strength", point.value),
+                                    series: .value(
+                                        "Wi-Fi signal segment",
+                                        seriesKey
+                                    )
+                                )
+                                .foregroundStyle(.indigo)
+                                .interpolationMethod(.monotone)
+                            }
+                            if segment.points.count == 1, let point = segment.points.first {
+                                PointMark(
+                                    x: .value(String(localized: "Time"), point.timestamp),
+                                    y: .value(String(localized: "Wi-Fi signal strength"), point.value)
+                                )
+                                .foregroundStyle(.indigo)
+                            }
                         }
                     }
+                    .chartXScale(domain: telemetryWindow)
                     .frame(height: 170)
                 }
             }
@@ -589,7 +725,7 @@ struct DashboardView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if cellularSamples.count >= 2 {
+            if cellularPointCount >= 2 {
                 Divider()
                 chartHeader(
                     title: "Cellular signal history",
@@ -604,26 +740,57 @@ struct DashboardView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Chart(cellularSamples) { sample in
-                        if showsLTE, let value = sample.lteRSRPdBm {
-                            LineMark(
-                                x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Cellular signal strength"), value),
-                                series: .value(String(localized: "Radio"), "LTE")
-                            )
-                            .foregroundStyle(by: .value(String(localized: "Radio"), "LTE"))
-                            .interpolationMethod(.monotone)
+                    Chart {
+                        if showsLTE {
+                            ForEach(lteSegments) { segment in
+                                let seriesKey = segmentSeriesKey("lte", segment)
+                                ForEach(segment.points) { point in
+                                    LineMark(
+                                        x: .value("Time", point.timestamp),
+                                        y: .value("Cellular signal strength", point.value),
+                                        series: .value(
+                                            "Radio segment",
+                                            seriesKey
+                                        )
+                                    )
+                                    .foregroundStyle(by: .value(String(localized: "Radio"), "LTE"))
+                                    .interpolationMethod(.monotone)
+                                }
+                                if segment.points.count == 1, let point = segment.points.first {
+                                    PointMark(
+                                        x: .value(String(localized: "Time"), point.timestamp),
+                                        y: .value(String(localized: "Cellular signal strength"), point.value)
+                                    )
+                                    .foregroundStyle(by: .value(String(localized: "Radio"), "LTE"))
+                                }
+                            }
                         }
-                        if shows5G, let value = sample.nr5gRSRPdBm {
-                            LineMark(
-                                x: .value(String(localized: "Time"), sample.timestamp),
-                                y: .value(String(localized: "Cellular signal strength"), value),
-                                series: .value(String(localized: "Radio"), "5G")
-                            )
-                            .foregroundStyle(by: .value(String(localized: "Radio"), "5G"))
-                            .interpolationMethod(.monotone)
+                        if shows5G {
+                            ForEach(nr5gSegments) { segment in
+                                let seriesKey = segmentSeriesKey("5g", segment)
+                                ForEach(segment.points) { point in
+                                    LineMark(
+                                        x: .value("Time", point.timestamp),
+                                        y: .value("Cellular signal strength", point.value),
+                                        series: .value(
+                                            "Radio segment",
+                                            seriesKey
+                                        )
+                                    )
+                                    .foregroundStyle(by: .value(String(localized: "Radio"), "5G"))
+                                    .interpolationMethod(.monotone)
+                                }
+                                if segment.points.count == 1, let point = segment.points.first {
+                                    PointMark(
+                                        x: .value(String(localized: "Time"), point.timestamp),
+                                        y: .value(String(localized: "Cellular signal strength"), point.value)
+                                    )
+                                    .foregroundStyle(by: .value(String(localized: "Radio"), "5G"))
+                                }
+                            }
                         }
                     }
+                    .chartXScale(domain: telemetryWindow)
                     .chartForegroundStyleScale(["LTE": Color.blue, "5G": Color.purple])
                     .chartLegend(position: .bottom, alignment: .leading)
                     .frame(height: 180)
@@ -962,6 +1129,26 @@ struct DashboardView: View {
         return model.telemetryHistory.filter { $0.timestamp >= cutoff }
     }
 
+    private var telemetryWindow: ClosedRange<Date> {
+        let now = Date.now
+        return now.addingTimeInterval(-TimeInterval(historyRangeSeconds)) ... now
+    }
+
+    private func telemetrySegments(
+        _ value: (TelemetrySample) -> Double?
+    ) -> [TelemetryChartSegment] {
+        TelemetryChartProjection.segments(
+            from: model.telemetryHistory,
+            rangeSeconds: historyRangeSeconds,
+            expectedRefreshSeconds: refreshSeconds,
+            value: value
+        )
+    }
+
+    private func segmentSeriesKey(_ prefix: String, _ segment: TelemetryChartSegment) -> String {
+        "\(prefix).\(segment.id.continuityID).\(segment.id.timestamp.timeIntervalSince1970)"
+    }
+
     private func expansionBinding(for id: String) -> Binding<Bool> {
         Binding(
             get: { !collapsedSections.contains(id) },
@@ -982,7 +1169,7 @@ struct DashboardView: View {
         let missing = DashboardSection.allCases.filter { !restored.contains($0) }
         sectionOrder = restored + missing
         collapsedSections = Set(preferences.collapsedSections.map(DashboardSection.canonicalCollapseID(for:)))
-        refreshSeconds = [0, 5, 15, 30, 60, 300].contains(preferences.refreshSeconds)
+        refreshSeconds = [0, 2, 5, 15, 30, 60].contains(preferences.refreshSeconds)
             ? preferences.refreshSeconds
             : 0
         historyRangeSeconds = TelemetryRange(rawValue: preferences.historyRangeSeconds)?.rawValue

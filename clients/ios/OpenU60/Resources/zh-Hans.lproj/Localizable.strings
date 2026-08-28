@@ -138,13 +138,12 @@
 "Done" = "完成";
 "Refresh frequency" = "刷新频率";
 "Manual only" = "仅手动刷新";
+"Every 2 seconds" = "每 2 秒";
 "Every 15 seconds" = "每 15 秒";
 "Every 30 seconds" = "每 30 秒";
 "Every minute" = "每分钟";
-"Every 5 minutes" = "每 5 分钟";
 "Chart range" = "图表范围";
 "6 hours" = "6 小时";
-"7 days" = "7 天";
 "Battery history" = "电量变化";
 "Signal history" = "信号变化";
 "Capacity" = "电量";
@@ -199,6 +198,11 @@
 "Choose signal chart series" = "选择信号图表项目";
 "No chart series selected" = "未选择图表项目";
 "Time" = "时间";
+"System metric segment" = "系统指标分段";
+"Battery segment" = "电量分段";
+"Sensor segment" = "传感器分段";
+"Wi-Fi signal segment" = "Wi‑Fi 信号分段";
+"Radio segment" = "无线信号分段";
 "Battery level" = "电量";
 "Signal strength" = "信号强度";
 "Wi-Fi information" = "Wi‑Fi 信息";

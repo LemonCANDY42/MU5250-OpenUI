@@ -77,28 +77,31 @@ focused diagnostics. The monitoring menu remains separate from the explicit
 refresh button.
 Card order, collapsed state, monitoring interval, graph range and per-series
 chart visibility are remembered in device-local Keychain state. Manual refresh
-remains the default to minimize device and radio load, with explicit five-second,
-15-second, 30-second, one-minute and five-minute monitoring choices. Successful
-status refreshes append a bounded, up-to-seven-day local telemetry history used
+remains the default to minimize device and radio load, with explicit two-second,
+five-second, 15-second, 30-second and one-minute monitoring choices. Successful
+status refreshes append a bounded, up-to-24-hour local telemetry history used
 for battery, router-observed Wi-Fi RSSI, LTE/5G RSRP, multi-sensor thermal and
 optional CPU/memory/storage usage charts. The dashboard groups the current
 Wi-Fi and cellular signal readings in one Signal strength card, with separate
 Wi-Fi and LTE/5G history charts inside that card. Radio settings, feature state
 and client-link rates remain in a separate Wi-Fi information card; provider,
 network, band, aggregation, cell-lock and connection details remain in a
-separate Cellular information card. History is sampled at no less than
-one-minute spacing and capped
-at 10,080 samples, so it can retain a genuine seven-day window while remaining
-bounded even when the display refreshes every five seconds. Existing dense
-10-second history is migrated to the new one-minute spacing on load, and old
+separate Cellular information card. History is retained at five-second spacing
+for the latest hour, 30-second spacing through six hours and two-minute spacing
+through 24 hours, capped at 2,000 samples. Each selected graph range uses the
+same matching display granularity. Existing dense or older fixed-spacing history
+is migrated into the tiered 24-hour window on load, and old
 samples without the optional Wi-Fi signal or system percentages remain
-decodable. Wi-Fi, LTE, 5G, thermal and system series can be shown or hidden
+decodable. Known connection loss and long sampling gaps start a new chart
+segment, so the UI does not draw invented values through time when the phone was
+away from the U60 network. Wi-Fi, LTE, 5G, thermal and system series can be shown or hidden
 independently and their visibility is remembered; no background daemon or U60
 write is involved.
 Expected read-path connectivity failures from weak Wi-Fi, locking the phone or
 leaving the U60 network retain the last successful dashboard instead of opening
 a blocking alert. A compact status banner distinguishes weak and disconnected
-paths, while bounded foreground retries use fresh pinned HTTPS sessions and
+paths. It occupies reserved space below each primary navigation toolbar and does
+not intercept toolbar interaction, while bounded foreground retries use fresh pinned HTTPS sessions and
 clear the banner after recovery. Retries pause outside the foreground. Trust,
 authentication, response-contract and write-operation failures remain explicit
 errors; the connectivity banner never turns an ambiguous write result into an
