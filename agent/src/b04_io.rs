@@ -120,6 +120,7 @@ pub trait B04Io: Send + Sync {
     fn wireless_config(&self) -> Result<BTreeMap<String, String>, String>;
     fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String>;
     fn station_count(&self, interface: WifiInterface) -> Result<u32, String>;
+    fn active_wifi_channel(&self, interface: WifiInterface) -> Result<u16, String>;
     fn current_client_link(&self, _peer: Ipv4Addr) -> Result<WifiClientLinkSource, String> {
         Err("requesting-client Wi-Fi link source is unavailable".into())
     }
@@ -262,6 +263,17 @@ impl B04Io for SystemB04Io {
             .filter(|line| line.trim_start().starts_with("Station "))
             .count();
         u32::try_from(count).map_err(|_| "Wi-Fi station count is out of range".to_string())
+    }
+
+    fn active_wifi_channel(&self, interface: WifiInterface) -> Result<u16, String> {
+        let name = match interface {
+            WifiInterface::TwoG => "wlan0",
+            WifiInterface::FiveG => "wlan2",
+        };
+        let output = run_fixed("Wi-Fi radio information", "iw", &[name, "info"])?;
+        let text = String::from_utf8(output)
+            .map_err(|_| "Wi-Fi radio information was not UTF-8".to_string())?;
+        parse_active_wifi_channel(&text)
     }
 
     fn current_client_link(&self, peer: Ipv4Addr) -> Result<WifiClientLinkSource, String> {
@@ -494,6 +506,16 @@ fn parse_station_link(
     }))
 }
 
+fn parse_active_wifi_channel(text: &str) -> Result<u16, String> {
+    text.lines()
+        .find_map(|line| {
+            let value = line.trim().strip_prefix("channel ")?;
+            value.split_whitespace().next()?.parse::<u16>().ok()
+        })
+        .filter(|channel| (1..=233).contains(channel))
+        .ok_or_else(|| "active Wi-Fi channel was missing or out of range".to_string())
+}
+
 fn first_i64(value: Option<&str>) -> Option<i64> {
     value?.split_whitespace().next()?.parse().ok()
 }
@@ -612,5 +634,14 @@ mod tests {
         assert!(parse_station_link(dump, "02:00:00:00:00:01", "5 GHz")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn active_wifi_channel_accepts_only_bounded_iw_info_values() {
+        let info = "Interface wlan2\n\tchannel 149 (5745 MHz), width: 160 MHz\n";
+        assert_eq!(parse_active_wifi_channel(info).unwrap(), 149);
+        assert!(parse_active_wifi_channel("Interface wlan2\n").is_err());
+        assert!(parse_active_wifi_channel("channel 0 (invalid)\n").is_err());
+        assert!(parse_active_wifi_channel("channel 234 (invalid)\n").is_err());
     }
 }

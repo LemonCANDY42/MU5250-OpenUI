@@ -834,6 +834,10 @@ mod tests {
             Err("unused".into())
         }
 
+        fn active_wifi_channel(&self, _interface: WifiInterface) -> Result<u16, String> {
+            Err("unused".into())
+        }
+
         fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
             let wifi = self.wifi.lock().unwrap();
             Ok(fields

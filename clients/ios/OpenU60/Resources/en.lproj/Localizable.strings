@@ -168,6 +168,8 @@
 "Cycle reset" = "Cycle reset";
 "Day %lld" = "Day %lld";
 "Radio" = "Radio";
+"Configured channel" = "Configured channel";
+"Current channel" = "Current channel";
 "Network" = "Network";
 "Provider" = "Provider";
 "Strength" = "Strength";

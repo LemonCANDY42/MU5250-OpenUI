@@ -83,8 +83,9 @@ status refreshes append a bounded, up-to-24-hour local telemetry history used
 for battery, router-observed Wi-Fi RSSI, LTE/5G RSRP, multi-sensor thermal and
 optional CPU/memory/storage usage charts. The dashboard groups the current
 Wi-Fi and cellular signal readings in one Signal strength card, with separate
-Wi-Fi and LTE/5G history charts inside that card. Radio settings, feature state
-and client-link rates remain in a separate Wi-Fi information card; provider,
+Wi-Fi and LTE/5G history charts inside that card. Configured channel policy, the
+optional radio-observed current channel, other radio settings, feature state and
+client-link rates remain in a separate Wi-Fi information card; provider,
 network, band, aggregation, cell-lock and connection details remain in a
 separate Cellular information card. History is retained at five-second spacing
 for the latest hour, 30-second spacing through six hours and two-minute spacing

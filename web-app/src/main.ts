@@ -781,7 +781,9 @@ function appendWifi(card: HTMLElement, value: V1WifiStatus): void {
   for (const band of value.bands) {
     metrics.push(
       [`${band.band} network`, band.enabled ? band.ssid : 'Disabled'],
-      [`${band.band} radio`, `${band.channel} · ${band.bandwidth}`],
+      [`${band.band} configured channel`, band.channel === '0' || band.channel === 'auto' ? 'Auto' : band.channel],
+      [`${band.band} current channel`, band.active_channel?.toString() ?? 'Not reported'],
+      [`${band.band} bandwidth`, band.bandwidth],
       [`${band.band} security`, `${band.encryption}${band.hidden ? ' · hidden' : ''}`],
       [`${band.band} clients`, band.clients?.toString() ?? 'Not reported'],
     )

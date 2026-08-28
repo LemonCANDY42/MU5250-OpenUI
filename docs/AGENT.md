@@ -22,7 +22,7 @@ authentication paths:
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
 | `GET /v1/status/traffic` | Current day, billing-cycle, power-on and total counters |
-| `GET /v1/status/wifi` | Two fixed B04 radio sections, channel/bandwidth/power, security, station counts, optional guest state and optional request-peer link context |
+| `GET /v1/status/wifi` | Two fixed B04 radio sections with configured and optional active channel, bandwidth/power, security, station counts, optional guest state and optional request-peer link context |
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |

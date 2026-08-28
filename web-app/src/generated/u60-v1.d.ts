@@ -706,7 +706,10 @@ export interface components {
             readonly ssid: string;
             readonly hidden: boolean;
             readonly encryption: string;
+            /** @description Configured channel policy; automatic selection may be represented by 0 or auto. */
             readonly channel: string;
+            /** @description Current channel observed from the active radio interface, when available. */
+            readonly active_channel?: number;
             readonly bandwidth: string;
             readonly transmit_power_percent?: number;
             readonly clients?: number;

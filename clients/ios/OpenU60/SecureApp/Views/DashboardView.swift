@@ -889,7 +889,13 @@ struct DashboardView: View {
                 Divider()
                 Text(band.band).font(.subheadline.weight(.semibold))
                 metric("Network", band.enabled ? band.ssid : String(localized: "Disabled"))
-                metric("Radio", "\(band.channel) · \(band.bandwidth)")
+                metric("Configured channel", channelLabel(band.channel))
+                metric(
+                    "Current channel",
+                    band.activeChannel.map { channelLabel(String($0)) }
+                        ?? String(localized: "Not reported")
+                )
+                metric("Bandwidth", bandwidthLabel(band.bandwidth))
                 metric("Security", "\(band.encryption)\(band.hidden ? " \(String(localized: "(Hidden)"))" : "")")
                 metric("Clients", band.clients.map(String.init) ?? String(localized: "Not reported"))
             }
@@ -1364,6 +1370,23 @@ struct DashboardView: View {
         let hours = seconds % 86400 / 3600
         let minutes = seconds % 3600 / 60
         return days > 0 ? "\(days)d \(hours)h" : "\(hours)h \(minutes)m"
+    }
+
+    private func channelLabel(_ value: String) -> String {
+        value == "0" || value == "auto"
+            ? String(localized: "Auto")
+            : String(localized: "Channel \(value)")
+    }
+
+    private func bandwidthLabel(_ value: String) -> String {
+        switch value {
+        case "EHT20": "20 MHz"
+        case "EHT40": "40 MHz"
+        case "EHT20_40": "20/40 MHz"
+        case "EHT80": "80 MHz"
+        case "EHT160": "160 MHz"
+        default: value
+        }
     }
 
     private func formatMetric<T: BinaryInteger>(_ value: T?, unit: String) -> String {

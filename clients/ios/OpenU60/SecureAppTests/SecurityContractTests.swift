@@ -47,6 +47,18 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertEqual(snapshot.failures[0].error.code, "source_unavailable")
     }
 
+    func testGeneratedWifiBandDecodesOptionalActiveChannel() throws {
+        let band = try JSONDecoder().decode(
+            Components.Schemas.WifiBandStatus.self,
+            from: Data(
+                #"{"band":"2.4 GHz","enabled":true,"ssid":"Two","hidden":false,"encryption":"psk2","channel":"auto","active_channel":6,"bandwidth":"HE40"}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(band.channel, "auto")
+        XCTAssertEqual(band.activeChannel, 6)
+    }
+
     func testTelemetryHistoryIsBoundedDeviceLocalAndReplacesRapidSamples() throws {
         let memory = MemorySecretStore()
         let store = TelemetryHistoryStore(store: memory, account: "history")

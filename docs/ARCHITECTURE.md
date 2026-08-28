@@ -83,7 +83,8 @@ loopback canary is evidence for a stage, not completion of V1.
    fixed source list and host-network invariants are specified in
    [READ-ONLY-PROBE.md](READ-ONLY-PROBE.md); source validation alone is not live
    device acceptance. V1 read-only scope includes device identity, dashboard,
-   signal and cellular state, traffic, battery, thermal, Wi-Fi state, LAN
+   signal and cellular state, traffic, battery, thermal, Wi-Fi state including
+   optional bounded active-radio channel observations, LAN
    clients and SMS listing.
 3. **HTTPS, clients and daily operations**: the protocol, state model, TLS-only listener and
    offline [owner PKI tooling](PKI.md) are implemented. Real owner/leaf material

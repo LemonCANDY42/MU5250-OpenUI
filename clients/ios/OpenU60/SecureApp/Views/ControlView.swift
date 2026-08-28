@@ -212,7 +212,12 @@ private struct WifiControlView: View {
                 ForEach(Array(wifi.bands.enumerated()), id: \.offset) { _, band in
                     Section(band.band) {
                         LabeledContent("SSID", value: band.ssid)
-                        LabeledContent("Channel", value: channelLabel(band.channel))
+                        LabeledContent("Configured channel", value: channelLabel(band.channel))
+                        LabeledContent(
+                            "Current channel",
+                            value: band.activeChannel.map { channelLabel(String($0)) }
+                                ?? String(localized: "Unavailable")
+                        )
                         LabeledContent("Bandwidth", value: bandwidthLabel(band.bandwidth))
                         LabeledContent("TX power", value: band.transmitPowerPercent.map { "\($0)%" } ?? String(localized: "Unavailable"))
                         LabeledContent("Security", value: band.encryption)

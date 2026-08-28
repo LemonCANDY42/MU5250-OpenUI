@@ -148,6 +148,26 @@ describe('capability-driven dashboard loading', () => {
       snapshot.panels.find((panel) => panel.capability.id === 'battery_status')?.error,
     ).toBeUndefined()
   })
+
+  it('accepts a bounded optional active Wi-Fi channel and rejects invalid values', async () => {
+    const validResponses = fixtures({})
+    getJsonMock.mockImplementation(async (path) => validResponses[path])
+    const validSnapshot = await loadDashboard()
+    expect(
+      validSnapshot.panels.find((panel) => panel.capability.id === 'wifi_status')?.error,
+    ).toBeUndefined()
+
+    const invalidResponses = fixtures({})
+    const wifi = invalidResponses['/v1/status/wifi'] as {
+      bands: Array<Record<string, unknown>>
+    }
+    wifi.bands[0].active_channel = 234
+    getJsonMock.mockImplementation(async (path) => invalidResponses[path])
+    const invalidSnapshot = await loadDashboard()
+    expect(
+      invalidSnapshot.panels.find((panel) => panel.capability.id === 'wifi_status')?.error,
+    ).toBeDefined()
+  })
 })
 
 describe('battery capacity health', () => {
@@ -260,6 +280,7 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
           hidden: false,
           encryption: 'psk2',
           channel: 'auto',
+          active_channel: 6,
           bandwidth: 'HE40',
           clients: 1,
         },

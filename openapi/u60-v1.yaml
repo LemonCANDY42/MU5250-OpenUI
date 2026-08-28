@@ -1398,6 +1398,12 @@ components:
           type: string
         channel:
           type: string
+          description: Configured channel policy; automatic selection may be represented by 0 or auto.
+        active_channel:
+          type: integer
+          minimum: 1
+          maximum: 233
+          description: Current channel observed from the active radio interface, when available.
         bandwidth:
           type: string
         transmit_power_percent:

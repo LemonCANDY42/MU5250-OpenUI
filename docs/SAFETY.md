@@ -208,9 +208,11 @@ device-recovery evidence, not as approval to bypass the disabled deploy guards.
 - The compiled agent performs no boot-time migration or device mutation.
 - Its default listener is host-only `127.0.0.1:19090`; this is a test default,
   not the future device port.
-- `B04Adapter` reads only the fixed `/usr/zte_web/web/version` identity file
-  plus fixed proc/sysfs paths. No public request can select an object, method,
-  command, key or path.
+- `B04Adapter` reads only the fixed `/usr/zte_web/web/version` identity file,
+  fixed proc/sysfs paths and fixed allowlisted UCI, ubus and `iw` status
+  operations. Active Wi-Fi channels are parsed as bounded optional integers;
+  no public request can select an object, method, command, key, interface or
+  path.
 - Legacy TTL, USB, routing and logger modules remain only as dormant provenance
   files and are not in the compiled module graph. Wi-Fi and SMS are exposed only
   through their typed, allowlisted V1 operations; charging is read-only and the

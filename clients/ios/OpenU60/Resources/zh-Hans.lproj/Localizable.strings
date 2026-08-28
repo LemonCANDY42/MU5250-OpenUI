@@ -169,6 +169,8 @@
 "Cycle reset" = "周期重置";
 "Day %lld" = "每月 %lld 日";
 "Radio" = "无线参数";
+"Configured channel" = "配置信道";
+"Current channel" = "当前实际信道";
 "Provider" = "运营商";
 "Strength" = "强度";
 "Active band" = "当前频段";

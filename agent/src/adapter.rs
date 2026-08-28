@@ -247,6 +247,8 @@ pub struct WifiBandStatus {
     pub hidden: bool,
     pub encryption: String,
     pub channel: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_channel: Option<u16>,
     pub bandwidth: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transmit_power_percent: Option<u8>,
@@ -790,6 +792,8 @@ impl DeviceAdapter for B04Adapter {
             report.as_ref(),
             self.io.station_count(WifiInterface::TwoG).ok(),
             self.io.station_count(WifiInterface::FiveG).ok(),
+            self.io.active_wifi_channel(WifiInterface::TwoG).ok(),
+            self.io.active_wifi_channel(WifiInterface::FiveG).ok(),
         )
         .map_err(|message| {
             source_error(
@@ -1107,11 +1111,14 @@ fn parse_wifi_status(
     report: Option<&Value>,
     clients_2g: Option<u32>,
     clients_5g: Option<u32>,
+    active_channel_2g: Option<u16>,
+    active_channel_5g: Option<u16>,
 ) -> Result<WifiStatus, String> {
     let band = |name: &'static str,
                 radio: &str,
                 network: &str,
-                clients: Option<u32>|
+                clients: Option<u32>,
+                active_channel: Option<u16>|
      -> Result<WifiBandStatus, String> {
         let required = |key: &str| {
             config
@@ -1131,14 +1138,15 @@ fn parse_wifi_status(
             hidden: boolish_string(config.get(&format!("{network}.hidden"))).unwrap_or(false),
             encryption: required(&format!("{network}.encryption"))?,
             channel: required(&format!("{radio}.channel"))?,
+            active_channel,
             bandwidth: required(&format!("{radio}.htmode"))?,
             transmit_power_percent: power,
             clients,
         })
     };
     let bands = vec![
-        band("2.4 GHz", "wifi0", "main_2g", clients_2g)?,
-        band("5 GHz", "wifi1", "main_5g", clients_5g)?,
+        band("2.4 GHz", "wifi0", "main_2g", clients_2g, active_channel_2g)?,
+        band("5 GHz", "wifi1", "main_5g", clients_5g, active_channel_5g)?,
     ];
     let report_enabled = report
         .and_then(|value| value.get("wifi_onoff"))
@@ -2053,6 +2061,8 @@ mod tests {
             Some(&json!({"wifi_onoff":"1"})),
             Some(1),
             Some(2),
+            Some(6),
+            Some(149),
         )
         .unwrap();
         assert!(wifi.enabled);
@@ -2062,6 +2072,8 @@ mod tests {
         assert!(!wifi.features.mlo_supported);
         assert!(wifi.features.band_steering_enabled);
         assert_eq!(wifi.bands[1].clients, Some(2));
+        assert_eq!(wifi.bands[0].active_channel, Some(6));
+        assert_eq!(wifi.bands[1].active_channel, Some(149));
         assert!(wifi.bands[1].hidden);
         assert!(wifi.current_client_link.is_none());
         let guest = wifi.guest.unwrap();

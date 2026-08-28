@@ -453,6 +453,10 @@ function isWifiBand(value: unknown): boolean {
     typeof value.enabled === 'boolean' &&
     typeof value.hidden === 'boolean' &&
     optionalNonNegativeInteger(value.clients) &&
+    (value.active_channel === undefined ||
+      (isNonNegativeInteger(value.active_channel) &&
+        value.active_channel >= 1 &&
+        value.active_channel <= 233)) &&
     (value.transmit_power_percent === undefined ||
       (isNonNegativeInteger(value.transmit_power_percent) &&
         value.transmit_power_percent <= 100))
