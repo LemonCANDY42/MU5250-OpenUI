@@ -127,6 +127,24 @@ capacity, and is not charted. Zero time-to-full at the charging/full boundary is
 shown as complete; other kernel estimates are omitted beyond the 30-day
 plausibility window.
 
+While the battery is discharging, the native app also derives two local runtime
+estimates without adding any agent endpoint, background sampler or Web feature.
+It uses only the current battery percentage, learned full capacity (falling back
+to design capacity) and signed instantaneous current already returned by V1.
+The first preliminary result can appear after at least one minute and three
+continuous discharge samples. During this early window, samples use ten-second
+median buckets and a two-minute recency weighting so a two-second refresh does
+not carry more weight than a slower refresh. After five minutes the estimate is
+established using 30-second median buckets, at least six populated buckets and a
+ten-minute recency weighting. In both stages the bucket median rejects short
+spikes, the time-weighted recent rate produces the typical estimate, and the
+90th-percentile rate produces the shorter conservative estimate. Both reserve
+five percentage points rather than extrapolating to displayed zero. A fresh
+latest sample and no gap longer than three minutes are always required;
+charging, state changes, connectivity discontinuities and stale history suppress
+the estimate instead of joining or inventing samples. Existing local history
+remains decodable because the additional battery sample fields are optional.
+
 English and Simplified Chinese resources cover this control hierarchy and its
 confirmation, warning and recovery text. SwiftUI literals use the string table;
 dynamic network names and device values remain data rather than localization

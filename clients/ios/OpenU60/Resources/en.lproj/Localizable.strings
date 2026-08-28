@@ -274,6 +274,13 @@
 "The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity." = "The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity.";
 "Kernel estimate to empty" = "Kernel estimate to empty";
 "Kernel estimate to full" = "Kernel estimate to full";
+"Estimated usable time" = "Estimated usable time";
+"Conservative usable time" = "Conservative usable time";
+"App runtime estimate" = "App runtime estimate";
+"Collecting discharge data…" = "Collecting discharge data…";
+"App estimate from recent continuous discharge; reserves 5% battery capacity." = "App estimate from recent continuous discharge; reserves 5% battery capacity.";
+"Preliminary estimate from a short discharge window; it will refine with more data and reserves 5% battery capacity." = "Preliminary estimate from a short discharge window; it will refine with more data and reserves 5% battery capacity.";
+"The first estimate appears after at least one minute and three continuous discharge samples." = "The first estimate appears after at least one minute and three continuous discharge samples.";
 "Empty" = "Empty";
 "Complete" = "Complete";
 "Good" = "Good";

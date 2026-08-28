@@ -274,6 +274,13 @@
 "The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity." = "相对电量计数器是内核提供的带符号燃料计数值，不表示剩余容量。";
 "Kernel estimate to empty" = "内核预计耗尽时间";
 "Kernel estimate to full" = "内核预计充满时间";
+"Estimated usable time" = "预计可用时间";
+"Conservative usable time" = "保守可用时间";
+"App runtime estimate" = "App 续航估算";
+"Collecting discharge data…" = "正在采集放电数据…";
+"App estimate from recent continuous discharge; reserves 5% battery capacity." = "根据最近连续放电估算，并预留 5% 电量。";
+"Preliminary estimate from a short discharge window; it will refine with more data and reserves 5% battery capacity." = "根据短时放电窗口生成初步估算；数据增加后会继续收敛，并预留 5% 电量。";
+"The first estimate appears after at least one minute and three continuous discharge samples." = "连续放电至少一分钟且有三个样本后显示初步估算。";
 "Empty" = "已耗尽";
 "Complete" = "已完成";
 "Good" = "良好";

@@ -4,6 +4,10 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
     let timestamp: Date
     let continuityID: Int
     let batteryPercent: Int?
+    let batteryState: String?
+    let batteryCurrentMa: Int?
+    let batteryLearnedFullCapacityMah: Int?
+    let batteryDesignCapacityMah: Int?
     let lteRSRPdBm: Double?
     let nr5gRSRPdBm: Double?
     let wifiSignalDbm: Double?
@@ -18,6 +22,10 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         timestamp: Date,
         continuityID: Int = 0,
         batteryPercent: Int?,
+        batteryState: String? = nil,
+        batteryCurrentMa: Int? = nil,
+        batteryLearnedFullCapacityMah: Int? = nil,
+        batteryDesignCapacityMah: Int? = nil,
         lteRSRPdBm: Double?,
         nr5gRSRPdBm: Double?,
         wifiSignalDbm: Double? = nil,
@@ -29,6 +37,10 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         self.timestamp = timestamp
         self.continuityID = continuityID
         self.batteryPercent = batteryPercent
+        self.batteryState = batteryState
+        self.batteryCurrentMa = batteryCurrentMa
+        self.batteryLearnedFullCapacityMah = batteryLearnedFullCapacityMah
+        self.batteryDesignCapacityMah = batteryDesignCapacityMah
         self.lteRSRPdBm = lteRSRPdBm
         self.nr5gRSRPdBm = nr5gRSRPdBm
         self.wifiSignalDbm = wifiSignalDbm
@@ -42,6 +54,10 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         case timestamp
         case continuityID
         case batteryPercent
+        case batteryState
+        case batteryCurrentMa
+        case batteryLearnedFullCapacityMah
+        case batteryDesignCapacityMah
         case lteRSRPdBm
         case nr5gRSRPdBm
         case wifiSignalDbm
@@ -56,6 +72,16 @@ struct TelemetrySample: Codable, Equatable, Identifiable, Sendable {
         timestamp = try values.decode(Date.self, forKey: .timestamp)
         continuityID = try values.decodeIfPresent(Int.self, forKey: .continuityID) ?? 0
         batteryPercent = try values.decodeIfPresent(Int.self, forKey: .batteryPercent)
+        batteryState = try values.decodeIfPresent(String.self, forKey: .batteryState)
+        batteryCurrentMa = try values.decodeIfPresent(Int.self, forKey: .batteryCurrentMa)
+        batteryLearnedFullCapacityMah = try values.decodeIfPresent(
+            Int.self,
+            forKey: .batteryLearnedFullCapacityMah
+        )
+        batteryDesignCapacityMah = try values.decodeIfPresent(
+            Int.self,
+            forKey: .batteryDesignCapacityMah
+        )
         lteRSRPdBm = try values.decodeIfPresent(Double.self, forKey: .lteRSRPdBm)
         nr5gRSRPdBm = try values.decodeIfPresent(Double.self, forKey: .nr5gRSRPdBm)
         wifiSignalDbm = try values.decodeIfPresent(Double.self, forKey: .wifiSignalDbm)
@@ -148,6 +174,14 @@ struct TelemetryHistoryStore {
             timestamp: sample.timestamp,
             continuityID: max(0, sample.continuityID),
             batteryPercent: sample.batteryPercent,
+            batteryState: sanitizedBatteryState(sample.batteryState),
+            batteryCurrentMa: sanitizedBatteryCurrent(sample.batteryCurrentMa),
+            batteryLearnedFullCapacityMah: sanitizedBatteryCapacity(
+                sample.batteryLearnedFullCapacityMah
+            ),
+            batteryDesignCapacityMah: sanitizedBatteryCapacity(
+                sample.batteryDesignCapacityMah
+            ),
             lteRSRPdBm: sanitizedCellularSignal(sample.lteRSRPdBm),
             nr5gRSRPdBm: sanitizedCellularSignal(sample.nr5gRSRPdBm),
             wifiSignalDbm: sanitizedWifiSignal(sample.wifiSignalDbm),
@@ -172,6 +206,21 @@ struct TelemetryHistoryStore {
 
     private func sanitizedPercent(_ value: Double?) -> Double? {
         value.flatMap { $0.isFinite && (0 ... 100).contains($0) ? $0 : nil }
+    }
+
+    private func sanitizedBatteryState(_ value: String?) -> String? {
+        value.flatMap {
+            ["charging", "discharging", "full", "not charging", "not_charging"]
+                .contains($0.lowercased()) ? $0.lowercased() : nil
+        }
+    }
+
+    private func sanitizedBatteryCurrent(_ value: Int?) -> Int? {
+        value.flatMap { (-1_000_000 ... 1_000_000).contains($0) ? $0 : nil }
+    }
+
+    private func sanitizedBatteryCapacity(_ value: Int?) -> Int? {
+        value.flatMap { (1 ... 1_000_000).contains($0) ? $0 : nil }
     }
 
     private func sanitizedWifiSignal(_ value: Double?) -> Double? {

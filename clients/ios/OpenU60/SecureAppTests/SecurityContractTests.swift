@@ -369,6 +369,162 @@ final class SecurityContractTests: XCTestCase {
         )
     }
 
+    func testBatteryRuntimeEstimateUsesLearnedCapacityAndFivePercentReserve() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let history = dischargeHistory(
+            start: start,
+            minutes: 10,
+            currentMA: -500,
+            capacityPercent: 50,
+            learnedFullCapacityMAh: 5_000,
+            designCapacityMAh: 6_000
+        )
+
+        let estimate = try XCTUnwrap(
+            BatteryRuntimeEstimator.estimate(from: history, now: start.addingTimeInterval(10 * 60))
+        )
+        XCTAssertEqual(estimate.typicalSeconds, 16_200)
+        XCTAssertEqual(estimate.conservativeSeconds, 16_200)
+        XCTAssertEqual(estimate.reservePercent, 5)
+        XCTAssertEqual(estimate.observationSeconds, 600)
+        XCTAssertEqual(estimate.confidence, .established)
+    }
+
+    func testBatteryRuntimeEstimateProvidesPreliminaryResultAfterOneMinute() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let history = (0 ... 6).map { index in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(index) * 10),
+                batteryPercent: 50,
+                batteryState: "Discharging",
+                batteryCurrentMa: -500,
+                batteryLearnedFullCapacityMah: 5_000,
+                batteryDesignCapacityMah: 6_000,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            )
+        }
+
+        let estimate = try XCTUnwrap(
+            BatteryRuntimeEstimator.estimate(from: history, now: start.addingTimeInterval(60))
+        )
+        XCTAssertEqual(estimate.typicalSeconds, 16_200)
+        XCTAssertEqual(estimate.conservativeSeconds, 16_200)
+        XCTAssertEqual(estimate.observationSeconds, 60)
+        XCTAssertEqual(estimate.confidence, .preliminary)
+    }
+
+    func testBatteryRuntimeEstimateRequiresThreeEarlyBuckets() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let sparse = [0, 60].map { seconds in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(seconds)),
+                batteryPercent: 50,
+                batteryState: "Discharging",
+                batteryCurrentMa: -500,
+                batteryLearnedFullCapacityMah: 5_000,
+                batteryDesignCapacityMah: nil,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            )
+        }
+        XCTAssertNil(
+            BatteryRuntimeEstimator.estimate(from: sparse, now: start.addingTimeInterval(60))
+        )
+    }
+
+    func testBatteryRuntimeEstimateUsesPeakPercentileForConservativeTime() throws {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let history = (0 ... 20).map { index in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(index) * 30),
+                batteryPercent: 60,
+                batteryState: "Discharging",
+                batteryCurrentMa: index >= 17 ? -1_000 : -400,
+                batteryLearnedFullCapacityMah: 5_000,
+                batteryDesignCapacityMah: 5_000,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            )
+        }
+
+        let estimate = try XCTUnwrap(
+            BatteryRuntimeEstimator.estimate(from: history, now: start.addingTimeInterval(10 * 60))
+        )
+        XCTAssertLessThan(estimate.conservativeSeconds, estimate.typicalSeconds)
+        XCTAssertEqual(estimate.conservativeSeconds, 9_900)
+    }
+
+    func testBatteryRuntimeEstimateDoesNotInventAcrossGapsOrCharging() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        var history = dischargeHistory(
+            start: start,
+            minutes: 4,
+            currentMA: -500,
+            capacityPercent: 50,
+            learnedFullCapacityMAh: 5_000,
+            designCapacityMAh: 5_000
+        )
+        history.append(contentsOf: dischargeHistory(
+            start: start.addingTimeInterval(8 * 60),
+            minutes: 4,
+            currentMA: -500,
+            capacityPercent: 49,
+            learnedFullCapacityMAh: 5_000,
+            designCapacityMAh: 5_000
+        ))
+        let afterGap = BatteryRuntimeEstimator.estimate(
+            from: history,
+            now: start.addingTimeInterval(12 * 60)
+        )
+        XCTAssertEqual(afterGap?.observationSeconds, 240)
+        XCTAssertEqual(afterGap?.confidence, .preliminary)
+
+        let charging = history + [TelemetrySample(
+            timestamp: start.addingTimeInterval(12 * 60 + 30),
+            batteryPercent: 49,
+            batteryState: "Charging",
+            batteryCurrentMa: 500,
+            batteryLearnedFullCapacityMah: 5_000,
+            batteryDesignCapacityMah: 5_000,
+            lteRSRPdBm: nil,
+            nr5gRSRPdBm: nil
+        )]
+        XCTAssertNil(
+            BatteryRuntimeEstimator.estimate(from: charging, now: start.addingTimeInterval(12 * 60 + 30))
+        )
+    }
+
+    func testBatteryRuntimeEstimateRequiresUsableCapacityAndFreshSamples() {
+        let start = Date(timeIntervalSince1970: 1_800_000_000)
+        let atReserve = dischargeHistory(
+            start: start,
+            minutes: 10,
+            currentMA: -500,
+            capacityPercent: 5,
+            learnedFullCapacityMAh: nil,
+            designCapacityMAh: 5_000
+        )
+        XCTAssertNil(
+            BatteryRuntimeEstimator.estimate(from: atReserve, now: start.addingTimeInterval(10 * 60))
+        )
+
+        let valid = dischargeHistory(
+            start: start,
+            minutes: 10,
+            currentMA: -500,
+            capacityPercent: 50,
+            learnedFullCapacityMAh: nil,
+            designCapacityMAh: 5_000
+        )
+        XCTAssertNotNil(
+            BatteryRuntimeEstimator.estimate(from: valid, now: start.addingTimeInterval(10 * 60))
+        )
+        XCTAssertNil(
+            BatteryRuntimeEstimator.estimate(from: valid, now: start.addingTimeInterval(14 * 60))
+        )
+    }
+
     func testDashboardPreferencesPersistWithoutNetworkOrSharedStorage() {
         let memory = MemorySecretStore()
         let store = DashboardPreferencesStore(store: memory, account: "dashboard")
@@ -384,6 +540,28 @@ final class SecurityContractTests: XCTestCase {
         )
         store.save(value)
         XCTAssertEqual(store.load(), value)
+    }
+
+    private func dischargeHistory(
+        start: Date,
+        minutes: Int,
+        currentMA: Int,
+        capacityPercent: Int,
+        learnedFullCapacityMAh: Int?,
+        designCapacityMAh: Int?
+    ) -> [TelemetrySample] {
+        (0 ... minutes * 2).map { index in
+            TelemetrySample(
+                timestamp: start.addingTimeInterval(Double(index) * 30),
+                batteryPercent: capacityPercent,
+                batteryState: "Discharging",
+                batteryCurrentMa: currentMA,
+                batteryLearnedFullCapacityMah: learnedFullCapacityMAh,
+                batteryDesignCapacityMah: designCapacityMAh,
+                lteRSRPdBm: nil,
+                nr5gRSRPdBm: nil
+            )
+        }
     }
 
     func testDashboardPreferencesDecodeExistingValueWithAllChartSeriesVisible() throws {

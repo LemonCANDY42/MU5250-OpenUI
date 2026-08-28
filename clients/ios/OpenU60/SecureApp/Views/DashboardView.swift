@@ -537,6 +537,26 @@ struct DashboardView: View {
             if let seconds = battery.timeToFullSeconds {
                 metric("Kernel estimate to full", formatBatteryEstimate(seconds, zeroLabel: "Complete"))
             }
+            if battery.state.lowercased() == "discharging" {
+                if let estimate = model.batteryRuntimeEstimate {
+                    metric("Estimated usable time", formatDuration(estimate.typicalSeconds))
+                    metric("Conservative usable time", formatDuration(estimate.conservativeSeconds))
+                    Group {
+                        if estimate.confidence == .preliminary {
+                            Text("Preliminary estimate from a short discharge window; it will refine with more data and reserves 5% battery capacity.")
+                        } else {
+                            Text("App estimate from recent continuous discharge; reserves 5% battery capacity.")
+                        }
+                    }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    metric("App runtime estimate", String(localized: "Collecting discharge data…"))
+                    Text("The first estimate appears after at least one minute and three continuous discharge samples.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
             if batteryPointCount >= 2 {
                 Divider()
                 Text("Battery history").font(.subheadline.weight(.semibold))

@@ -37,6 +37,7 @@ final class AppModel {
     private(set) var credential: CredentialMetadata?
     private(set) var charging: Components.Schemas.ChargingStatus?
     private(set) var telemetryHistory: [TelemetrySample]
+    private(set) var batteryRuntimeEstimate: BatteryRuntimeEstimate?
     private(set) var pendingWifiConfirmation: PendingWifiConfirmation?
     private(set) var wifiConfirmationMessage: String?
     private(set) var isConfirmingWifi = false
@@ -68,6 +69,7 @@ final class AppModel {
         self.telemetryHistoryStore = telemetryHistoryStore
         let restoredTelemetry = telemetryHistoryStore.load()
         telemetryHistory = restoredTelemetry
+        batteryRuntimeEstimate = BatteryRuntimeEstimator.estimate(from: restoredTelemetry)
         telemetryContinuityID = restoredTelemetry.last?.continuityID ?? 0
         if let pending = try? wifiConfirmations.load() {
             pendingWifiConfirmation = pending
@@ -253,6 +255,7 @@ final class AppModel {
         await vault.clear()
         dashboard = nil
         charging = nil
+        batteryRuntimeEstimate = nil
         notice = nil
         phase = profile == nil ? .needsPairing : .signedOut
     }
@@ -265,6 +268,7 @@ final class AppModel {
             await vault.clear()
             dashboard = nil
             charging = nil
+            batteryRuntimeEstimate = nil
             clearPendingWifiConfirmation(cancelTask: true)
             notice = nil
             profile = nil
@@ -318,6 +322,10 @@ final class AppModel {
                 timestamp: .now,
                 continuityID: telemetryContinuityID,
                 batteryPercent: snapshot.battery?.capacityPercent,
+                batteryState: snapshot.battery?.state,
+                batteryCurrentMa: snapshot.battery?.currentMa,
+                batteryLearnedFullCapacityMah: snapshot.battery?.learnedFullCapacityMah,
+                batteryDesignCapacityMah: snapshot.battery?.designCapacityMah,
                 lteRSRPdBm: snapshot.signal?.lte?.rsrpDbm.map(Double.init),
                 nr5gRSRPdBm: snapshot.signal?.nr5g?.rsrpDbm.map(Double.init),
                 wifiSignalDbm: snapshot.wifi?.currentClientLink.map { Double($0.signalDbm) },
@@ -330,6 +338,7 @@ final class AppModel {
             ),
             to: telemetryHistory
         )
+        batteryRuntimeEstimate = BatteryRuntimeEstimator.estimate(from: telemetryHistory)
         clearConnectionIssue()
     }
 
