@@ -43,7 +43,10 @@ detail screen and centered confirmation alert. The Wi-Fi screen mirrors the usef
 while keeping the V1 safety boundary: typed primary and guest fields only,
 fixed channel/bandwidth/transmit-power choices, no raw UCI/ubus surface, no
 prefilled password, and a visible two-minute reconnect confirmation backed by
-the independent device rollback worker. The app creates and persists the
+the independent device rollback worker. The listener keeps that worker
+independent for crash-safe recovery while a bounded parent-side reaper waits
+for its exit, so completed rollback workers do not accumulate as zombies. The
+app creates and persists the
 transaction identifier before requesting any Wi-Fi mutation, then resumes
 automatic confirmation probes after transient disconnects, repeated network
 switches, app foregrounding and process relaunch. Each probe uses a fresh pinned

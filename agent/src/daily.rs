@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -17,6 +17,7 @@ const SMS_LOCK: &str = "sms.lock";
 const DAILY_AUDIT_FILE: &str = "daily-audit.json";
 const DAILY_AUDIT_LOCK: &str = "daily-audit.lock";
 const WIFI_CONFIRM_SECONDS: u64 = 120;
+const WIFI_ROLLBACK_REAPER_STACK_BYTES: usize = 256 * 1024;
 const MAX_DAILY_AUDIT_EVENTS: usize = 128;
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -391,7 +392,9 @@ impl DailyService {
 
 fn spawn_wifi_rollback(transaction_id: &str) -> Result<(), String> {
     validate_transaction_id(transaction_id)?;
-    Command::new(std::env::current_exe().map_err(|_| "cannot resolve agent executable")?)
+    let mut command =
+        Command::new(std::env::current_exe().map_err(|_| "cannot resolve agent executable")?);
+    command
         .args([
             "wifi-rollback-after",
             transaction_id,
@@ -399,10 +402,46 @@ fn spawn_wifi_rollback(transaction_id: &str) -> Result<(), String> {
         ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| "cannot start the independent Wi-Fi rollback worker".into())
+        .stderr(Stdio::null());
+
+    // Keep the independent rollback process so it can still restore Wi-Fi if
+    // the listener exits, while a small parent-side thread waits for and reaps
+    // it after the confirmation window. Creating the reaper before spawning
+    // the child preserves the existing fail-closed launch behavior.
+    let _completion = spawn_reaped_command(command)?;
+    Ok(())
+}
+
+fn spawn_reaped_command(
+    mut command: Command,
+) -> Result<mpsc::Receiver<Result<(), String>>, String> {
+    let (launch_sender, launch_receiver) = mpsc::sync_channel::<Result<(), String>>(1);
+    let (completion_sender, completion_receiver) = mpsc::sync_channel::<Result<(), String>>(1);
+
+    thread::Builder::new()
+        .name("wifi-rollback-reaper".into())
+        .stack_size(WIFI_ROLLBACK_REAPER_STACK_BYTES)
+        .spawn(move || match command.spawn() {
+            Ok(mut child) => {
+                let _ = launch_sender.send(Ok(()));
+                let result = child
+                    .wait()
+                    .map(|_| ())
+                    .map_err(|_| "cannot reap the independent Wi-Fi rollback worker".into());
+                let _ = completion_sender.send(result);
+            }
+            Err(_) => {
+                let _ = launch_sender.send(Err(
+                    "cannot start the independent Wi-Fi rollback worker".into(),
+                ));
+            }
+        })
+        .map_err(|_| "cannot start the Wi-Fi rollback reaper".to_string())?;
+
+    launch_receiver
+        .recv()
+        .map_err(|_| "Wi-Fi rollback worker launch status was unavailable".to_string())??;
+    Ok(completion_receiver)
 }
 
 fn wifi_values_from_request(
@@ -892,6 +931,22 @@ mod tests {
         assert_eq!(request.transaction_id, "abcdefghijklmnopqrstuvwx");
         assert!(validate_transaction_id(&request.transaction_id).is_ok());
         assert!(validate_transaction_id("too-short").is_err());
+    }
+
+    #[test]
+    fn rollback_child_is_waited_for_by_the_reaper() {
+        let command = Command::new("true");
+        let completion = spawn_reaped_command(command).unwrap();
+        assert_eq!(
+            completion.recv_timeout(Duration::from_secs(2)).unwrap(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn rollback_child_launch_failure_is_reported_synchronously() {
+        let command = Command::new("/definitely/missing/zte-agent-test-command");
+        assert!(spawn_reaped_command(command).is_err());
     }
 
     #[test]
