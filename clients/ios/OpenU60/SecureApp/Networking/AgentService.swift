@@ -4,12 +4,14 @@ import OpenAPIURLSession
 
 enum AgentServiceError: LocalizedError {
     case rejected(status: Int, message: String)
+    case authenticationRequired
     case invalidResponse
     case transportSecurity(String)
 
     var errorDescription: String? {
         switch self {
         case let .rejected(status, message): "U60 rejected the request (\(status)): \(message)"
+        case .authenticationRequired: "The secure session expired."
         case .invalidResponse: "The U60 returned a response that does not match the v1 contract."
         case let .transportSecurity(message): message
         }
@@ -117,7 +119,20 @@ final class AgentService: Sendable {
         let output = try await client.getDashboardSnapshot()
         let aggregate: Components.Schemas.DashboardSnapshot
         switch output {
-        case let .ok(response): aggregate = try response.body.json.data
+        case let .ok(response):
+            do {
+                aggregate = try response.body.json.data
+            } catch {
+                throw AgentServiceError.invalidResponse
+            }
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
+        case let .forbidden(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 403, message: body.error.message)
+        case let .internalServerError(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 500, message: body.error.message)
         default: throw AgentServiceError.invalidResponse
         }
         let failures = aggregate.failures.reduce(into: [String: String]()) { result, failure in

@@ -31,6 +31,49 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(ConnectionIssue.classify(AgentServiceError.invalidResponse))
     }
 
+    @MainActor
+    func testReadSessionRecoveryRenewsOnceAfterSessionExpiry() async throws {
+        var attempts = 0
+        var renewals = 0
+
+        let value = try await ReadSessionRecovery.run {
+            attempts += 1
+            if attempts == 1 {
+                throw AgentServiceError.authenticationRequired
+            }
+            return 42
+        } renew: {
+            renewals += 1
+        }
+
+        XCTAssertEqual(value, 42)
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(renewals, 1)
+    }
+
+    @MainActor
+    func testReadSessionRecoveryDoesNotLoopAfterSecondSessionRejection() async {
+        var attempts = 0
+        var renewals = 0
+
+        do {
+            let _: Int = try await ReadSessionRecovery.run {
+                attempts += 1
+                throw AgentServiceError.authenticationRequired
+            } renew: {
+                renewals += 1
+            }
+            XCTFail("expected the second authentication rejection to propagate")
+        } catch AgentServiceError.authenticationRequired {
+            // Expected: one renewal and one bounded retry only.
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(renewals, 1)
+    }
+
     func testGeneratedAggregateSnapshotPreservesPartialSuccess() throws {
         let snapshot = try JSONDecoder().decode(
             Components.Schemas.DashboardSnapshot.self,

@@ -56,6 +56,7 @@ final class AppModel {
     @ObservationIgnored private var connectionRecoveryGeneration = 0
     @ObservationIgnored private var telemetryContinuityID = 0
     @ObservationIgnored private var appIsActive = true
+    @ObservationIgnored private var lastPresentedReadFailure: String?
 
     init(
         credentials: DeviceCredentialStore = DeviceCredentialStore(),
@@ -257,6 +258,7 @@ final class AppModel {
         charging = nil
         batteryRuntimeEstimate = nil
         notice = nil
+        lastPresentedReadFailure = nil
         phase = profile == nil ? .needsPairing : .signedOut
     }
 
@@ -271,6 +273,7 @@ final class AppModel {
             batteryRuntimeEstimate = nil
             clearPendingWifiConfirmation(cancelTask: true)
             notice = nil
+            lastPresentedReadFailure = nil
             profile = nil
             credential = nil
             service = nil
@@ -307,8 +310,19 @@ final class AppModel {
 
     private func refreshThrowing() async throws {
         guard let service else { throw LocalSecurityError.missingCredential }
-        let snapshot = try await service.dashboard()
+        let snapshot = try await dashboardWithSessionRecovery(using: service)
         applyDashboard(snapshot, charging: snapshot.charging)
+    }
+
+    private func dashboardWithSessionRecovery(using service: AgentService) async throws -> DashboardSnapshot {
+        guard let credential else { throw LocalSecurityError.missingCredential }
+        return try await ReadSessionRecovery.run {
+            try await service.dashboard()
+        } renew: {
+            try await service.signIn(credentialID: credential.id) { message in
+                try self.credentials.sign(message)
+            }
+        }
     }
 
     private func applyDashboard(
@@ -339,13 +353,18 @@ final class AppModel {
             to: telemetryHistory
         )
         batteryRuntimeEstimate = BatteryRuntimeEstimator.estimate(from: telemetryHistory)
+        lastPresentedReadFailure = nil
         clearConnectionIssue()
     }
 
     private func handleReadFailure(_ error: any Error) {
         guard !Task.isCancelled else { return }
         guard let issue = ConnectionIssue.classify(error) else {
-            errorMessage = error.localizedDescription
+            let message = error.localizedDescription
+            if lastPresentedReadFailure != message {
+                lastPresentedReadFailure = message
+                errorMessage = message
+            }
             return
         }
         if connectionIssue == nil, telemetryContinuityID < .max {
@@ -401,7 +420,7 @@ final class AppModel {
                             try self.credentials.sign(message)
                         }
                     }
-                    let snapshot = try await recoveryService.dashboard()
+                    let snapshot = try await self.dashboardWithSessionRecovery(using: recoveryService)
                     guard !Task.isCancelled,
                           self.connectionRecoveryGeneration == generation
                     else {
@@ -421,7 +440,11 @@ final class AppModel {
                     else { return }
                     guard let issue = ConnectionIssue.classify(error) else {
                         self.connectionIssue = nil
-                        self.errorMessage = error.localizedDescription
+                        let message = error.localizedDescription
+                        if self.lastPresentedReadFailure != message {
+                            self.lastPresentedReadFailure = message
+                            self.errorMessage = message
+                        }
                         return
                     }
                     self.connectionIssue = issue
@@ -533,6 +556,21 @@ final class AppModel {
                 phase = profile == nil ? .needsPairing : .signedOut
             }
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+enum ReadSessionRecovery {
+    @MainActor
+    static func run<Value>(
+        operation: () async throws -> Value,
+        renew: () async throws -> Void
+    ) async throws -> Value {
+        do {
+            return try await operation()
+        } catch AgentServiceError.authenticationRequired {
+            try await renew()
+            return try await operation()
         }
     }
 }
