@@ -263,8 +263,10 @@ def verify_device_release_script(
         + '[ "$(sha256sum "$d/release.sha256" | cut -d\' \' -f1)" = '
         f"{quoted_id} ]; "
         f'[ "$(sed -n \'1p\' "$d/release.complete")" = u60-b04-v1-release:{release_id} ]; '
-        'find "$d" -mindepth 1 ! -type d ! -type f -print -quit | grep -q . && exit 1 || true; '
-        'actual=$(find "$d" -type f -print | sed "s#^$d/##" | LC_ALL=C sort); '
+        'unexpected=$(find "$d" ! -type d ! -type f -print) || exit 1; '
+        '[ -z "$unexpected" ] || exit 1; '
+        'actual_paths=$(find "$d" -type f -print) || exit 1; '
+        'actual=$(printf "%s\\n" "$actual_paths" | sed "s#^$d/##" | LC_ALL=C sort); '
         'expected=$({ awk -F "  " \'NF == 2 { print $2 }\' "$d/release.sha256"; '
         'printf "%s\\n" release.sha256 release.complete; } | LC_ALL=C sort); '
         '[ "$actual" = "$expected" ]; cd "$d"; sha256sum -c release.sha256 >/dev/null'

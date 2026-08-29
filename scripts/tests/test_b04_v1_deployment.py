@@ -4,6 +4,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -174,6 +175,68 @@ class ReleasePreparationTests(unittest.TestCase):
             agent.unlink()
             agent.symlink_to(external)
             self.assertNotEqual(run_verifier().returncode, 0)
+
+    def test_device_release_verifier_fails_closed_when_busybox_rejects_quit(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="u60-device-release-test-") as temporary:
+            release = Path(temporary) / "release"
+            release.mkdir()
+            agent = release / "zte-agent"
+            agent.write_bytes(b"synthetic agent")
+            digest = hashlib.sha256(agent.read_bytes()).hexdigest()
+            checksum = f"{digest}  zte-agent\n".encode()
+            release_id = hashlib.sha256(checksum).hexdigest()
+            (release / "release.sha256").write_bytes(checksum)
+            (release / "release.complete").write_text(
+                f"u60-b04-v1-release:{release_id}\n"
+            )
+            script = DEPLOY.verify_device_release_script(
+                release_id, str(release), require_basename=False
+            )
+            real_find = shutil.which("find")
+            self.assertIsNotNone(real_find)
+            commands = Path(temporary) / "commands"
+            commands.mkdir()
+            find = commands / "find"
+            find.write_text(
+                "#!/bin/sh\n"
+                'if [ "${FAIL_FIRST_FIND:-}" = 1 ] && [ ! -e "$FIND_FAILURE_MARKER" ]; then\n'
+                '  : > "$FIND_FAILURE_MARKER"\n'
+                "  exit 2\n"
+                "fi\n"
+                'for argument do [ "$argument" = -quit ] && exit 2; done\n'
+                'exec "$REAL_FIND" "$@"\n'
+            )
+            os.chmod(find, 0o700)
+            environment = os.environ | {
+                "PATH": f"{commands}:{os.environ['PATH']}",
+                "REAL_FIND": real_find,
+            }
+
+            def run_verifier() -> subprocess.CompletedProcess[bytes]:
+                return subprocess.run(
+                    ["sh", "-c", script],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=environment,
+                )
+
+            valid_result = run_verifier()
+            self.assertEqual(valid_result.returncode, 0, valid_result.stderr.decode())
+            os.mkfifo(release / "unexpected-fifo")
+            result = run_verifier()
+            self.assertNotEqual(result.returncode, 0, result.stderr.decode())
+            (release / "unexpected-fifo").unlink()
+            find_failure = subprocess.run(
+                ["sh", "-c", script],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=environment
+                | {
+                    "FAIL_FIRST_FIND": "1",
+                    "FIND_FAILURE_MARKER": str(Path(temporary) / "find-failed"),
+                },
+            )
+            self.assertNotEqual(find_failure.returncode, 0, find_failure.stderr.decode())
 
 
 class DeploymentBoundaryTests(unittest.TestCase):
