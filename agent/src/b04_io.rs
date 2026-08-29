@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{self, Read};
 use std::net::Ipv4Addr;
+use std::os::fd::AsRawFd;
 use std::process::{Command, Stdio};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use wait_timeout::ChildExt;
-
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
+const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UbusRead {
@@ -358,6 +358,15 @@ fn parse_ubus_write_response(_label: &str, output: &[u8]) -> Result<Value, Strin
 }
 
 fn run_fixed(label: &str, program: &str, args: &[&str]) -> Result<Vec<u8>, String> {
+    run_fixed_with_timeout(label, program, args, COMMAND_TIMEOUT)
+}
+
+fn run_fixed_with_timeout(
+    label: &str,
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> Result<Vec<u8>, String> {
     let mut child = Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -366,46 +375,119 @@ fn run_fixed(label: &str, program: &str, args: &[&str]) -> Result<Vec<u8>, Strin
         .spawn()
         .map_err(|_| format!("{label} source is unavailable"))?;
 
-    // Drain stdout while the child is running. Waiting before reading can
-    // deadlock once a valid response grows beyond the kernel pipe buffer.
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| format!("{label} returned no output stream"))?;
-    let reader = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        stdout
-            .take((MAX_OUTPUT_BYTES + 1) as u64)
-            .read_to_end(&mut output)
-            .map(|_| output)
-    });
+    let Some(stdout) = child.stdout.take() else {
+        terminate_and_reap(&mut child);
+        return Err(format!("{label} returned no output stream"));
+    };
+    if set_nonblocking(stdout.as_raw_fd()).is_err() {
+        terminate_and_reap(&mut child);
+        return Err(format!("{label} output could not be read"));
+    }
 
-    let status = match child.wait_timeout(COMMAND_TIMEOUT) {
-        Ok(Some(status)) => status,
-        Ok(None) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
+    // One owner drains the pipe and observes the child, so neither a full pipe
+    // nor an inherited writer in a descendant can strand a reader thread.
+    let deadline = Instant::now() + timeout;
+    let mut output = Vec::new();
+    let mut stdout = Some(stdout);
+    let mut output_exceeded = false;
+    loop {
+        if let Some(pipe) = stdout.as_mut() {
+            match drain_available(pipe, &mut output) {
+                Ok(DrainState::Open | DrainState::Eof) => {}
+                Ok(DrainState::Exceeded) => {
+                    output_exceeded = true;
+                    // Closing the full pipe lets the command observe the
+                    // bounded-output boundary instead of blocking forever.
+                    stdout.take();
+                }
+                Err(_) => {
+                    terminate_and_reap(&mut child);
+                    return Err(format!("{label} output could not be read"));
+                }
+            }
+        }
+
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                if !status.success() {
+                    return Err(format!("{label} source failed"));
+                }
+                if output_exceeded {
+                    return Err(format!("{label} output exceeded the fixed limit"));
+                }
+                let pipe = stdout
+                    .as_mut()
+                    .expect("stdout remains owned until the output limit is exceeded");
+                match drain_available(pipe, &mut output) {
+                    Ok(DrainState::Open | DrainState::Eof) => return Ok(output),
+                    Ok(DrainState::Exceeded) => {
+                        return Err(format!("{label} output exceeded the fixed limit"));
+                    }
+                    Err(_) => return Err(format!("{label} output could not be read")),
+                }
+            }
+            Ok(None) => {}
+            Err(_) => {
+                terminate_and_reap(&mut child);
+                return Err(format!("{label} could not be observed"));
+            }
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            terminate_and_reap(&mut child);
             return Err(format!("{label} timed out"));
         }
-        Err(_) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = reader.join();
-            return Err(format!("{label} could not be observed"));
+        std::thread::sleep(COMMAND_POLL_INTERVAL.min(deadline - now));
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DrainState {
+    Open,
+    Eof,
+    Exceeded,
+}
+
+fn drain_available(stdout: &mut impl Read, output: &mut Vec<u8>) -> io::Result<DrainState> {
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let remaining = MAX_OUTPUT_BYTES + 1 - output.len();
+        let read_limit = buffer.len().min(remaining);
+        match stdout.read(&mut buffer[..read_limit]) {
+            Ok(0) => return Ok(DrainState::Eof),
+            Ok(read) => {
+                output.extend_from_slice(&buffer[..read]);
+                if output.len() > MAX_OUTPUT_BYTES {
+                    return Ok(DrainState::Exceeded);
+                }
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(DrainState::Open),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
         }
-    };
-    let output = reader
-        .join()
-        .map_err(|_| format!("{label} output reader stopped unexpectedly"))?
-        .map_err(|_| format!("{label} output could not be read"))?;
-    if !status.success() {
-        return Err(format!("{label} source failed"));
     }
-    if output.len() > MAX_OUTPUT_BYTES {
-        return Err(format!("{label} output exceeded the fixed limit"));
+}
+
+fn set_nonblocking(fd: std::os::fd::RawFd) -> io::Result<()> {
+    // SAFETY: `fd` is the live stdout pipe owned by this function. `fcntl`
+    // reads and updates only that descriptor's status flags, and both results
+    // are checked before the descriptor is used again.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(io::Error::last_os_error());
     }
-    Ok(output)
+    // SAFETY: the same live descriptor and validated flags are used; adding
+    // `O_NONBLOCK` preserves all existing descriptor status flags.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+fn terminate_and_reap(child: &mut std::process::Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 fn parse_uci_show(package: &str, text: &str) -> BTreeMap<String, String> {
@@ -643,5 +725,145 @@ mod tests {
         assert!(parse_active_wifi_channel("Interface wlan2\n").is_err());
         assert!(parse_active_wifi_channel("channel 0 (invalid)\n").is_err());
         assert!(parse_active_wifi_channel("channel 234 (invalid)\n").is_err());
+    }
+
+    #[test]
+    fn fixed_runner_returns_before_a_descendant_closes_inherited_stdout() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_path = temp.path().join("descendant.pid");
+        let pid_path = pid_path.to_str().unwrap();
+        let output = run_fixed_with_timeout(
+            "test command",
+            "/bin/sh",
+            &[
+                "-c",
+                "sleep 30 & printf '%s' \"$!\" > \"$1\"; printf ready",
+                "test-shell",
+                pid_path,
+            ],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        let descendant_pid = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .parse::<libc::pid_t>()
+            .unwrap();
+
+        assert_eq!(output, b"ready");
+        // SAFETY: signal zero only probes the exact descendant PID written by
+        // this test command and does not deliver a signal.
+        let probe = unsafe { libc::kill(descendant_pid, 0) };
+        // SAFETY: cleanup targets only the exact still-running descendant that
+        // this test created after proving the runner did not wait for its pipe.
+        if probe == 0 {
+            unsafe { libc::kill(descendant_pid, libc::SIGKILL) };
+        }
+        assert_eq!(probe, 0);
+    }
+
+    #[test]
+    fn fixed_runner_accepts_exactly_the_output_limit() {
+        let script = format!("dd if=/dev/zero bs={MAX_OUTPUT_BYTES} count=1 2>/dev/null");
+        let output = run_fixed_with_timeout(
+            "test command",
+            "/bin/sh",
+            &["-c", &script],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        assert_eq!(output.len(), MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn fixed_runner_rejects_output_one_byte_over_the_limit() {
+        let script = format!(
+            "dd if=/dev/zero bs={} count=1 2>/dev/null",
+            MAX_OUTPUT_BYTES + 1
+        );
+        let error = run_fixed_with_timeout(
+            "test command",
+            "/bin/sh",
+            &["-c", &script],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "test command output exceeded the fixed limit");
+    }
+
+    #[test]
+    fn fixed_runner_preserves_nonzero_failure_after_output_limit() {
+        let script = format!(
+            "dd if=/dev/zero bs={} count=1 2>/dev/null; exit 7",
+            MAX_OUTPUT_BYTES + 1
+        );
+        let error = run_fixed_with_timeout(
+            "test command",
+            "/bin/sh",
+            &["-c", &script],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "test command source failed");
+    }
+
+    #[test]
+    fn fixed_runner_observes_nonzero_exit_after_closing_an_over_limit_stream() {
+        let error =
+            run_fixed_with_timeout("test command", "/usr/bin/yes", &[], Duration::from_secs(5))
+                .unwrap_err();
+
+        assert_eq!(error, "test command source failed");
+    }
+
+    #[test]
+    fn fixed_runner_times_out_and_reaps_the_direct_child() {
+        let temp = tempfile::tempdir().unwrap();
+        let pid_path = temp.path().join("child.pid");
+        let pid_path = pid_path.to_str().unwrap();
+        let started = std::time::Instant::now();
+        let error = run_fixed_with_timeout(
+            "test command",
+            "/bin/sh",
+            &[
+                "-c",
+                "printf '%s' \"$$\" > \"$1\"; exec sleep 30",
+                "test-shell",
+                pid_path,
+            ],
+            Duration::from_secs(2),
+        )
+        .unwrap_err();
+        let pid = std::fs::read_to_string(pid_path)
+            .unwrap()
+            .parse::<libc::pid_t>()
+            .unwrap();
+
+        assert_eq!(error, "test command timed out");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        // SAFETY: this nonblocking wait probes only the exact child PID this
+        // test created. `ECHILD` proves the runner already waited for it and
+        // avoids a racy assertion based on global PID reuse.
+        let probe = unsafe { libc::waitpid(pid, std::ptr::null_mut(), libc::WNOHANG) };
+        assert_eq!(probe, -1);
+        assert_eq!(
+            io::Error::last_os_error().raw_os_error(),
+            Some(libc::ECHILD)
+        );
+    }
+
+    #[test]
+    fn fixed_runner_keeps_nonzero_exit_as_a_typed_source_failure() {
+        let error = run_fixed_with_timeout(
+            "test command",
+            "/bin/sh",
+            &["-c", "printf ignored; exit 7"],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+
+        assert_eq!(error, "test command source failed");
     }
 }

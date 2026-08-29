@@ -46,6 +46,7 @@ enum DashboardComponentId {
 }
 
 const DASHBOARD_BUDGET: Duration = Duration::from_secs(11);
+const DASHBOARD_EVENT_CAPACITY: usize = DASHBOARD_COMPONENTS.len() + 1;
 const DASHBOARD_COMPONENTS: [(CapabilityId, DashboardComponentId); 9] = [
     (
         CapabilityId::SystemStatus,
@@ -165,7 +166,7 @@ async fn dashboard_with_budget(state: AppState, peer: IpAddr, budget: Duration) 
             return success(snapshot.finish());
         }
     };
-    let (sender, mut receiver) = mpsc::unbounded_channel();
+    let (sender, mut receiver) = mpsc::channel(DASHBOARD_EVENT_CAPACITY);
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
     let worker_state = state;
@@ -180,7 +181,10 @@ async fn dashboard_with_budget(state: AppState, peer: IpAddr, budget: Duration) 
                 if worker_cancelled.load(Ordering::Acquire) {
                     return;
                 }
-                if sender.send(DashboardEvent::$variant($operation)).is_err() {
+                if sender
+                    .blocking_send(DashboardEvent::$variant($operation))
+                    .is_err()
+                {
                     return;
                 }
             }};
