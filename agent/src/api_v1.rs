@@ -151,16 +151,27 @@ pub async fn dashboard(state: AppState, peer: IpAddr) -> (u16, Value) {
 
 async fn dashboard_with_budget(state: AppState, peer: IpAddr, budget: Duration) -> (u16, Value) {
     let device = state.adapter.device();
+    let deadline = tokio::time::Instant::now() + budget;
+    let permit = match tokio::time::timeout_at(
+        deadline,
+        Arc::clone(&state.dashboard_admission).acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) | Err(_) => {
+            let mut snapshot = DashboardAccumulator::new(device);
+            snapshot.finish_timeouts();
+            return success(snapshot.finish());
+        }
+    };
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let cancelled = Arc::new(AtomicBool::new(false));
     let worker_cancelled = Arc::clone(&cancelled);
-    let worker_state = state.clone();
+    let worker_state = state;
 
     tokio::task::spawn_blocking(move || {
-        let _guard = worker_state
-            .dashboard_guard
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _permit = permit;
         if worker_cancelled.load(Ordering::Acquire) {
             return;
         }
@@ -193,7 +204,6 @@ async fn dashboard_with_budget(state: AppState, peer: IpAddr, budget: Duration) 
         collect!(Charging, charging);
     });
 
-    let deadline = tokio::time::Instant::now() + budget;
     let mut snapshot = DashboardAccumulator::new(device);
     while snapshot.completed_count() < DASHBOARD_COMPONENTS.len() + 1 {
         match tokio::time::timeout_at(deadline, receiver.recv()).await {
@@ -595,8 +605,9 @@ fn daily_result<T: Serialize>(result: Result<T, String>) -> (u16, Value) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
-    use std::sync::Arc;
+    use std::sync::{Arc, Condvar, Mutex};
     use std::thread;
 
     use super::*;
@@ -612,6 +623,47 @@ mod tests {
     struct StubAdapter {
         battery_delay: Duration,
         capability_calls: AtomicUsize,
+        system_calls: AtomicUsize,
+        first_system_gate: Option<Arc<FirstSystemGate>>,
+    }
+
+    #[derive(Default)]
+    struct FirstSystemGate {
+        started: AtomicBool,
+        released: Mutex<bool>,
+        release_changed: Condvar,
+    }
+
+    impl FirstSystemGate {
+        fn block(&self) {
+            self.started.store(true, Ordering::Release);
+            let mut released = self
+                .released
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            while !*released {
+                released = self
+                    .release_changed
+                    .wait(released)
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+            }
+        }
+
+        fn release(&self) {
+            *self
+                .released
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+            self.release_changed.notify_all();
+        }
+    }
+
+    struct FirstSystemGateRelease(Arc<FirstSystemGate>);
+
+    impl Drop for FirstSystemGateRelease {
+        fn drop(&mut self) {
+            self.0.release();
+        }
     }
 
     impl Default for StubAdapter {
@@ -619,6 +671,8 @@ mod tests {
             Self {
                 battery_delay: Duration::ZERO,
                 capability_calls: AtomicUsize::new(0),
+                system_calls: AtomicUsize::new(0),
+                first_system_gate: None,
             }
         }
     }
@@ -661,6 +715,11 @@ mod tests {
         }
 
         fn system_status(&self) -> Result<SystemStatus, AdapterError> {
+            if self.system_calls.fetch_add(1, AtomicOrdering::Relaxed) == 0 {
+                if let Some(gate) = &self.first_system_gate {
+                    gate.block();
+                }
+            }
             Ok(SystemStatus {
                 hostname: "u60".into(),
                 uptime_seconds: 42,
@@ -828,6 +887,8 @@ mod tests {
         let adapter = Arc::new(StubAdapter {
             battery_delay: Duration::from_millis(150),
             capability_calls: AtomicUsize::new(0),
+            system_calls: AtomicUsize::new(0),
+            first_system_gate: None,
         });
         let state = AppState::with_adapter(auth, adapter.clone());
 
@@ -849,5 +910,106 @@ mod tests {
             .iter()
             .any(|failure| failure["error"]["code"] == "snapshot_timeout"));
         assert_eq!(adapter.capability_calls.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn overlapping_dashboard_requests_do_not_queue_background_workers() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(StateStore::open(temp.path().join("state")).unwrap()).unwrap();
+        let first_system_gate = Arc::new(FirstSystemGate::default());
+        let _release_first_system_gate = FirstSystemGateRelease(Arc::clone(&first_system_gate));
+        let adapter = Arc::new(StubAdapter {
+            battery_delay: Duration::ZERO,
+            capability_calls: AtomicUsize::new(0),
+            system_calls: AtomicUsize::new(0),
+            first_system_gate: Some(Arc::clone(&first_system_gate)),
+        });
+        let state = AppState::with_adapter(auth, adapter.clone());
+        let peer = "127.0.0.1".parse().unwrap();
+
+        let first_state = state.clone();
+        let first = tokio::spawn(async move {
+            dashboard_with_budget(first_state, peer, Duration::from_millis(20)).await
+        });
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while !first_system_gate.started.load(Ordering::Acquire) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("first dashboard worker did not enter its source");
+        let first_response = first.await.unwrap();
+
+        let lifecycle_adapter = Arc::new(StubAdapter::default());
+        let lifecycle_adapter_weak = Arc::downgrade(&lifecycle_adapter);
+        let lifecycle_state = AppState {
+            auth: Arc::clone(&state.auth),
+            adapter: lifecycle_adapter.clone(),
+            daily: None,
+            dashboard_admission: Arc::clone(&state.dashboard_admission),
+        };
+        drop(lifecycle_adapter);
+        let lifecycle_response =
+            dashboard_with_budget(lifecycle_state, peer, Duration::from_millis(20)).await;
+        let lifecycle_released_before_worker_exit = lifecycle_adapter_weak.upgrade().is_none();
+
+        let mut burst = Vec::new();
+        for _ in 0..16 {
+            let burst_state = state.clone();
+            burst.push(tokio::spawn(async move {
+                dashboard_with_budget(burst_state, peer, Duration::from_millis(20)).await
+            }));
+        }
+        let mut burst_responses = Vec::with_capacity(burst.len());
+        for request in burst {
+            burst_responses.push(request.await.unwrap());
+        }
+        let source_calls_before_release = adapter.system_calls.load(AtomicOrdering::Relaxed);
+
+        first_system_gate.release();
+        let recovered = tokio::time::timeout(
+            Duration::from_secs(1),
+            dashboard_with_budget(state.clone(), peer, Duration::from_millis(500)),
+        )
+        .await
+        .expect("dashboard admission did not recover after the worker exited");
+
+        assert_eq!(first_response.0, 200);
+        assert!(first_response.1["data"]["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|failure| failure["error"]["code"] == "snapshot_timeout"));
+        assert_eq!(lifecycle_response.0, 200);
+        assert!(lifecycle_response.1["data"]["failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|failure| failure["error"]["code"] == "snapshot_timeout"));
+        assert!(
+            lifecycle_released_before_worker_exit,
+            "a timed-out request retained its adapter behind the active worker"
+        );
+        assert_eq!(source_calls_before_release, 1);
+        for (status, body) in burst_responses {
+            assert_eq!(status, 200);
+            assert_eq!(body["data"]["device"]["model"], "MU5250");
+            let failures = body["data"]["failures"].as_array().unwrap();
+            assert_eq!(failures.len(), DASHBOARD_COMPONENTS.len() + 1);
+            assert!(failures
+                .iter()
+                .all(|failure| failure["error"]["code"] == "snapshot_timeout"));
+            assert_eq!(
+                failures
+                    .iter()
+                    .filter_map(|failure| failure["component"].as_str())
+                    .collect::<HashSet<_>>()
+                    .len(),
+                DASHBOARD_COMPONENTS.len() + 1
+            );
+        }
+        assert_eq!(recovered.0, 200);
+        assert_eq!(recovered.1["data"]["system"]["hostname"], "u60");
+        assert_eq!(adapter.system_calls.load(AtomicOrdering::Relaxed), 2);
     }
 }

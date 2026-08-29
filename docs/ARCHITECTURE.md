@@ -53,10 +53,14 @@ Both client artifact gates reject drift.
 Routine dashboard refresh uses one partial-success HTTPS snapshot rather than
 client-side fan-out. This is deliberately a request/response aggregation layer:
 it reuses the same adapter reads, preserves typed per-component failures and
-keeps the individual routes stable. The pass is serialized off the async
-listener, does not pre-probe the same sources, has an 11-second total response
-budget and converts unfinished components into typed timeouts while preventing
-overlapping passes. MQTT is not part of this local snapshot
+keeps the individual routes stable. Each response reads normalized device
+identity before asynchronously acquiring one permit for the blocking aggregate
+pass, which stays with that worker until it exits, including after an HTTP
+timeout. The pass does not pre-probe the same sources and has an 11-second total
+response budget. Overlapping refreshes wait within their own budget without
+creating blocking aggregate work; unfinished aggregate reads or admission become
+typed timeouts instead of accumulating blocking-pool tasks. MQTT is not
+part of this local snapshot
 path because a broker, persistent connection, reconnection state and iOS
 background lifecycle would add state and recovery cost without improving the
 underlying weak Wi-Fi link. A future event stream would require a distinct,

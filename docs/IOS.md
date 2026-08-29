@@ -115,6 +115,12 @@ alert, and a successful snapshot resets that suppression. Trust, failed
 reauthentication, response-contract and write-operation failures remain
 explicit errors; the connectivity banner never turns an ambiguous write result
 into an assumed success.
+The agent reads normalized device identity before admitting at most one
+aggregate snapshot for blocking work. An overlapping native refresh therefore
+starts no second aggregate source pass, waits only within its own server budget
+and receives the existing typed timeout shape if admission remains occupied.
+The permit is not released merely because the earlier HTTP response reached its
+budget.
 Apple's public accessory-network API does not expose the current iPhone Wi-Fi
 RSSI. The dashboard instead uses optional request context and labels RSSI and
 link rates as U60 router observations only when the HTTPS peer uniquely matches

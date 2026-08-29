@@ -102,12 +102,17 @@ failure is recorded in `failures` and omitted from the snapshot without hiding
 other successful values. Wi-Fi peer context still comes only from the actual
 HTTPS request peer. The agent performs one serialized source pass on a blocking
 worker, never calls the probing capability report first, and returns values
-completed within one 11-second server budget. Unfinished values become typed
-`snapshot_timeout` failures; cancellation stops the worker before the next
-source, and a process-wide guard prevents overlapping source passes. The
-single-thread async listener and stability monitor therefore remain responsive.
-The endpoint reduces radio/TLS request fan-out without weakening per-component
-error semantics or adding a background stream.
+completed within one 11-second server budget. The normalized device identity is
+read before a single permit is acquired asynchronously for the blocking
+aggregate pass. That permit remains owned by the worker after an HTTP timeout
+until the worker actually exits. An overlapping refresh therefore starts no
+worker or aggregate source pass while waiting within its own budget. If admission
+remains occupied, it receives the existing partial-success
+shape with typed `snapshot_timeout` failures. Cancellation stops admitted work
+before the next source. The single-thread async listener and stability monitor
+therefore remain responsive without accumulating blocking tasks. The endpoint
+reduces radio/TLS request fan-out without weakening per-component error semantics
+or adding a background stream.
 
 ## Host-only HTTPS and maintenance state
 

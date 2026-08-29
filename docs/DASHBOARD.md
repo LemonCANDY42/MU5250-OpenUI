@@ -20,6 +20,12 @@ status sources locally, omits unsupported values, and preserves independent
 failures so one unavailable source does not discard the other cards. It makes
 one source pass without a duplicate capability probe; an 11-second server
 budget returns completed cards and marks unfinished components as timed out.
+Each response reads normalized device identity before admission; admission then
+occurs before the blocking aggregate worker is created. If another snapshot is
+still running, an overlapping refresh starts no additional aggregate source pass
+and waits only within its own server budget. If admission remains occupied, the
+existing response shape marks the unfinished components with typed
+`snapshot_timeout` failures.
 It displays:
 
 - normalized device identity;
