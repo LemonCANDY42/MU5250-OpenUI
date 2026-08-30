@@ -118,6 +118,15 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   write-result and recovery semantics are not sufficiently proven. V1 does not
   call the charger `set` method, run a charging-policy enforcer, or expose a
   charging mutation route.
+- **Wi-Fi switch ownership**: total Wi-Fi off/on uses only the stock
+  `zwrt_wlan` master operation and never rewrites the saved primary-AP disabled
+  flags. Independent 2.4/5 GHz controls target only the two primary APs, require
+  at least one to remain enabled, and arm an out-of-process two-minute rollback
+  before any reload. Turning both bands off is therefore a master-switch action,
+  and the device's own Wi-Fi control remains the recovery path.
+- **Multi-band integration**: the control maps only to the stock band-steering
+  setting. It is accepted only when both primary APs are enabled and their SSID,
+  passphrase and encryption state match; no radio-global flag is repurposed.
 - **procd lifecycle**: signalling or stopping a managed service can cause a
   respawn or block firmware synchronization. The integrated platform performs
   neither operation.

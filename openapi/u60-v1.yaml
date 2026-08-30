@@ -483,6 +483,31 @@ paths:
           $ref: "#/components/responses/AuthInternalError"
         "503":
           $ref: "#/components/responses/DailySourceUnavailable"
+  /v1/wifi/master:
+    post:
+      operationId: updateWifiMaster
+      summary: Use the stock B04 master switch without changing saved primary-band states
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WifiMasterRequest"
+      responses:
+        "200":
+          $ref: "#/components/responses/WriteApplied"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/DailySourceUnavailable"
   /v1/wifi/transaction/confirm:
     post:
       operationId: confirmWifiTransaction
@@ -1390,6 +1415,9 @@ components:
           type: string
         enabled:
           type: boolean
+        access_point_enabled:
+          type: boolean
+          description: Saved primary AP switch independent of the stock Wi-Fi master switch.
         ssid:
           type: string
         hidden:
@@ -1564,6 +1592,9 @@ components:
           maxLength: 64
         hidden_2g:
           type: boolean
+        main_enabled_2g:
+          type: boolean
+          description: Saved 2.4 GHz primary AP switch; at least one primary AP must remain enabled.
         channel_2g:
           type: string
           description: auto/0 or a channel in the fixed B04 allowlist
@@ -1586,6 +1617,9 @@ components:
           maxLength: 64
         hidden_5g:
           type: boolean
+        main_enabled_5g:
+          type: boolean
+          description: Saved 5 GHz primary AP switch; at least one primary AP must remain enabled.
         channel_5g:
           type: string
           description: auto/0 or a channel in the fixed B04 allowlist
@@ -1618,6 +1652,16 @@ components:
           type: integer
           minimum: 0
           maximum: 1440
+        band_steering_enabled:
+          type: boolean
+          description: Stock multi-band integration; requires both compatible primary APs enabled.
+    WifiMasterRequest:
+      type: object
+      additionalProperties: false
+      required: [enabled]
+      properties:
+        enabled:
+          type: boolean
     WifiConfirmRequest:
       type: object
       additionalProperties: false

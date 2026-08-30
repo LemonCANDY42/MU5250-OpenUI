@@ -175,6 +175,47 @@ final class AppModel {
         }
     }
 
+    func setWifiMasterEnabled(_ enabled: Bool) async {
+        guard !isWorking else { return }
+        guard pendingWifiConfirmation == nil else {
+            errorMessage = String(localized: "Finish or wait for the current Wi-Fi verification before applying another change.")
+            return
+        }
+        guard let service else {
+            errorMessage = LocalSecurityError.missingCredential.localizedDescription
+            return
+        }
+
+        notice = nil
+        errorMessage = nil
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            try await service.updateWifiMaster(enabled: enabled)
+            if enabled {
+                try await refreshThrowing()
+                notice = Notice(
+                    title: String(localized: "Wi-Fi master switch enabled"),
+                    message: String(localized: "The U60 enabled Wi-Fi and preserved the saved 2.4 GHz and 5 GHz primary-band switches.")
+                )
+            } else {
+                notice = Notice(
+                    title: String(localized: "Wi-Fi master switch disabled"),
+                    message: String(localized: "This iPhone will disconnect from the U60. The device's own Wi-Fi switch can turn Wi-Fi back on, with the saved primary-band switches preserved.")
+                )
+            }
+        } catch {
+            if !enabled, ConnectionIssue.classify(error) != nil {
+                notice = Notice(
+                    title: String(localized: "Wi-Fi connection closed"),
+                    message: String(localized: "The connection ended before the App could confirm the master switch. Check the U60 screen; its own Wi-Fi switch can turn Wi-Fi back on.")
+                )
+            } else {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
     func beginWifiTransaction(_ edits: WifiTransactionEdits) async {
         guard !isWorking else { return }
         guard pendingWifiConfirmation == nil else {

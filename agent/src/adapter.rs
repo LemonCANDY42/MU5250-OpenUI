@@ -243,6 +243,8 @@ pub struct TrafficStatus {
 pub struct WifiBandStatus {
     pub band: &'static str,
     pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_point_enabled: Option<bool>,
     pub ssid: String,
     pub hidden: bool,
     pub encryption: String,
@@ -1134,6 +1136,7 @@ fn parse_wifi_status(
             band: name,
             enabled: !disabled(config.get(&format!("{radio}.disabled")))
                 && !disabled(config.get(&format!("{network}.disabled"))),
+            access_point_enabled: Some(!disabled(config.get(&format!("{network}.disabled")))),
             ssid: required(&format!("{network}.ssid"))?,
             hidden: boolish_string(config.get(&format!("{network}.hidden"))).unwrap_or(false),
             encryption: required(&format!("{network}.encryption"))?,
@@ -2072,6 +2075,8 @@ mod tests {
         assert!(!wifi.features.mlo_supported);
         assert!(wifi.features.band_steering_enabled);
         assert_eq!(wifi.bands[1].clients, Some(2));
+        assert_eq!(wifi.bands[0].access_point_enabled, Some(true));
+        assert_eq!(wifi.bands[1].access_point_enabled, Some(true));
         assert_eq!(wifi.bands[0].active_channel, Some(6));
         assert_eq!(wifi.bands[1].active_channel, Some(149));
         assert!(wifi.bands[1].hidden);

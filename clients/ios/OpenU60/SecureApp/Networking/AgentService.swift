@@ -22,12 +22,14 @@ struct WifiTransactionEdits: Sendable {
     var ssid2g: String? = nil
     var passphrase2g: String? = nil
     var hidden2g: Bool? = nil
+    var mainEnabled2g: Bool? = nil
     var channel2g: String? = nil
     var bandwidth2g: String? = nil
     var transmitPower2g: Int? = nil
     var ssid5g: String? = nil
     var passphrase5g: String? = nil
     var hidden5g: Bool? = nil
+    var mainEnabled5g: Bool? = nil
     var channel5g: String? = nil
     var bandwidth5g: String? = nil
     var transmitPower5g: Int? = nil
@@ -38,6 +40,7 @@ struct WifiTransactionEdits: Sendable {
     var guestHidden: Bool? = nil
     var guestIsolation: Bool? = nil
     var guestActiveTimeMinutes: Int? = nil
+    var bandSteeringEnabled: Bool? = nil
 }
 
 final class AgentService: Sendable {
@@ -193,6 +196,20 @@ final class AgentService: Sendable {
         }
     }
 
+    func updateWifiMaster(enabled: Bool) async throws {
+        let output = try await client.updateWifiMaster(.init(body: .json(.init(enabled: enabled))))
+        switch output {
+        case .ok: return
+        case let .badRequest(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .serviceUnavailable(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+        default: throw AgentServiceError.invalidResponse
+        }
+    }
+
     func beginWifiTransaction(
         _ edits: WifiTransactionEdits,
         transactionID: String
@@ -202,12 +219,14 @@ final class AgentService: Sendable {
             ssid2g: edits.ssid2g,
             passphrase2g: edits.passphrase2g,
             hidden2g: edits.hidden2g,
+            mainEnabled2g: edits.mainEnabled2g,
             channel2g: edits.channel2g,
             bandwidth2g: edits.bandwidth2g,
             transmitPower2g: edits.transmitPower2g,
             ssid5g: edits.ssid5g,
             passphrase5g: edits.passphrase5g,
             hidden5g: edits.hidden5g,
+            mainEnabled5g: edits.mainEnabled5g,
             channel5g: edits.channel5g,
             bandwidth5g: edits.bandwidth5g,
             transmitPower5g: edits.transmitPower5g,
@@ -217,7 +236,8 @@ final class AgentService: Sendable {
             guestPassphrase: edits.guestPassphrase,
             guestHidden: edits.guestHidden,
             guestIsolation: edits.guestIsolation,
-            guestActiveTimeMinutes: edits.guestActiveTimeMinutes
+            guestActiveTimeMinutes: edits.guestActiveTimeMinutes,
+            bandSteeringEnabled: edits.bandSteeringEnabled
         ))))
         switch output {
         case let .ok(response): return try response.body.json.data

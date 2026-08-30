@@ -199,6 +199,7 @@ pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) ->
         .route("/v1/sms/send", post(sms_send))
         .route("/v1/charging", get(charging_status))
         .route("/v1/traffic/cycle", put(traffic_cycle_update))
+        .route("/v1/wifi/master", post(wifi_master_update))
         .route("/v1/wifi/transaction", post(wifi_transaction_begin))
         .route(
             "/v1/wifi/transaction/confirm",
@@ -374,6 +375,16 @@ async fn wifi_transaction_begin(
 ) -> Response {
     protected_body(&state, &headers, Scope::Daily, body, |body| {
         api_v1::wifi_transaction_begin(&state, body)
+    })
+}
+
+async fn wifi_master_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    protected_body(&state, &headers, Scope::Daily, body, |body| {
+        api_v1::wifi_master_update(&state, body)
     })
 }
 

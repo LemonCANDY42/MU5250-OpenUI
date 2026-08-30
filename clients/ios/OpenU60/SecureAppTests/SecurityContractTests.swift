@@ -94,12 +94,21 @@ final class SecurityContractTests: XCTestCase {
         let band = try JSONDecoder().decode(
             Components.Schemas.WifiBandStatus.self,
             from: Data(
-                #"{"band":"2.4 GHz","enabled":true,"ssid":"Two","hidden":false,"encryption":"psk2","channel":"auto","active_channel":6,"bandwidth":"HE40"}"#.utf8
+                #"{"band":"2.4 GHz","enabled":true,"access_point_enabled":false,"ssid":"Two","hidden":false,"encryption":"psk2","channel":"auto","active_channel":6,"bandwidth":"HE40"}"#.utf8
             )
         )
 
         XCTAssertEqual(band.channel, "auto")
         XCTAssertEqual(band.activeChannel, 6)
+        XCTAssertEqual(band.accessPointEnabled, false)
+    }
+
+    func testStockTransmitPowerPresetsMatchB04DistanceLabels() {
+        XCTAssertEqual(WifiTransmitPowerPreset(percent: 40), .shortRange)
+        XCTAssertEqual(WifiTransmitPowerPreset(percent: 80), .mediumRange)
+        XCTAssertEqual(WifiTransmitPowerPreset(percent: 100), .longRange)
+        XCTAssertNil(WifiTransmitPowerPreset(percent: 20))
+        XCTAssertNil(WifiTransmitPowerPreset(percent: 60))
     }
 
     func testTelemetryHistoryIsBoundedDeviceLocalAndReplacesRapidSamples() throws {

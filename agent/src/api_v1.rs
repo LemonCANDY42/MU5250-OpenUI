@@ -14,7 +14,8 @@ use crate::adapter::{
 };
 use crate::daily::ChargingStatus;
 use crate::daily::{
-    SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiTransactionRequest,
+    SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiMasterRequest,
+    WifiTransactionRequest,
 };
 use crate::handlers::AppState;
 
@@ -548,6 +549,12 @@ pub fn wifi_transaction_begin(state: &AppState, body: &[u8]) -> (u16, Value) {
     })
 }
 
+pub fn wifi_master_update(state: &AppState, body: &[u8]) -> (u16, Value) {
+    daily_request::<WifiMasterRequest, _>(state, body, |service, request| {
+        service.wifi_master_update(request)
+    })
+}
+
 pub fn wifi_transaction_confirm(state: &AppState, body: &[u8]) -> (u16, Value) {
     daily_request::<WifiConfirmRequest, _>(state, body, |service, request| {
         service.wifi_transaction_confirm(&request.transaction_id)
@@ -588,7 +595,8 @@ fn daily_result<T: Serialize>(result: Result<T, String>) -> (u16, Value) {
                 || message.starts_with("message ")
                 || message.starts_with("limit_percent ")
                 || message.starts_with("reset_day ")
-                || message.starts_with("at least ");
+                || message.starts_with("at least ")
+                || message.starts_with("multi-band ");
             let conflict = message.contains("awaiting confirmation")
                 || message.contains("deadline expired")
                 || message.contains("identifier did not match");

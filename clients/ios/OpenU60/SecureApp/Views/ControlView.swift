@@ -108,6 +108,10 @@ private struct ChargingControlView: View {
 
 private struct WifiControlView: View {
     let model: AppModel
+    @State private var wifiMasterEnabled = true
+    @State private var mainEnabled2g = true
+    @State private var mainEnabled5g = true
+    @State private var bandSteeringEnabled = false
     @State private var ssid2g = ""
     @State private var passphrase2g = ""
     @State private var hidden2g = false
@@ -120,7 +124,7 @@ private struct WifiControlView: View {
     @State private var channel5g = "0"
     @State private var bandwidth5g = "EHT160"
     @State private var power5g = 50
-    @State private var confirmApply = false
+    @State private var confirmation: WifiApplyConfirmation?
     @State private var initialized = false
     @State private var pane = WifiPane.status
 
@@ -130,6 +134,13 @@ private struct WifiControlView: View {
 
         var id: Self { self }
         var title: LocalizedStringKey { self == .status ? "Status" : "Modify" }
+    }
+
+    private enum WifiApplyConfirmation: String, Identifiable {
+        case settings
+        case master
+
+        var id: Self { self }
     }
 
     private let channels2g = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
@@ -195,7 +206,7 @@ private struct WifiControlView: View {
                             : String(localized: "Not supported on this B04")
                     )
                     LabeledContent(
-                        "Band steering",
+                        "Multi-band integration",
                         value: wifi.features.bandSteeringSupported
                             ? (wifi.features.bandSteeringEnabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                             : String(localized: "Unavailable")
@@ -209,8 +220,18 @@ private struct WifiControlView: View {
                         LabeledContent("This iPhone signal", value: String(localized: "Not currently observed by the U60"))
                     }
                 }
-                ForEach(Array(wifi.bands.enumerated()), id: \.offset) { _, band in
+                ForEach(wifi.bands, id: \.band) { band in
                     Section(band.band) {
+                        LabeledContent(
+                            "Primary AP switch",
+                            value: (band.accessPointEnabled ?? band.enabled)
+                                ? String(localized: "Enabled")
+                                : String(localized: "Disabled")
+                        )
+                        LabeledContent(
+                            "Currently broadcasting",
+                            value: band.enabled ? String(localized: "Yes") : String(localized: "No")
+                        )
                         LabeledContent("SSID", value: band.ssid)
                         LabeledContent("Configured channel", value: channelLabel(band.channel))
                         LabeledContent(
@@ -219,7 +240,11 @@ private struct WifiControlView: View {
                                 ?? String(localized: "Unavailable")
                         )
                         LabeledContent("Bandwidth", value: bandwidthLabel(band.bandwidth))
-                        LabeledContent("TX power", value: band.transmitPowerPercent.map { "\($0)%" } ?? String(localized: "Unavailable"))
+                        LabeledContent(
+                            "TX power",
+                            value: band.transmitPowerPercent.map(wifiTransmitPowerLabel)
+                                ?? String(localized: "Unavailable")
+                        )
                         LabeledContent("Security", value: band.encryption)
                         LabeledContent("Clients", value: band.clients.map(String.init) ?? String(localized: "Unavailable"))
                     }
@@ -227,15 +252,41 @@ private struct WifiControlView: View {
             }
 
             if pane == .settings {
-                radioSection(
-                    title: "2.4 GHz", ssid: $ssid2g, passphrase: $passphrase2g, hidden: $hidden2g,
+                Section {
+                    Toggle("Wi-Fi master switch", isOn: $wifiMasterEnabled)
+                    Button("Apply master switch") { confirmation = .master }
+                        .frame(maxWidth: .infinity)
+                } header: {
+                    Text("Overall Wi-Fi")
+                } footer: {
+                    Text("Turning the master switch off disconnects this iPhone. The U60's own Wi-Fi switch can turn Wi-Fi back on; the saved 2.4 GHz and 5 GHz primary-band switches are preserved.")
+                }
+
+                Section {
+                    if model.dashboard?.wifi?.features.bandSteeringSupported == true {
+                        Toggle("Multi-band integration", isOn: $bandSteeringEnabled)
+                            .disabled(!mainEnabled2g || !mainEnabled5g)
+                    } else {
+                        LabeledContent("Multi-band integration", value: String(localized: "Unavailable"))
+                    }
+                } header: {
+                    Text("Band coordination")
+                } footer: {
+                    Text("Multi-band integration is the device's own band-steering function. It requires both primary bands and matching primary SSID, password, and security settings.")
+                }
+
+                WifiRadioSettingsSection(
+                    title: "2.4 GHz", enabled: $mainEnabled2g,
+                    ssid: $ssid2g, passphrase: $passphrase2g, hidden: $hidden2g,
                     channel: $channel2g, bandwidth: $bandwidth2g, power: $power2g,
-                    channels: channels2g, bandwidths: bandwidths2g
+                    channels: channels2g, bandwidths: bandwidths2g, powers: powers
                 )
-                radioSection(
-                    title: "5 GHz", ssid: $ssid5g, passphrase: $passphrase5g, hidden: $hidden5g,
+                WifiRadioSettingsSection(
+                    title: "5 GHz", enabled: $mainEnabled5g,
+                    ssid: $ssid5g, passphrase: $passphrase5g, hidden: $hidden5g,
                     channel: $channel5g, bandwidth: $bandwidth5g, power: $power5g,
-                    channels: channels5g, bandwidths: bandwidths5g, showsFixed5gNote: true
+                    channels: channels5g, bandwidths: bandwidths5g, powers: powers,
+                    showsFixed5gNote: true
                 )
 
                 if let guest = model.dashboard?.wifi?.guest {
@@ -249,10 +300,16 @@ private struct WifiControlView: View {
                 }
 
                 Section {
-                    Button("Apply with two-minute rollback") { confirmApply = true }
+                    Button("Apply with two-minute rollback") { confirmation = .settings }
                         .frame(maxWidth: .infinity)
+                        .disabled(!mainEnabled2g && !mainEnabled5g)
                 } footer: {
-                    Text("The U60 saves the old values first. The app persists the confirmation identifier before restarting Wi-Fi and retries after temporary disconnects, network switches, and foreground changes. Only device readback can cancel rollback.")
+                    if !mainEnabled2g && !mainEnabled5g {
+                        Text("At least one primary band must remain enabled here. Use the Wi-Fi master switch to turn all Wi-Fi off.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("The U60 saves the old values and arms an independent rollback process before changing Wi-Fi. Only verified device readback can cancel rollback.")
+                    }
                 }
             }
         }
@@ -260,65 +317,49 @@ private struct WifiControlView: View {
         .disabled(model.isWorking)
         .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
         .task { initializeIfNeeded() }
-        .alert("Apply Wi-Fi changes?", isPresented: $confirmApply) {
-            Button("Apply with rollback") { apply() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Wi-Fi will restart briefly. Reconnect within two minutes; the app will keep checking even if you switch networks more than once.")
+        .onChange(of: mainEnabled2g) { _, enabled in
+            if !enabled { bandSteeringEnabled = false }
         }
-    }
-
-    @ViewBuilder
-    private func radioSection(
-        title: LocalizedStringKey,
-        ssid: Binding<String>,
-        passphrase: Binding<String>,
-        hidden: Binding<Bool>,
-        channel: Binding<String>,
-        bandwidth: Binding<String>,
-        power: Binding<Int>,
-        channels: [String],
-        bandwidths: [String],
-        showsFixed5gNote: Bool = false
-    ) -> some View {
-        Section {
-            TextField("SSID", text: ssid)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            SecureField("New password (leave blank to keep current)", text: passphrase)
-            Toggle("Hidden SSID", isOn: hidden)
-            Picker("Channel", selection: channel) {
-                ForEach(channels, id: \.self) { Text(channelLabel($0)).tag($0) }
-            }
-            Picker("Bandwidth", selection: bandwidth) {
-                ForEach(bandwidths, id: \.self) { Text(bandwidthLabel($0)).tag($0) }
-            }
-            Picker("TX power", selection: power) {
-                ForEach(powers, id: \.self) { Text("\($0)%").tag($0) }
-            }
-        } header: {
-            Text(title)
-        } footer: {
-            if power.wrappedValue <= 20 {
-                Text("Low transmit power can reduce range or prevent clients from reconnecting.")
-                    .foregroundStyle(.orange)
-            } else if showsFixed5gNote {
-                Text("This B04 firmware exposes fixed 20, 40, 80, and 160 MHz widths for 5 GHz; it does not advertise a combined automatic width.")
+        .onChange(of: mainEnabled5g) { _, enabled in
+            if !enabled { bandSteeringEnabled = false }
+        }
+        .alert(item: $confirmation) { confirmation in
+            switch confirmation {
+            case .settings:
+                Alert(
+                    title: Text("Apply Wi-Fi changes?"),
+                    message: Text("Wi-Fi will restart briefly. Reconnect within two minutes; the app will keep checking even if you switch networks more than once."),
+                    primaryButton: .default(Text("Apply with rollback"), action: apply),
+                    secondaryButton: .cancel()
+                )
+            case .master:
+                Alert(
+                    title: Text("Apply Wi-Fi master switch?"),
+                    message: Text(wifiMasterEnabled
+                        ? String(localized: "Wi-Fi will turn on using the saved primary-band switches.")
+                        : String(localized: "Wi-Fi will turn off and this iPhone will disconnect. Use the U60's own Wi-Fi switch to turn it back on.")),
+                    primaryButton: .default(Text("Apply master switch"), action: applyMaster),
+                    secondaryButton: .cancel()
+                )
             }
         }
     }
 
     private func initializeIfNeeded() {
-        guard !initialized, let bands = model.dashboard?.wifi?.bands else { return }
+        guard !initialized, let wifi = model.dashboard?.wifi else { return }
         initialized = true
-        if let band = bands.first(where: { $0.band.contains("2.4") }) {
+        wifiMasterEnabled = wifi.enabled
+        bandSteeringEnabled = wifi.features.bandSteeringEnabled
+        if let band = wifi.bands.first(where: { $0.band.contains("2.4") }) {
+            mainEnabled2g = band.accessPointEnabled ?? band.enabled
             ssid2g = band.ssid
             hidden2g = band.hidden
             channel2g = normalizedChannel(band.channel, allowed: channels2g)
             bandwidth2g = bandwidths2g.contains(band.bandwidth) ? band.bandwidth : "EHT20_40"
             power2g = normalizedPower(band.transmitPowerPercent)
         }
-        if let band = bands.first(where: { $0.band.contains("5") }) {
+        if let band = wifi.bands.first(where: { $0.band.contains("5") }) {
+            mainEnabled5g = band.accessPointEnabled ?? band.enabled
             ssid5g = band.ssid
             hidden5g = band.hidden
             channel5g = normalizedChannel(band.channel, allowed: channels5g)
@@ -342,19 +383,72 @@ private struct WifiControlView: View {
             ssid2g: ssid2g,
             passphrase2g: optional(passphrase2g),
             hidden2g: hidden2g,
+            mainEnabled2g: mainEnabled2g,
             channel2g: channel2g,
             bandwidth2g: bandwidth2g,
             transmitPower2g: power2g,
             ssid5g: ssid5g,
             passphrase5g: optional(passphrase5g),
             hidden5g: hidden5g,
+            mainEnabled5g: mainEnabled5g,
             channel5g: channel5g,
             bandwidth5g: bandwidth5g,
-            transmitPower5g: power5g
+            transmitPower5g: power5g,
+            bandSteeringEnabled: bandSteeringEnabled
         )
         passphrase2g = ""
         passphrase5g = ""
         Task { await model.beginWifiTransaction(edits) }
+    }
+
+    private func applyMaster() {
+        let enabled = wifiMasterEnabled
+        Task { await model.setWifiMasterEnabled(enabled) }
+    }
+}
+
+private struct WifiRadioSettingsSection: View {
+    let title: LocalizedStringKey
+    @Binding var enabled: Bool
+    @Binding var ssid: String
+    @Binding var passphrase: String
+    @Binding var hidden: Bool
+    @Binding var channel: String
+    @Binding var bandwidth: String
+    @Binding var power: Int
+    let channels: [String]
+    let bandwidths: [String]
+    let powers: [Int]
+    var showsFixed5gNote = false
+
+    var body: some View {
+        Section {
+            Toggle("Primary AP", isOn: $enabled)
+            TextField("SSID", text: $ssid)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            SecureField("New password (leave blank to keep current)", text: $passphrase)
+            Toggle("Hidden SSID", isOn: $hidden)
+            Picker("Channel", selection: $channel) {
+                ForEach(channels, id: \.self) { Text(channelLabel($0)).tag($0) }
+            }
+            Picker("Bandwidth", selection: $bandwidth) {
+                ForEach(bandwidths, id: \.self) { Text(bandwidthLabel($0)).tag($0) }
+            }
+            Picker("TX power", selection: $power) {
+                ForEach(powers, id: \.self) { Text(wifiTransmitPowerLabel($0)).tag($0) }
+            }
+        } header: {
+            Text(title)
+        } footer: {
+            if power <= 20 {
+                Text("Low transmit power can reduce range or prevent clients from reconnecting.")
+                    .foregroundStyle(.orange)
+            }
+            if showsFixed5gNote {
+                Text("This B04 firmware exposes fixed 20, 40, 80, and 160 MHz widths for 5 GHz; it does not advertise a combined automatic width.")
+            }
+        }
     }
 }
 

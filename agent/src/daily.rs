@@ -45,6 +45,12 @@ pub struct TrafficCycleRequest {
     pub enabled: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WifiMasterRequest {
+    pub enabled: bool,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct WifiTransactionRequest {
@@ -55,6 +61,8 @@ pub struct WifiTransactionRequest {
     pub passphrase_2g: Option<String>,
     #[serde(default)]
     pub hidden_2g: Option<bool>,
+    #[serde(default)]
+    pub main_enabled_2g: Option<bool>,
     #[serde(default)]
     pub channel_2g: Option<String>,
     #[serde(default)]
@@ -67,6 +75,8 @@ pub struct WifiTransactionRequest {
     pub passphrase_5g: Option<String>,
     #[serde(default)]
     pub hidden_5g: Option<bool>,
+    #[serde(default)]
+    pub main_enabled_5g: Option<bool>,
     #[serde(default)]
     pub channel_5g: Option<String>,
     #[serde(default)]
@@ -87,6 +97,8 @@ pub struct WifiTransactionRequest {
     pub guest_isolation: Option<bool>,
     #[serde(default)]
     pub guest_active_time_minutes: Option<u16>,
+    #[serde(default)]
+    pub band_steering_enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -120,6 +132,19 @@ struct DailyAuditEvent {
 pub struct DailyService {
     store: StateStore,
     io: Arc<dyn B04Io>,
+    wifi_rollback: Arc<dyn WifiRollbackScheduler>,
+}
+
+trait WifiRollbackScheduler: Send + Sync {
+    fn arm(&self, transaction_id: &str) -> Result<(), String>;
+}
+
+struct ProcessWifiRollbackScheduler;
+
+impl WifiRollbackScheduler for ProcessWifiRollbackScheduler {
+    fn arm(&self, transaction_id: &str) -> Result<(), String> {
+        spawn_wifi_rollback(transaction_id)
+    }
 }
 
 impl DailyService {
@@ -135,12 +160,25 @@ impl DailyService {
         let service = Self {
             store,
             io: Arc::new(crate::b04_io::SystemB04Io::new()),
+            wifi_rollback: Arc::new(ProcessWifiRollbackScheduler),
         };
         service.rollback_pending_wifi(Some(transaction_id))
     }
 
     fn with_io(store: StateStore, io: Arc<dyn B04Io>) -> Result<Self, String> {
-        let service = Self { store, io };
+        Self::with_io_and_rollback(store, io, Arc::new(ProcessWifiRollbackScheduler))
+    }
+
+    fn with_io_and_rollback(
+        store: StateStore,
+        io: Arc<dyn B04Io>,
+        wifi_rollback: Arc<dyn WifiRollbackScheduler>,
+    ) -> Result<Self, String> {
+        let service = Self {
+            store,
+            io,
+            wifi_rollback,
+        };
         // A reboot or service restart during an unconfirmed Wi-Fi transaction
         // must restore the saved values before the listener can start.
         service.rollback_pending_wifi(None)?;
@@ -240,6 +278,7 @@ impl DailyService {
         {
             return Err("another Wi-Fi transaction is awaiting confirmation".into());
         }
+        validate_wifi_switch_state(self.io.as_ref(), &values)?;
         let old_values = self
             .io
             .wifi_values(&values.keys().copied().collect::<Vec<_>>())?;
@@ -253,6 +292,11 @@ impl DailyService {
             new_values: values.clone(),
         };
         self.store.write_json(WIFI_TRANSACTION_FILE, &transaction)?;
+        if let Err(error) = self.wifi_rollback.arm(&transaction.id) {
+            self.store.remove(WIFI_TRANSACTION_FILE)?;
+            self.audit("wifi_transaction_begin", "rollback_not_armed");
+            return Err(error);
+        }
         if let Err(apply_error) = self.io.apply_wifi_values(&values) {
             return self.rollback_after_failed_apply(&transaction, apply_error);
         }
@@ -269,14 +313,40 @@ impl DailyService {
             }
             Err(error) => return self.rollback_after_failed_apply(&transaction, error),
         }
-        if let Err(spawn_error) = spawn_wifi_rollback(&transaction.id) {
-            return self.rollback_after_failed_apply(&transaction, spawn_error);
-        }
         self.audit("wifi_transaction_begin", "pending");
         Ok(WifiTransactionGrant {
             transaction_id: transaction.id,
             confirm_within_seconds: WIFI_CONFIRM_SECONDS,
         })
+    }
+
+    pub fn wifi_master_update(&self, request: WifiMasterRequest) -> Result<WriteResult, String> {
+        let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
+        if self
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
+            .is_some()
+        {
+            return Err("another Wi-Fi transaction is awaiting confirmation".into());
+        }
+        let previous = self.io.wifi_master_enabled()?;
+        if previous == request.enabled {
+            return Ok(WriteResult { result: "applied" });
+        }
+        if let Err(error) = self.io.set_wifi_master_enabled(request.enabled) {
+            return self.restore_wifi_master(previous, error);
+        }
+        match self.io.wifi_master_enabled() {
+            Ok(value) if value == request.enabled => {
+                self.audit("wifi_master_update", "success");
+                Ok(WriteResult { result: "applied" })
+            }
+            Ok(_) => self.restore_wifi_master(
+                previous,
+                "Wi-Fi master readback did not match the requested state".into(),
+            ),
+            Err(error) => self.restore_wifi_master(previous, error),
+        }
     }
 
     pub fn wifi_transaction_confirm(&self, transaction_id: &str) -> Result<WriteResult, String> {
@@ -363,6 +433,27 @@ impl DailyService {
             return Err("traffic cycle rollback readback did not match".into());
         }
         Ok(())
+    }
+
+    fn restore_wifi_master<T>(&self, previous: bool, cause: String) -> Result<T, String> {
+        match self.io.set_wifi_master_enabled(previous) {
+            Ok(()) if self.io.wifi_master_enabled() == Ok(previous) => {
+                self.audit("wifi_master_update", "rolled_back");
+                Err(format!("Wi-Fi master update was rolled back: {cause}"))
+            }
+            Ok(()) => {
+                self.audit("wifi_master_update", "rollback_failed");
+                Err(format!(
+                    "Wi-Fi master update failed and recovery readback did not match: {cause}"
+                ))
+            }
+            Err(rollback_error) => {
+                self.audit("wifi_master_update", "rollback_failed");
+                Err(format!(
+                    "Wi-Fi master update failed and recovery is still pending: {cause}; {rollback_error}"
+                ))
+            }
+        }
     }
 
     fn audit(&self, event: &str, outcome: &str) {
@@ -474,6 +565,14 @@ fn wifi_values_from_request(
             values.insert(field, if value { "1" } else { "0" }.into());
         }
     }
+    for (field, value) in [
+        (WifiField::MainDisabled2g, request.main_enabled_2g),
+        (WifiField::MainDisabled5g, request.main_enabled_5g),
+    ] {
+        if let Some(enabled) = value {
+            values.insert(field, if enabled { "0" } else { "1" }.into());
+        }
+    }
     for (field, value, five_ghz) in [
         (WifiField::Channel2g, request.channel_2g, false),
         (WifiField::Channel5g, request.channel_5g, true),
@@ -544,6 +643,12 @@ fn wifi_values_from_request(
             values.insert(field, value.to_string());
         }
     }
+    if let Some(enabled) = request.band_steering_enabled {
+        values.insert(
+            WifiField::BandSteeringEnabled,
+            if enabled { "1" } else { "0" }.into(),
+        );
+    }
     Ok(values)
 }
 
@@ -586,6 +691,78 @@ fn validate_channel(value: &str, five_ghz: bool) -> Result<String, String> {
     valid
         .then(|| normalized.to_owned())
         .ok_or_else(|| "channel is not in the fixed B04 allowlist".into())
+}
+
+fn validate_wifi_switch_state(
+    io: &dyn B04Io,
+    requested: &BTreeMap<WifiField, String>,
+) -> Result<(), String> {
+    let relevant = [
+        WifiField::MainDisabled2g,
+        WifiField::MainDisabled5g,
+        WifiField::BandSteeringEnabled,
+        WifiField::Ssid2g,
+        WifiField::Ssid5g,
+        WifiField::Passphrase2g,
+        WifiField::Passphrase5g,
+    ];
+    if !relevant.iter().any(|field| requested.contains_key(field)) {
+        return Ok(());
+    }
+
+    let fields = [
+        WifiField::MainDisabled2g,
+        WifiField::MainDisabled5g,
+        WifiField::BandSteeringEnabled,
+        WifiField::Ssid2g,
+        WifiField::Ssid5g,
+        WifiField::Passphrase2g,
+        WifiField::Passphrase5g,
+        WifiField::Encryption2g,
+        WifiField::Encryption5g,
+    ];
+    let mut effective = io.wifi_values(&fields)?;
+    if effective.len() != fields.len() {
+        return Err("one or more Wi-Fi switch settings are unavailable on this firmware".into());
+    }
+    for field in relevant {
+        if let Some(value) = requested.get(&field) {
+            effective.insert(field, value.clone());
+        }
+    }
+
+    let enabled_2g = effective[&WifiField::MainDisabled2g] == "0";
+    let enabled_5g = effective[&WifiField::MainDisabled5g] == "0";
+    if !enabled_2g && !enabled_5g {
+        return Err(
+            "at least one primary Wi-Fi band must remain enabled; use the Wi-Fi master switch to disable all Wi-Fi"
+                .into(),
+        );
+    }
+    let band_steering =
+        parse_binary_value(&effective[&WifiField::BandSteeringEnabled], "band steering")?;
+    if band_steering && (!enabled_2g || !enabled_5g) {
+        return Err("multi-band integration requires both primary Wi-Fi bands enabled".into());
+    }
+    if band_steering
+        && (effective[&WifiField::Ssid2g] != effective[&WifiField::Ssid5g]
+            || effective[&WifiField::Passphrase2g] != effective[&WifiField::Passphrase5g]
+            || effective[&WifiField::Encryption2g] != effective[&WifiField::Encryption5g])
+    {
+        return Err(
+            "multi-band integration requires matching primary SSID, password and security settings"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+fn parse_binary_value(value: &str, label: &str) -> Result<bool, String> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(format!("{label} setting was invalid")),
+    }
 }
 
 fn validate_bandwidth(value: &str, five_ghz: bool) -> Result<(), String> {
@@ -785,6 +962,9 @@ mod tests {
 
     struct MockIo {
         wifi: Mutex<BTreeMap<WifiField, String>>,
+        wifi_master: Mutex<bool>,
+        rollback_armed: Arc<AtomicBool>,
+        require_prearmed: AtomicBool,
         paused: Mutex<bool>,
         capacity: Mutex<u8>,
         cycle: Mutex<(u8, bool)>,
@@ -794,17 +974,25 @@ mod tests {
 
     impl MockIo {
         fn new() -> Self {
+            Self::with_rollback_flag(Arc::new(AtomicBool::new(false)))
+        }
+
+        fn with_rollback_flag(rollback_armed: Arc<AtomicBool>) -> Self {
             Self {
                 wifi: Mutex::new(BTreeMap::from([
-                    (WifiField::Ssid2g, "old-2g".into()),
-                    (WifiField::Passphrase2g, "oldpass88".into()),
+                    (WifiField::Ssid2g, "owner-wifi".into()),
+                    (WifiField::Passphrase2g, "ownerpass88".into()),
+                    (WifiField::Encryption2g, "sae-mixed".into()),
                     (WifiField::Hidden2g, "0".into()),
+                    (WifiField::MainDisabled2g, "0".into()),
                     (WifiField::Channel2g, "0".into()),
                     (WifiField::Bandwidth2g, "EHT20_40".into()),
                     (WifiField::TransmitPower2g, "30".into()),
-                    (WifiField::Ssid5g, "old-5g".into()),
-                    (WifiField::Passphrase5g, "oldpass55".into()),
+                    (WifiField::Ssid5g, "owner-wifi".into()),
+                    (WifiField::Passphrase5g, "ownerpass88".into()),
+                    (WifiField::Encryption5g, "sae-mixed".into()),
                     (WifiField::Hidden5g, "0".into()),
+                    (WifiField::MainDisabled5g, "0".into()),
                     (WifiField::Channel5g, "0".into()),
                     (WifiField::Bandwidth5g, "EHT160".into()),
                     (WifiField::TransmitPower5g, "50".into()),
@@ -820,7 +1008,11 @@ mod tests {
                     (WifiField::GuestHidden5g, "0".into()),
                     (WifiField::GuestIsolation5g, "0".into()),
                     (WifiField::GuestActiveTime5g, "0".into()),
+                    (WifiField::BandSteeringEnabled, "1".into()),
                 ])),
+                wifi_master: Mutex::new(true),
+                rollback_armed,
+                require_prearmed: AtomicBool::new(false),
                 paused: Mutex::new(false),
                 capacity: Mutex::new(80),
                 cycle: Mutex::new((1, false)),
@@ -886,7 +1078,21 @@ mod tests {
         }
 
         fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
+            if self.require_prearmed.load(Ordering::SeqCst)
+                && !self.rollback_armed.load(Ordering::SeqCst)
+            {
+                return Err("rollback was not armed before Wi-Fi mutation".into());
+            }
             self.wifi.lock().unwrap().extend(values.clone());
+            Ok(())
+        }
+
+        fn wifi_master_enabled(&self) -> Result<bool, String> {
+            Ok(*self.wifi_master.lock().unwrap())
+        }
+
+        fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String> {
+            *self.wifi_master.lock().unwrap() = enabled;
             Ok(())
         }
 
@@ -904,6 +1110,36 @@ mod tests {
         )
         .unwrap();
         (temp, io, service)
+    }
+
+    struct MockRollbackScheduler {
+        armed: Arc<AtomicBool>,
+    }
+
+    impl WifiRollbackScheduler for MockRollbackScheduler {
+        fn arm(&self, _transaction_id: &str) -> Result<(), String> {
+            self.armed.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    fn service_with_rollback_tracking() -> (
+        tempfile::TempDir,
+        Arc<MockIo>,
+        Arc<MockRollbackScheduler>,
+        DailyService,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let armed = Arc::new(AtomicBool::new(false));
+        let io = Arc::new(MockIo::with_rollback_flag(armed.clone()));
+        let rollback = Arc::new(MockRollbackScheduler { armed });
+        let service = DailyService::with_io_and_rollback(
+            StateStore::open(temp.path().join("state")).unwrap(),
+            io.clone(),
+            rollback.clone(),
+        )
+        .unwrap();
+        (temp, io, rollback, service)
     }
 
     #[test]
@@ -931,6 +1167,60 @@ mod tests {
         assert_eq!(request.transaction_id, "abcdefghijklmnopqrstuvwx");
         assert!(validate_transaction_id(&request.transaction_id).is_ok());
         assert!(validate_transaction_id("too-short").is_err());
+    }
+
+    #[test]
+    fn wifi_master_switch_preserves_independent_access_point_state() {
+        let (_temp, io, service) = service();
+        io.wifi
+            .lock()
+            .unwrap()
+            .insert(WifiField::MainDisabled5g, "1".into());
+
+        service
+            .wifi_master_update(WifiMasterRequest { enabled: false })
+            .unwrap();
+        assert!(!io.wifi_master_enabled().unwrap());
+        assert_eq!(
+            io.wifi_values(&[WifiField::MainDisabled2g, WifiField::MainDisabled5g])
+                .unwrap(),
+            BTreeMap::from([
+                (WifiField::MainDisabled2g, "0".into()),
+                (WifiField::MainDisabled5g, "1".into()),
+            ])
+        );
+
+        service
+            .wifi_master_update(WifiMasterRequest { enabled: true })
+            .unwrap();
+        assert!(io.wifi_master_enabled().unwrap());
+        assert_eq!(
+            io.wifi_values(&[WifiField::MainDisabled2g, WifiField::MainDisabled5g])
+                .unwrap(),
+            BTreeMap::from([
+                (WifiField::MainDisabled2g, "0".into()),
+                (WifiField::MainDisabled5g, "1".into()),
+            ])
+        );
+    }
+
+    #[test]
+    fn wifi_master_switch_cannot_interleave_with_pending_wifi_transaction() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+        service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                hidden_2g: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let error = service
+            .wifi_master_update(WifiMasterRequest { enabled: false })
+            .unwrap_err();
+
+        assert!(error.contains("awaiting confirmation"));
+        assert!(io.wifi_master_enabled().unwrap());
     }
 
     #[test]
@@ -985,6 +1275,86 @@ mod tests {
             ..Default::default()
         })
         .is_err());
+    }
+
+    #[test]
+    fn independent_main_band_and_steering_switches_use_fixed_transaction_fields() {
+        let values = wifi_values_from_request(WifiTransactionRequest {
+            main_enabled_2g: Some(false),
+            main_enabled_5g: Some(true),
+            band_steering_enabled: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(values[&WifiField::MainDisabled2g], "1");
+        assert_eq!(values[&WifiField::MainDisabled5g], "0");
+        assert_eq!(values[&WifiField::BandSteeringEnabled], "0");
+    }
+
+    #[test]
+    fn disconnecting_wifi_transaction_arms_rollback_before_mutation() {
+        let (_temp, io, rollback, service) = service_with_rollback_tracking();
+        io.require_prearmed.store(true, Ordering::SeqCst);
+
+        let grant = service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                main_enabled_2g: Some(false),
+                main_enabled_5g: Some(true),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+
+        assert_eq!(grant.transaction_id, "abcdefghijklmnopqrstuvwx");
+        assert!(rollback.armed.load(Ordering::SeqCst));
+        assert_eq!(
+            io.wifi_values(&[WifiField::MainDisabled2g]).unwrap()[&WifiField::MainDisabled2g],
+            "1"
+        );
+    }
+
+    #[test]
+    fn main_band_switches_cannot_remove_the_last_reachable_primary_ap() {
+        let (_temp, io, rollback, service) = service_with_rollback_tracking();
+        io.wifi
+            .lock()
+            .unwrap()
+            .insert(WifiField::MainDisabled5g, "1".into());
+
+        let error = service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                main_enabled_2g: Some(false),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(error.contains("at least one primary Wi-Fi band"));
+        assert!(!rollback.armed.load(Ordering::SeqCst));
+        assert_eq!(
+            io.wifi_values(&[WifiField::MainDisabled2g]).unwrap()[&WifiField::MainDisabled2g],
+            "0"
+        );
+    }
+
+    #[test]
+    fn multi_band_integration_requires_both_primary_aps() {
+        let (_temp, _io, rollback, service) = service_with_rollback_tracking();
+        let error = service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                main_enabled_2g: Some(false),
+                main_enabled_5g: Some(true),
+                band_steering_enabled: Some(true),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(error.contains("multi-band integration requires both"));
+        assert!(!rollback.armed.load(Ordering::SeqCst));
     }
 
     #[test]

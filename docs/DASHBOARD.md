@@ -39,9 +39,13 @@ its reason and maintenance action. The individual read endpoints remain in the
 contract for compatibility and focused diagnostics, but routine refresh no
 longer fans out one HTTPS request per card. There are no raw commands,
 firmware dictionaries or legacy endpoint bindings. The authenticated controls
-remain limited to the typed V1 daily-operation surface; charging is read-only,
-and Wi-Fi changes keep a client-generated confirmation identifier in IndexedDB
-before mutation so a page reload can resume the bounded rollback handshake.
+remain limited to the typed V1 daily-operation surface; charging is read-only.
+The shared API additionally describes the stock Wi-Fi master switch, saved
+primary-AP switches and stock multi-band integration. The current web UI keeps
+its existing transactional settings surface: its Wi-Fi changes store a
+client-generated confirmation identifier in IndexedDB before mutation so a
+page reload can resume the bounded rollback handshake. The native iOS client
+owns the new switch controls in this release.
 The battery card displays the magnitude of signed `power_mw`; the API retains
 direction through the separate current and state fields. This is a battery-side
 estimate derived from voltage and current, not USB or wall power.

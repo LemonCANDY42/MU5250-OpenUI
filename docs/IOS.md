@@ -256,7 +256,13 @@ Current evidence establishes XcodeGen generation, generated-contract simulator
 tests, owner-signed physical-device build/install/launch, owner-CA full trust,
 Secure Enclave QR pairing through a real maintenance window and a completed
 authenticated physical-device session against the nonpersistent LAN canary.
-Those accepted read/session gates do not authorize daily writes or persistent
-installation. Each remaining mutation requires its own explicit owner approval,
-device readback and recovery acceptance; stable activation, boot integration
-and the final soak remain separate gates.
+The current source adds separate controls for the stock Wi-Fi master switch,
+the saved 2.4/5 GHz primary AP switches, and stock multi-band integration. It
+keeps all ten power percentages while labeling the device's documented 40, 80
+and 100 percent presets as short, medium and long range. Per-band and
+multi-band changes use the existing reconnect-confirmed rollback transaction;
+master-off is deliberately separate because it disconnects the client and the
+device's own Wi-Fi switch is its recovery control. Source and simulator
+acceptance do not establish live Wi-Fi behavior. Physical-device readback and
+recovery acceptance, stable activation, boot integration and the final soak
+remain separate gates.
