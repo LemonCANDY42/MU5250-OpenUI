@@ -43,7 +43,11 @@ SHA-256 token digests in memory.
 
 Daily error responses include typed recovery metadata. A successful rollback
 or validation failure reports no recovery requirement; a still-armed Wi-Fi
-transaction reports one. A begin-client retains its newly created local
+transaction reports one. Status, code and recovery state come from typed
+control flow rather than parsing the human-readable error message. Rollback
+removes the pending record only after an exact old-value readback. Each Wi-Fi
+transaction uses one consistent pre-apply configuration snapshot for invariant
+checks and rollback values, then one exact post-apply snapshot. A begin-client retains its newly created local
 confirmation only for a `503` that says recovery is required: a `409` conflict
 cannot prove ownership of that client-generated identifier. The
 compatibility-named `band_steering_enabled` field represents the

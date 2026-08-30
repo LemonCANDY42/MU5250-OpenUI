@@ -544,6 +544,7 @@ final class AppModel {
         guard !isConfirmingWifi,
               phase == .authenticated,
               let profile,
+              let credential,
               let pending = pendingWifiConfirmation
         else { return false }
         guard Date.now < pending.expiresAt else {
@@ -557,7 +558,13 @@ final class AppModel {
             // A fresh pinned session proves the U60 is reachable on the current
             // network path instead of reusing a pre-reload HTTP connection.
             let confirmationService = try AgentService(profile: profile, vault: vault)
-            try await confirmationService.confirmWifiTransaction(id: pending.transactionId)
+            try await ReadSessionRecovery.run {
+                try await confirmationService.confirmWifiTransaction(id: pending.transactionId)
+            } renew: {
+                try await confirmationService.signIn(credentialID: credential.id) { message in
+                    try self.credentials.sign(message)
+                }
+            }
             guard pendingWifiConfirmation?.transactionId == pending.transactionId else { return false }
             clearPendingWifiConfirmation(cancelTask: false)
             notice = Notice(
@@ -570,6 +577,26 @@ final class AppModel {
             } catch {
                 // Confirmation already proved the committed settings. Normal
                 // dashboard recovery will refresh the form when available.
+            }
+            return true
+        } catch let error as AgentServiceError
+            where !error.keepsPendingWifiTransactionAfterConfirmation
+        {
+            guard pendingWifiConfirmation?.transactionId == pending.transactionId else { return false }
+            clearPendingWifiConfirmation(cancelTask: false)
+            notice = Notice(
+                title: String(localized: "Wi-Fi verification ended"),
+                message: String(localized: "The U60 reported that this verification is no longer pending. The app stopped retrying it and will reload the current Wi-Fi state when reachable.")
+            )
+            if showFailure {
+                errorMessage = error.localizedDescription
+            }
+            do {
+                try await refreshThrowing()
+                wifiSettingsRevision &+= 1
+            } catch {
+                // The transaction is terminal even if the follow-up dashboard
+                // refresh is temporarily unavailable.
             }
             return true
         } catch {

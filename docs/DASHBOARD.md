@@ -47,7 +47,9 @@ primary-band settings-sync flags: disabling derives a distinct `_5G` name when
 the current names match, while enabling copies the 2.4 GHz network identity to
 5 GHz before coordination is enabled. Daily error responses carry typed
 recovery metadata so clients retain a confirmation only when recovery is
-actually pending. The current web UI keeps
+actually pending. The browser preserves that typed flag, clears terminal
+`400`/`409`/resolved-`503` outcomes, retains ambiguous transport outcomes, and
+retains a confirmation across `401` so sign-in can resume it. The current web UI keeps
 its existing transactional settings surface: its Wi-Fi changes store a
 client-generated confirmation identifier in IndexedDB before mutation so a
 page reload can resume the bounded rollback handshake. The native iOS client

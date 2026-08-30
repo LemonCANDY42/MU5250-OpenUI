@@ -7,13 +7,21 @@ export class AgentError extends Error {
   readonly status?: number
   readonly code?: string
   readonly retryAfterSeconds?: number
+  readonly recoveryRequired?: boolean
 
-  constructor(message: string, status?: number, code?: string, retryAfterSeconds?: number) {
+  constructor(
+    message: string,
+    status?: number,
+    code?: string,
+    retryAfterSeconds?: number,
+    recoveryRequired?: boolean,
+  ) {
     super(message)
     this.name = 'AgentError'
     this.status = status
     this.code = code
     this.retryAfterSeconds = retryAfterSeconds
+    this.recoveryRequired = recoveryRequired
   }
 }
 
@@ -110,7 +118,12 @@ async function requestJson(
         typeof error.retry_after_seconds === 'number' && Number.isInteger(error.retry_after_seconds)
           ? error.retry_after_seconds
           : undefined
-      throw new AgentError(message, response.status, code, retry)
+      const recovery = isRecord(error.recovery) ? error.recovery : undefined
+      const recoveryRequired =
+        recovery !== undefined && typeof recovery.required === 'boolean'
+          ? recovery.required
+          : undefined
+      throw new AgentError(message, response.status, code, retry, recoveryRequired)
     }
     if (!('data' in payload)) {
       throw new AgentError('The agent response omitted data', response.status)

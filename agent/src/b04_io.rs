@@ -126,6 +126,12 @@ impl WifiField {
             Self::SettingsSync5g => "wireless.main_5g.wifiSyncparasFlag",
         }
     }
+
+    fn uci_key(self) -> &'static str {
+        self.uci_path()
+            .strip_prefix("wireless.")
+            .expect("all Wi-Fi fields belong to the fixed wireless package")
+    }
 }
 
 pub trait B04Io: Send + Sync {
@@ -316,18 +322,10 @@ impl B04Io for SystemB04Io {
     }
 
     fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
-        fields
-            .iter()
-            .copied()
-            .map(|field| {
-                let output = run_fixed("Wi-Fi setting", "uci", &["-q", "get", field.uci_path()])?;
-                let value = String::from_utf8(output)
-                    .map_err(|_| "Wi-Fi setting was not UTF-8".to_string())?
-                    .trim_end_matches(['\r', '\n'])
-                    .to_owned();
-                Ok((field, value))
-            })
-            .collect()
+        if fields.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        select_wifi_values(&self.wireless_config()?, fields)
     }
 
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
@@ -602,6 +600,23 @@ fn parse_uci_show(package: &str, text: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+fn select_wifi_values(
+    config: &BTreeMap<String, String>,
+    fields: &[WifiField],
+) -> Result<BTreeMap<WifiField, String>, String> {
+    fields
+        .iter()
+        .copied()
+        .map(|field| {
+            config
+                .get(field.uci_key())
+                .cloned()
+                .map(|value| (field, value))
+                .ok_or_else(|| "one or more Wi-Fi settings are unavailable on this firmware".into())
+        })
+        .collect()
+}
+
 fn uci_unquote(raw: &str) -> String {
     let trimmed = raw.trim();
     let inner = trimmed
@@ -743,6 +758,24 @@ mod tests {
             Some("pass'word")
         );
         assert!(!parsed.contains_key("unrelated.value"));
+    }
+
+    #[test]
+    fn wifi_snapshot_selects_only_requested_fixed_fields() {
+        let config = BTreeMap::from([
+            ("main_2g.ssid".into(), "owner".into()),
+            ("wifi0.txpowerpercent".into(), "40".into()),
+            ("unrelated.private".into(), "ignored".into()),
+        ]);
+
+        assert_eq!(
+            select_wifi_values(&config, &[WifiField::Ssid2g, WifiField::TransmitPower2g]).unwrap(),
+            BTreeMap::from([
+                (WifiField::Ssid2g, "owner".into()),
+                (WifiField::TransmitPower2g, "40".into()),
+            ])
+        );
+        assert!(select_wifi_values(&config, &[WifiField::Ssid5g]).is_err());
     }
 
     #[test]

@@ -1,10 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { clearSessionToken, getJson } from './client'
+import { clearSessionToken, getJson, postJson } from './client'
 
 describe('agent request timeout', () => {
   afterEach(() => {
     clearSessionToken()
+    vi.unstubAllGlobals()
     vi.useRealTimers()
   })
 
@@ -26,5 +27,30 @@ describe('agent request timeout', () => {
     await vi.advanceTimersByTimeAsync(15_000)
     await rejected
     expect(signal?.aborted).toBe(true)
+  })
+
+  it('preserves typed recovery metadata from a rejected Wi-Fi write', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            error: {
+              code: 'source_unavailable',
+              message: 'automatic recovery remains pending',
+              recovery: { required: true },
+            },
+          }),
+          { status: 503, headers: { 'content-type': 'application/json' } },
+        ),
+      ),
+    )
+
+    await expect(postJson('/v1/wifi/transaction', {})).rejects.toMatchObject({
+      status: 503,
+      code: 'source_unavailable',
+      recoveryRequired: true,
+    })
   })
 })

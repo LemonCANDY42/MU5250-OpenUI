@@ -45,7 +45,9 @@ fixed channel/bandwidth/transmit-power choices, no raw UCI/ubus surface, no
 prefilled password, and a visible two-minute reconnect confirmation backed by
 the independent device rollback worker. The listener keeps that worker
 independent for crash-safe recovery while a bounded parent-side reaper waits
-for its exit, so completed rollback workers do not accumulate as zombies. The
+for its exit. The worker polls only the private transaction record and exits
+promptly once confirmation clears or replaces that identifier, so completed
+transactions do not retain workers for the full window or accumulate zombies. The
 app creates and persists the
 transaction identifier before requesting any Wi-Fi mutation, then resumes
 automatic confirmation probes after transient disconnects, repeated network
@@ -53,7 +55,10 @@ switches, app foregrounding and process relaunch. Each probe uses a fresh pinned
 HTTPS session so a connection from before the radio reload cannot count as
 reconnection proof. Confirmation re-reads the requested fields before
 cancelling rollback, refreshes the client status, and then shows an explicit
-reconnection-and-verification success message. The charging screen is read-only;
+reconnection-and-verification success message. An expired key session receives
+one bounded renewal and one confirmation retry. Explicit terminal server
+responses clear the local pending record; transport, contract or still-armed
+recovery ambiguity retains it until a later probe or the deadline. The charging screen is read-only;
 V1 exposes no charger mutation because B04 write-result and recovery semantics
 are not sufficiently proven. B04 exposes Wi-Fi 7 through its EHT
 radio mode but no independent switch source, so the client reports that state

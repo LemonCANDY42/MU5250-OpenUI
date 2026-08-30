@@ -27,6 +27,19 @@ enum AgentServiceError: LocalizedError {
             false
         }
     }
+
+    var keepsPendingWifiTransactionAfterConfirmation: Bool {
+        switch self {
+        case let .rejected(status, _, recoveryRequired):
+            switch status {
+            case 400, 409: false
+            case 503: recoveryRequired
+            default: true
+            }
+        case .authenticationRequired, .invalidResponse, .transportSecurity:
+            true
+        }
+    }
 }
 
 enum WifiSSIDPolicy {
@@ -186,13 +199,19 @@ final class AgentService: Sendable {
             recipient: recipient,
             message: message
         ))))
-        guard case .ok = output else { throw AgentServiceError.invalidResponse }
+        switch output {
+        case .ok: return
+        case .unauthorized: throw AgentServiceError.authenticationRequired
+        default: throw AgentServiceError.invalidResponse
+        }
     }
 
     func chargingStatus() async throws -> Components.Schemas.ChargingStatus {
         let output = try await client.getChargingStatus()
         switch output {
         case let .ok(response): return try response.body.json.data
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
         case let .serviceUnavailable(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(
@@ -211,6 +230,8 @@ final class AgentService: Sendable {
         ))))
         switch output {
         case .ok: return
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
         case let .badRequest(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
@@ -229,6 +250,8 @@ final class AgentService: Sendable {
         let output = try await client.updateWifiMaster(.init(body: .json(.init(enabled: enabled))))
         switch output {
         case .ok: return
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
         case let .badRequest(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
@@ -274,6 +297,8 @@ final class AgentService: Sendable {
         ))))
         switch output {
         case let .ok(response): return try response.body.json.data
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
         case let .badRequest(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
@@ -301,6 +326,8 @@ final class AgentService: Sendable {
         ))))
         switch output {
         case .ok: return
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
         case let .badRequest(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(status: 400, message: body.error.message)

@@ -114,7 +114,11 @@ loopback canary is evidence for a stage, not completion of V1.
    and an independent rollback worker armed before mutation, a roughly
    120-second confirmation window, reconnect retries across transient network
    and foreground changes, reboot-safe rollback, applied-state readback and
-   dedicated recovery tests. Typed daily-error recovery metadata distinguishes
+   dedicated recovery tests. The transaction derives invariant checks and saved
+   rollback values from one pre-apply UCI snapshot, verifies the applied values
+   with a second snapshot, and verifies restored values before clearing pending
+   recovery. Confirmed workers observe the cleared transaction record and exit
+   promptly instead of retaining a child for the full window. Typed daily-error recovery metadata distinguishes
    a completed rollback from a still-armed transaction, so clients do not keep
    a stale local confirmation after an explicit terminal response.
    APN and network mode remain read-only.

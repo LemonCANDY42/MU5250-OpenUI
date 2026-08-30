@@ -72,6 +72,7 @@
 "Wi-Fi updated" = "Wi-Fi updated";
 "Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled." = "Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.";
 "Wi-Fi verification ended" = "Wi-Fi verification ended";
+"The U60 reported that this verification is no longer pending. The app stopped retrying it and will reload the current Wi-Fi state when reachable." = "The U60 reported that this verification is no longer pending. The app stopped retrying it and will reload the current Wi-Fi state when reachable.";
 "No verified reconnection was received before the deadline. The independent U60 rollback process restores the previous settings; reconnect to the previous network and refresh." = "No verified reconnection was received before the deadline. The independent U60 rollback process restores the previous settings; reconnect to the previous network and refresh.";
 "Current status" = "Current status";
 "Active" = "Active";

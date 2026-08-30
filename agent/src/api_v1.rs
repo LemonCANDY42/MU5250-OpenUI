@@ -12,7 +12,7 @@ use crate::adapter::{
     CellularStatus, DeviceDescriptor, LanClients, RecoveryMetadata, SignalStatus, SmsPage,
     SystemStatus, ThermalStatus, TrafficStatus, WifiStatus,
 };
-use crate::daily::ChargingStatus;
+use crate::daily::{ChargingStatus, DailyError, DailyErrorKind};
 use crate::daily::{
     SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiMasterRequest,
     WifiTransactionRequest,
@@ -203,7 +203,9 @@ async fn dashboard_with_budget(state: AppState, peer: IpAddr, budget: Duration) 
         let charging = worker_state
             .daily
             .as_ref()
-            .ok_or_else(|| "daily management service is unavailable".to_string())
+            .ok_or_else(|| {
+                DailyError::unavailable("daily management service is unavailable", false)
+            })
             .and_then(|service| service.charging_status())
             .map_err(daily_adapter_error);
         collect!(Charging, charging);
@@ -476,13 +478,15 @@ fn dashboard_timeout_error() -> AdapterError {
     }
 }
 
-fn daily_adapter_error(message: String) -> AdapterError {
+fn daily_adapter_error(error: DailyError) -> AdapterError {
     AdapterError {
         code: "source_unavailable",
-        message,
+        message: error.message,
         recovery: RecoveryMetadata {
-            required: false,
-            action: None,
+            required: error.recovery_required,
+            action: error.recovery_required.then(|| {
+                "retry confirmation before the deadline or allow automatic rollback".into()
+            }),
         },
     }
 }
@@ -532,7 +536,9 @@ pub fn charging_status(state: &AppState) -> (u16, Value) {
         state
             .daily
             .as_ref()
-            .ok_or_else(|| "daily management service is unavailable".to_string())
+            .ok_or_else(|| {
+                DailyError::unavailable("daily management service is unavailable", false)
+            })
             .and_then(|service| service.charging_status()),
     )
 }
@@ -564,7 +570,7 @@ pub fn wifi_transaction_confirm(state: &AppState, body: &[u8]) -> (u16, Value) {
 fn daily_request<T: DeserializeOwned, R: Serialize>(
     state: &AppState,
     body: &[u8],
-    operation: impl FnOnce(&crate::daily::DailyService, T) -> Result<R, String>,
+    operation: impl FnOnce(&crate::daily::DailyService, T) -> Result<R, DailyError>,
 ) -> (u16, Value) {
     let request = match serde_json::from_slice::<T>(body) {
         Ok(request) => request,
@@ -583,48 +589,31 @@ fn daily_request<T: DeserializeOwned, R: Serialize>(
         state
             .daily
             .as_ref()
-            .ok_or_else(|| "daily management service is unavailable".to_string())
+            .ok_or_else(|| {
+                DailyError::unavailable("daily management service is unavailable", false)
+            })
             .and_then(|service| operation(service, request)),
     )
 }
 
-fn daily_result<T: Serialize>(result: Result<T, String>) -> (u16, Value) {
+fn daily_result<T: Serialize>(result: Result<T, DailyError>) -> (u16, Value) {
     match result {
         Ok(data) => success(data),
-        Err(message) => {
-            let invalid = message.starts_with("invalid ")
-                || message.starts_with("SSID ")
-                || message.starts_with("Wi-Fi passphrase ")
-                || message.starts_with("recipient ")
-                || message.starts_with("message ")
-                || message.starts_with("limit_percent ")
-                || message.starts_with("reset_day ")
-                || message.starts_with("at least ")
-                || message.starts_with("multi-band ")
-                || message.starts_with("5 GHz SSID ");
-            let conflict = message.contains("awaiting confirmation")
-                || message.contains("deadline expired")
-                || message.contains("identifier did not match");
-            let (status, code) = if invalid {
-                (400, "invalid_request")
-            } else if conflict {
-                (409, "state_conflict")
-            } else {
-                (503, "source_unavailable")
+        Err(error) => {
+            let (status, code) = match error.kind {
+                DailyErrorKind::InvalidRequest => (400, "invalid_request"),
+                DailyErrorKind::StateConflict => (409, "state_conflict"),
+                DailyErrorKind::SourceUnavailable => (503, "source_unavailable"),
             };
-            let recovery_required = message.contains("recovery is still pending")
-                || message.contains("automatic rollback remains armed")
-                || message.starts_with("another Wi-Fi transaction is awaiting confirmation")
-                || message.starts_with("Wi-Fi transaction identifier did not match");
             let recovery = RecoveryMetadata {
-                required: recovery_required,
-                action: recovery_required.then(|| {
+                required: error.recovery_required,
+                action: error.recovery_required.then(|| {
                     "retry confirmation before the deadline or allow automatic rollback".into()
                 }),
             };
             (
                 status,
-                json!({"ok": false, "error": {"code": code, "message": message, "recovery": recovery}}),
+                json!({"ok": false, "error": {"code": code, "message": error.message, "recovery": recovery}}),
             )
         }
     }
@@ -889,14 +878,16 @@ mod tests {
 
     #[test]
     fn daily_wifi_errors_distinguish_completed_rollback_from_pending_recovery() {
-        let (status, rolled_back) = daily_result::<crate::daily::WriteResult>(Err(
-            "Wi-Fi transaction was rolled back: readback mismatch".into(),
-        ));
+        let (status, rolled_back) =
+            daily_result::<crate::daily::WriteResult>(Err(crate::daily::DailyError::unavailable(
+                "Wi-Fi transaction was rolled back; stale text says recovery is still pending",
+                false,
+            )));
         assert_eq!(status, 503);
         assert_eq!(rolled_back["error"]["recovery"]["required"], false);
 
         let (status, pending) = daily_result::<crate::daily::WriteResult>(Err(
-            "Wi-Fi apply failed and recovery is still pending: reload failed".into(),
+            crate::daily::DailyError::unavailable("Wi-Fi apply failed", true),
         ));
         assert_eq!(status, 503);
         assert_eq!(pending["error"]["recovery"]["required"], true);

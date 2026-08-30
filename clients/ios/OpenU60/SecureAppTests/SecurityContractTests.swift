@@ -56,6 +56,45 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertTrue(AgentServiceError.invalidResponse.keepsWifiConfirmationPending)
     }
 
+    func testWifiConfirmFailureClearsOnlyTerminalServerOutcomes() {
+        XCTAssertFalse(
+            AgentServiceError.rejected(
+                status: 409,
+                message: "no transaction is pending",
+                recoveryRequired: false
+            ).keepsPendingWifiTransactionAfterConfirmation
+        )
+        XCTAssertFalse(
+            AgentServiceError.rejected(
+                status: 503,
+                message: "the previous settings were restored",
+                recoveryRequired: false
+            ).keepsPendingWifiTransactionAfterConfirmation
+        )
+        XCTAssertTrue(
+            AgentServiceError.rejected(
+                status: 503,
+                message: "automatic recovery remains pending",
+                recoveryRequired: true
+            ).keepsPendingWifiTransactionAfterConfirmation
+        )
+        XCTAssertTrue(
+            AgentServiceError.authenticationRequired.keepsPendingWifiTransactionAfterConfirmation
+        )
+        XCTAssertTrue(
+            AgentServiceError.transportSecurity("certificate rejected")
+                .keepsPendingWifiTransactionAfterConfirmation
+        )
+        XCTAssertTrue(
+            AgentServiceError.rejected(
+                status: 500,
+                message: "unexpected response",
+                recoveryRequired: false
+            ).keepsPendingWifiTransactionAfterConfirmation
+        )
+        XCTAssertTrue(AgentServiceError.invalidResponse.keepsPendingWifiTransactionAfterConfirmation)
+    }
+
     func testStockSplitSSIDUsesAVisibleSuffixWithinTheFirmwareByteLimit() {
         XCTAssertEqual(WifiSSIDPolicy.split5GHzSSID(from: "slowfast"), "slowfast_5G")
         XCTAssertEqual(

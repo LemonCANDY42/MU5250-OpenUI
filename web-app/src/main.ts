@@ -22,6 +22,7 @@ import {
   loadPendingWifiConfirmation,
   savePendingWifiConfirmation,
 } from './data/pending-wifi-store'
+import { shouldKeepPendingWifiTransaction } from './data/wifi-recovery-policy'
 import type {
   V1BatteryStatus,
   V1ChargingStatus,
@@ -427,10 +428,10 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
     try {
       grant = (await postJson('/v1/wifi/transaction', body)) as V1WifiTransactionGrant
     } catch (reason: unknown) {
-      if (reason instanceof AgentError && reason.status === 400) {
-        await clearPendingWifiConfirmation()
+      if (!shouldKeepPendingWifiTransaction(reason, 'begin')) {
         pendingId = undefined
         confirm.disabled = true
+        await clearPendingWifiConfirmation()
       }
       throw reason
     }
@@ -454,8 +455,19 @@ function wifiTransactionForm(status: HTMLElement, error: HTMLElement): HTMLFormE
           'Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.'
       })
       .catch((reason: unknown) => {
-        confirm.disabled = false
-        setError(error, errorMessage(reason))
+        void (async () => {
+          if (shouldKeepPendingWifiTransaction(reason, 'confirm')) {
+            confirm.disabled = false
+          } else {
+            pendingId = undefined
+            await clearPendingWifiConfirmation()
+            status.textContent =
+              'The U60 reports that this Wi-Fi verification is no longer pending. Refresh to load its current settings.'
+          }
+          setError(error, errorMessage(reason))
+        })().catch((cleanupReason: unknown) => {
+          setError(error, `Wi-Fi recovery metadata could not be cleared: ${errorMessage(cleanupReason)}`)
+        })
       })
   })
   return form

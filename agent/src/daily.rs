@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::process::{Command, Stdio};
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -18,11 +20,140 @@ const DAILY_AUDIT_FILE: &str = "daily-audit.json";
 const DAILY_AUDIT_LOCK: &str = "daily-audit.lock";
 const WIFI_CONFIRM_SECONDS: u64 = 120;
 const WIFI_ROLLBACK_REAPER_STACK_BYTES: usize = 256 * 1024;
+const WIFI_ROLLBACK_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const MAX_DAILY_AUDIT_EVENTS: usize = 128;
+const WIFI_PRIMARY_STATE_FIELDS: [WifiField; 13] = [
+    WifiField::MainDisabled2g,
+    WifiField::MainDisabled5g,
+    WifiField::BandSteeringEnabled,
+    WifiField::Ssid2g,
+    WifiField::Ssid5g,
+    WifiField::Passphrase2g,
+    WifiField::Passphrase5g,
+    WifiField::Encryption2g,
+    WifiField::Encryption5g,
+    WifiField::Hidden2g,
+    WifiField::Hidden5g,
+    WifiField::SettingsSync2g,
+    WifiField::SettingsSync5g,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DailyErrorKind {
+    InvalidRequest,
+    StateConflict,
+    SourceUnavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DailyError {
+    pub kind: DailyErrorKind,
+    pub message: String,
+    pub recovery_required: bool,
+}
+
+impl DailyError {
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self {
+            kind: DailyErrorKind::InvalidRequest,
+            message: message.into(),
+            recovery_required: false,
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>, recovery_required: bool) -> Self {
+        Self {
+            kind: DailyErrorKind::StateConflict,
+            message: message.into(),
+            recovery_required,
+        }
+    }
+
+    pub fn unavailable(message: impl Into<String>, recovery_required: bool) -> Self {
+        Self {
+            kind: DailyErrorKind::SourceUnavailable,
+            message: message.into(),
+            recovery_required,
+        }
+    }
+
+    #[cfg(test)]
+    fn contains(&self, pattern: &str) -> bool {
+        self.message.contains(pattern)
+    }
+}
+
+impl std::fmt::Display for DailyError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DailyError {}
+
+impl From<String> for DailyError {
+    fn from(message: String) -> Self {
+        Self::unavailable(message, false)
+    }
+}
+
+impl From<&str> for DailyError {
+    fn from(message: &str) -> Self {
+        Self::unavailable(message, false)
+    }
+}
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct WriteResult {
     pub result: &'static str,
+}
+
+pub fn wait_for_wifi_rollback_due(
+    store: StateStore,
+    transaction_id: &str,
+    delay: Duration,
+) -> Result<bool, String> {
+    wait_for_wifi_rollback_due_with_poll(store, transaction_id, delay, WIFI_ROLLBACK_POLL_INTERVAL)
+}
+
+fn wait_for_wifi_rollback_due_with_poll(
+    store: StateStore,
+    transaction_id: &str,
+    delay: Duration,
+    poll_interval: Duration,
+) -> Result<bool, String> {
+    validate_transaction_id(transaction_id)?;
+    if poll_interval.is_zero() {
+        return Err("Wi-Fi rollback poll interval must be positive".into());
+    }
+    let transaction_path = store.root_path().join(WIFI_TRANSACTION_FILE);
+    let mut observed_identity = None;
+    let deadline = Instant::now() + delay;
+    loop {
+        let metadata = match fs::symlink_metadata(&transaction_path) {
+            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+                return Err("Wi-Fi transaction state is not a regular file".into());
+            }
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(_) => return Err("Wi-Fi transaction state could not be inspected".into()),
+        };
+        let identity = (metadata.dev(), metadata.ino());
+        if observed_identity != Some(identity) {
+            let _lock = store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
+            let pending = store.read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?;
+            if pending.as_ref().map(|transaction| transaction.id.as_str()) != Some(transaction_id) {
+                return Ok(false);
+            }
+            observed_identity = Some(identity);
+        }
+
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(true);
+        }
+        thread::sleep(poll_interval.min(deadline.saturating_duration_since(now)));
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
@@ -185,9 +316,9 @@ impl DailyService {
         Ok(service)
     }
 
-    pub fn sms_send(&self, request: SmsSendRequest) -> Result<WriteResult, String> {
-        validate_recipient(&request.recipient)?;
-        validate_message(&request.message)?;
+    pub fn sms_send(&self, request: SmsSendRequest) -> Result<WriteResult, DailyError> {
+        validate_recipient(&request.recipient).map_err(DailyError::invalid)?;
+        validate_message(&request.message).map_err(DailyError::invalid)?;
         let _lock = self.store.lock_exclusive(SMS_LOCK)?;
         let timestamp = sms_timestamp()?;
         let encoding = sms_encoding(&request.message);
@@ -217,7 +348,7 @@ impl DailyService {
         Err("SMS send did not reach the completed state".into())
     }
 
-    pub fn charging_status(&self) -> Result<ChargingStatus, String> {
+    pub fn charging_status(&self) -> Result<ChargingStatus, DailyError> {
         Ok(ChargingStatus {
             capacity_percent: self.io.battery_capacity()?,
             paused: charger_paused(self.io.as_ref())?,
@@ -227,9 +358,9 @@ impl DailyService {
     pub fn traffic_cycle_update(
         &self,
         request: TrafficCycleRequest,
-    ) -> Result<WriteResult, String> {
+    ) -> Result<WriteResult, DailyError> {
         if !(1..=31).contains(&request.reset_day) {
-            return Err("reset_day must be between 1 and 31".into());
+            return Err(DailyError::invalid("reset_day must be between 1 and 31"));
         }
         let _lock = self.store.lock_exclusive(TRAFFIC_LOCK)?;
         let previous = traffic_cycle_state(self.io.as_ref())?;
@@ -246,12 +377,18 @@ impl DailyService {
             return match recovery {
                 Ok(()) => {
                     self.audit("traffic_cycle_update", "rolled_back");
-                    Err(format!("traffic cycle update was rolled back: {cause}"))
+                    Err(DailyError::unavailable(
+                        format!("traffic cycle update was rolled back: {cause}"),
+                        false,
+                    ))
                 }
                 Err(rollback_error) => {
                     self.audit("traffic_cycle_update", "rollback_failed");
-                    Err(format!(
-                        "traffic cycle update failed and recovery is still pending: {cause}; {rollback_error}"
+                    Err(DailyError::unavailable(
+                        format!(
+                            "traffic cycle update failed and recovery is still pending: {cause}; {rollback_error}"
+                        ),
+                        true,
                     ))
                 }
             };
@@ -263,12 +400,14 @@ impl DailyService {
     pub fn wifi_transaction_begin(
         &self,
         request: WifiTransactionRequest,
-    ) -> Result<WifiTransactionGrant, String> {
-        validate_transaction_id(&request.transaction_id)?;
+    ) -> Result<WifiTransactionGrant, DailyError> {
+        validate_transaction_id(&request.transaction_id).map_err(DailyError::invalid)?;
         let transaction_id = request.transaction_id.clone();
-        let mut values = wifi_values_from_request(request)?;
+        let mut values = wifi_values_from_request(request).map_err(DailyError::invalid)?;
         if values.is_empty() {
-            return Err("at least one Wi-Fi setting is required".into());
+            return Err(DailyError::invalid(
+                "at least one Wi-Fi setting is required",
+            ));
         }
         let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
         if self
@@ -276,16 +415,42 @@ impl DailyService {
             .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
             .is_some()
         {
-            return Err("another Wi-Fi transaction is awaiting confirmation".into());
+            return Err(DailyError::conflict(
+                "another Wi-Fi transaction is awaiting confirmation",
+                true,
+            ));
         }
-        resolve_multi_band_values(self.io.as_ref(), &mut values)?;
-        validate_wifi_switch_state(self.io.as_ref(), &values)?;
-        let old_values = self
-            .io
-            .wifi_values(&values.keys().copied().collect::<Vec<_>>())?;
-        if old_values.len() != values.len() {
-            return Err("one or more Wi-Fi settings are unavailable on this firmware".into());
+        let mut snapshot_fields = values.keys().copied().collect::<Vec<_>>();
+        if requires_primary_wifi_snapshot(&values) {
+            snapshot_fields.extend(WIFI_PRIMARY_STATE_FIELDS);
         }
+        snapshot_fields.sort_unstable();
+        snapshot_fields.dedup();
+        let snapshot = self.io.wifi_values(&snapshot_fields)?;
+        if snapshot.len() != snapshot_fields.len() {
+            return Err(DailyError::unavailable(
+                "one or more Wi-Fi settings are unavailable on this firmware",
+                false,
+            ));
+        }
+        validate_wifi_snapshot(&snapshot, requires_primary_wifi_snapshot(&values))?;
+        resolve_multi_band_values(&snapshot, &mut values).map_err(DailyError::invalid)?;
+        validate_wifi_switch_state(&snapshot, &values).map_err(DailyError::invalid)?;
+        let old_values = values
+            .keys()
+            .map(|field| {
+                snapshot
+                    .get(field)
+                    .cloned()
+                    .map(|value| (*field, value))
+                    .ok_or_else(|| {
+                        DailyError::unavailable(
+                            "one or more Wi-Fi settings are unavailable on this firmware",
+                            false,
+                        )
+                    })
+            })
+            .collect::<Result<BTreeMap<_, _>, _>>()?;
         let transaction = PendingWifiTransaction {
             id: transaction_id,
             expires_at: unix_now()?.saturating_add(WIFI_CONFIRM_SECONDS),
@@ -294,9 +459,11 @@ impl DailyService {
         };
         self.store.write_json(WIFI_TRANSACTION_FILE, &transaction)?;
         if let Err(error) = self.wifi_rollback.arm(&transaction.id) {
-            self.store.remove(WIFI_TRANSACTION_FILE)?;
+            self.store
+                .remove(WIFI_TRANSACTION_FILE)
+                .map_err(|remove_error| DailyError::unavailable(remove_error, true))?;
             self.audit("wifi_transaction_begin", "rollback_not_armed");
-            return Err(error);
+            return Err(DailyError::unavailable(error, false));
         }
         if let Err(apply_error) = self.io.apply_wifi_values(&values) {
             return self.rollback_after_failed_apply(&transaction, apply_error);
@@ -321,14 +488,20 @@ impl DailyService {
         })
     }
 
-    pub fn wifi_master_update(&self, request: WifiMasterRequest) -> Result<WriteResult, String> {
+    pub fn wifi_master_update(
+        &self,
+        request: WifiMasterRequest,
+    ) -> Result<WriteResult, DailyError> {
         let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
         if self
             .store
             .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
             .is_some()
         {
-            return Err("another Wi-Fi transaction is awaiting confirmation".into());
+            return Err(DailyError::conflict(
+                "another Wi-Fi transaction is awaiting confirmation",
+                true,
+            ));
         }
         let previous = self.io.wifi_master_enabled()?;
         if previous == request.enabled {
@@ -350,38 +523,52 @@ impl DailyService {
         }
     }
 
-    pub fn wifi_transaction_confirm(&self, transaction_id: &str) -> Result<WriteResult, String> {
-        validate_transaction_id(transaction_id)?;
+    pub fn wifi_transaction_confirm(
+        &self,
+        transaction_id: &str,
+    ) -> Result<WriteResult, DailyError> {
+        validate_transaction_id(transaction_id).map_err(DailyError::invalid)?;
         let _lock = self.store.lock_exclusive(WIFI_TRANSACTION_LOCK)?;
         let transaction = self
             .store
             .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)?
-            .ok_or_else(|| "no Wi-Fi transaction is awaiting confirmation".to_string())?;
+            .ok_or_else(|| {
+                DailyError::conflict("no Wi-Fi transaction is awaiting confirmation", false)
+            })?;
         if transaction.id != transaction_id {
-            return Err("Wi-Fi transaction identifier did not match".into());
+            return Err(DailyError::conflict(
+                "Wi-Fi transaction identifier did not match",
+                true,
+            ));
         }
         if unix_now()? > transaction.expires_at {
-            self.io.apply_wifi_values(&transaction.old_values)?;
-            self.store.remove(WIFI_TRANSACTION_FILE)?;
+            self.restore_wifi_transaction(&transaction)
+                .map_err(|error| DailyError::unavailable(error, true))?;
             self.audit("wifi_transaction_confirm", "expired_rolled_back");
-            return Err("Wi-Fi confirmation deadline expired; old settings were restored".into());
+            return Err(DailyError::conflict(
+                "Wi-Fi confirmation deadline expired; old settings were restored",
+                false,
+            ));
         }
         if transaction.new_values.is_empty() {
-            return Err(
-                "Wi-Fi verification snapshot is unavailable; automatic rollback remains armed"
-                    .into(),
-            );
+            return Err(DailyError::unavailable(
+                "Wi-Fi verification snapshot is unavailable; automatic rollback remains armed",
+                true,
+            ));
         }
         let applied = self
             .io
-            .wifi_values(&transaction.new_values.keys().copied().collect::<Vec<_>>())?;
+            .wifi_values(&transaction.new_values.keys().copied().collect::<Vec<_>>())
+            .map_err(|error| DailyError::unavailable(error, true))?;
         if applied != transaction.new_values {
-            return Err(
-                "Wi-Fi settings do not match the requested values; automatic rollback remains armed"
-                    .into(),
-            );
+            return Err(DailyError::unavailable(
+                "Wi-Fi settings do not match the requested values; automatic rollback remains armed",
+                true,
+            ));
         }
-        self.store.remove(WIFI_TRANSACTION_FILE)?;
+        self.store
+            .remove(WIFI_TRANSACTION_FILE)
+            .map_err(|error| DailyError::unavailable(error, true))?;
         self.audit("wifi_transaction_confirm", "success");
         Ok(WriteResult {
             result: "committed",
@@ -399,8 +586,7 @@ impl DailyService {
         if expected_id.is_some_and(|expected| expected != transaction.id) {
             return Ok(false);
         }
-        self.io.apply_wifi_values(&transaction.old_values)?;
-        self.store.remove(WIFI_TRANSACTION_FILE)?;
+        self.restore_wifi_transaction(&transaction)?;
         self.audit("wifi_transaction_rollback", "success");
         Ok(true)
     }
@@ -409,20 +595,38 @@ impl DailyService {
         &self,
         transaction: &PendingWifiTransaction,
         cause: String,
-    ) -> Result<T, String> {
-        match self.io.apply_wifi_values(&transaction.old_values) {
+    ) -> Result<T, DailyError> {
+        match self.restore_wifi_transaction(transaction) {
             Ok(()) => {
-                self.store.remove(WIFI_TRANSACTION_FILE)?;
                 self.audit("wifi_transaction_begin", "rolled_back");
-                Err(format!("Wi-Fi transaction was rolled back: {cause}"))
+                Err(DailyError::unavailable(
+                    format!("Wi-Fi transaction was rolled back: {cause}"),
+                    false,
+                ))
             }
             Err(rollback_error) => {
                 self.audit("wifi_transaction_begin", "rollback_failed");
-                Err(format!(
-                    "Wi-Fi apply failed and recovery is still pending: {cause}; {rollback_error}"
+                Err(DailyError::unavailable(
+                    format!(
+                        "Wi-Fi apply failed and recovery is still pending: {cause}; {rollback_error}"
+                    ),
+                    true,
                 ))
             }
         }
+    }
+
+    fn restore_wifi_transaction(&self, transaction: &PendingWifiTransaction) -> Result<(), String> {
+        self.io.apply_wifi_values(&transaction.old_values)?;
+        let restored = self
+            .io
+            .wifi_values(&transaction.old_values.keys().copied().collect::<Vec<_>>())?;
+        if restored != transaction.old_values {
+            return Err(
+                "Wi-Fi rollback readback did not match; automatic recovery remains pending".into(),
+            );
+        }
+        self.store.remove(WIFI_TRANSACTION_FILE).map(|_| ())
     }
 
     fn restore_traffic_cycle(&self, previous: (u8, bool)) -> Result<(), String> {
@@ -436,22 +640,31 @@ impl DailyService {
         Ok(())
     }
 
-    fn restore_wifi_master<T>(&self, previous: bool, cause: String) -> Result<T, String> {
+    fn restore_wifi_master<T>(&self, previous: bool, cause: String) -> Result<T, DailyError> {
         match self.io.set_wifi_master_enabled(previous) {
             Ok(()) if self.io.wifi_master_enabled() == Ok(previous) => {
                 self.audit("wifi_master_update", "rolled_back");
-                Err(format!("Wi-Fi master update was rolled back: {cause}"))
+                Err(DailyError::unavailable(
+                    format!("Wi-Fi master update was rolled back: {cause}"),
+                    false,
+                ))
             }
             Ok(()) => {
                 self.audit("wifi_master_update", "rollback_failed");
-                Err(format!(
-                    "Wi-Fi master update failed and recovery readback did not match: {cause}"
+                Err(DailyError::unavailable(
+                    format!(
+                        "Wi-Fi master update failed and recovery readback did not match: {cause}"
+                    ),
+                    true,
                 ))
             }
             Err(rollback_error) => {
                 self.audit("wifi_master_update", "rollback_failed");
-                Err(format!(
-                    "Wi-Fi master update failed and recovery is still pending: {cause}; {rollback_error}"
+                Err(DailyError::unavailable(
+                    format!(
+                        "Wi-Fi master update failed and recovery is still pending: {cause}; {rollback_error}"
+                    ),
+                    true,
                 ))
             }
         }
@@ -695,47 +908,24 @@ fn validate_channel(value: &str, five_ghz: bool) -> Result<String, String> {
 }
 
 fn resolve_multi_band_values(
-    io: &dyn B04Io,
+    current: &BTreeMap<WifiField, String>,
     values: &mut BTreeMap<WifiField, String>,
 ) -> Result<(), String> {
     let requested_enabled = values
         .get(&WifiField::BandSteeringEnabled)
         .map(|value| parse_binary_value(value, "band steering"))
         .transpose()?;
-    let touches_primary_state = [
-        WifiField::MainDisabled2g,
-        WifiField::MainDisabled5g,
-        WifiField::Ssid2g,
-        WifiField::Ssid5g,
-        WifiField::Passphrase2g,
-        WifiField::Passphrase5g,
-        WifiField::Hidden2g,
-        WifiField::Hidden5g,
-    ]
-    .iter()
-    .any(|field| values.contains_key(field));
+    let touches_primary_state = requires_primary_wifi_snapshot(values);
     if requested_enabled.is_none() && !touches_primary_state {
         return Ok(());
     }
-    let fields = [
-        WifiField::MainDisabled2g,
-        WifiField::MainDisabled5g,
-        WifiField::BandSteeringEnabled,
-        WifiField::Ssid2g,
-        WifiField::Ssid5g,
-        WifiField::Passphrase2g,
-        WifiField::Passphrase5g,
-        WifiField::Encryption2g,
-        WifiField::Encryption5g,
-        WifiField::Hidden2g,
-        WifiField::Hidden5g,
-        WifiField::SettingsSync2g,
-        WifiField::SettingsSync5g,
-    ];
-    let mut effective = io.wifi_values(&fields)?;
-    if effective.len() != fields.len() {
+    if WIFI_PRIMARY_STATE_FIELDS
+        .iter()
+        .any(|field| !current.contains_key(field))
+    {
         return Err("one or more multi-band settings are unavailable on this firmware".into());
     }
+    let mut effective = current.clone();
     effective.extend(values.clone());
     let enabled = requested_enabled.unwrap_or(parse_binary_value(
         &effective[&WifiField::BandSteeringEnabled],
@@ -785,48 +975,24 @@ fn stock_split_5g_ssid(ssid_2g: &str) -> Result<String, String> {
 }
 
 fn validate_wifi_switch_state(
-    io: &dyn B04Io,
+    current: &BTreeMap<WifiField, String>,
     requested: &BTreeMap<WifiField, String>,
 ) -> Result<(), String> {
-    let relevant = [
-        WifiField::MainDisabled2g,
-        WifiField::MainDisabled5g,
-        WifiField::BandSteeringEnabled,
-        WifiField::Ssid2g,
-        WifiField::Ssid5g,
-        WifiField::Passphrase2g,
-        WifiField::Passphrase5g,
-        WifiField::Encryption2g,
-        WifiField::Encryption5g,
-        WifiField::Hidden2g,
-        WifiField::Hidden5g,
-        WifiField::SettingsSync2g,
-        WifiField::SettingsSync5g,
-    ];
-    if !relevant.iter().any(|field| requested.contains_key(field)) {
+    if !WIFI_PRIMARY_STATE_FIELDS
+        .iter()
+        .any(|field| requested.contains_key(field))
+    {
         return Ok(());
     }
 
-    let fields = [
-        WifiField::MainDisabled2g,
-        WifiField::MainDisabled5g,
-        WifiField::BandSteeringEnabled,
-        WifiField::Ssid2g,
-        WifiField::Ssid5g,
-        WifiField::Passphrase2g,
-        WifiField::Passphrase5g,
-        WifiField::Encryption2g,
-        WifiField::Encryption5g,
-        WifiField::Hidden2g,
-        WifiField::Hidden5g,
-        WifiField::SettingsSync2g,
-        WifiField::SettingsSync5g,
-    ];
-    let mut effective = io.wifi_values(&fields)?;
-    if effective.len() != fields.len() {
+    if WIFI_PRIMARY_STATE_FIELDS
+        .iter()
+        .any(|field| !current.contains_key(field))
+    {
         return Err("one or more Wi-Fi switch settings are unavailable on this firmware".into());
     }
-    for field in relevant {
+    let mut effective = current.clone();
+    for field in WIFI_PRIMARY_STATE_FIELDS {
         if let Some(value) = requested.get(&field) {
             effective.insert(field, value.clone());
         }
@@ -868,6 +1034,39 @@ fn validate_wifi_switch_state(
     }
     if !band_steering && effective[&WifiField::Ssid2g] == effective[&WifiField::Ssid5g] {
         return Err("multi-band separation requires distinct 2.4 GHz and 5 GHz SSIDs".into());
+    }
+    Ok(())
+}
+
+fn requires_primary_wifi_snapshot(values: &BTreeMap<WifiField, String>) -> bool {
+    WIFI_PRIMARY_STATE_FIELDS
+        .iter()
+        .any(|field| values.contains_key(field))
+}
+
+fn validate_wifi_snapshot(
+    current: &BTreeMap<WifiField, String>,
+    primary_state_required: bool,
+) -> Result<(), DailyError> {
+    if !primary_state_required {
+        return Ok(());
+    }
+    for (field, label) in [
+        (WifiField::MainDisabled2g, "2.4 GHz primary switch"),
+        (WifiField::MainDisabled5g, "5 GHz primary switch"),
+        (WifiField::BandSteeringEnabled, "band steering"),
+        (WifiField::Hidden2g, "2.4 GHz hidden network"),
+        (WifiField::Hidden5g, "5 GHz hidden network"),
+        (WifiField::SettingsSync2g, "2.4 GHz sync"),
+        (WifiField::SettingsSync5g, "5 GHz sync"),
+    ] {
+        let value = current.get(&field).ok_or_else(|| {
+            DailyError::unavailable(
+                "one or more Wi-Fi settings are unavailable on this firmware",
+                false,
+            )
+        })?;
+        parse_binary_value(value, label).map_err(|error| DailyError::unavailable(error, false))?;
     }
     Ok(())
 }
@@ -1067,7 +1266,7 @@ fn unix_now() -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use serde_json::json;
@@ -1085,6 +1284,8 @@ mod tests {
         cycle: Mutex<(u8, bool)>,
         fail_next_cycle_readback: AtomicBool,
         corrupt_cycle_readback: AtomicBool,
+        ignore_next_wifi_apply: AtomicBool,
+        wifi_read_count: AtomicUsize,
     }
 
     impl MockIo {
@@ -1135,6 +1336,8 @@ mod tests {
                 cycle: Mutex::new((1, false)),
                 fail_next_cycle_readback: AtomicBool::new(false),
                 corrupt_cycle_readback: AtomicBool::new(false),
+                ignore_next_wifi_apply: AtomicBool::new(false),
+                wifi_read_count: AtomicUsize::new(0),
             }
         }
     }
@@ -1187,6 +1390,7 @@ mod tests {
         }
 
         fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
+            self.wifi_read_count.fetch_add(1, Ordering::SeqCst);
             let wifi = self.wifi.lock().unwrap();
             Ok(fields
                 .iter()
@@ -1199,6 +1403,9 @@ mod tests {
                 && !self.rollback_armed.load(Ordering::SeqCst)
             {
                 return Err("rollback was not armed before Wi-Fi mutation".into());
+            }
+            if self.ignore_next_wifi_apply.swap(false, Ordering::SeqCst) {
+                return Ok(());
             }
             self.wifi.lock().unwrap().extend(values.clone());
             Ok(())
@@ -1284,6 +1491,22 @@ mod tests {
         assert_eq!(request.transaction_id, "abcdefghijklmnopqrstuvwx");
         assert!(validate_transaction_id(&request.transaction_id).is_ok());
         assert!(validate_transaction_id("too-short").is_err());
+    }
+
+    #[test]
+    fn wifi_transaction_uses_one_pre_apply_snapshot_and_one_verification_read() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+        io.wifi_read_count.store(0, Ordering::SeqCst);
+
+        service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                ssid_2g: Some("owner-wifi-new".into()),
+                ..WifiTransactionRequest::default()
+            })
+            .unwrap();
+
+        assert_eq!(io.wifi_read_count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -1656,6 +1879,66 @@ mod tests {
             .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn wifi_rollback_keeps_recovery_pending_when_device_ignores_restore() {
+        let (_temp, io, service) = service();
+        let transaction = PendingWifiTransaction {
+            id: "abcdefghijklmnopqrstuvwx".into(),
+            expires_at: unix_now().unwrap() + 120,
+            old_values: BTreeMap::from([(WifiField::TransmitPower2g, "30".into())]),
+            new_values: BTreeMap::from([(WifiField::TransmitPower2g, "40".into())]),
+        };
+        service
+            .store
+            .write_json(WIFI_TRANSACTION_FILE, &transaction)
+            .unwrap();
+        io.apply_wifi_values(&transaction.new_values).unwrap();
+        io.ignore_next_wifi_apply.store(true, Ordering::SeqCst);
+
+        let error = service
+            .rollback_pending_wifi(Some(&transaction.id))
+            .unwrap_err();
+
+        assert!(error.contains("readback"));
+        assert!(service
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_some());
+    }
+
+    #[test]
+    fn confirmed_wifi_transaction_releases_rollback_worker_promptly() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let transaction = PendingWifiTransaction {
+            id: "abcdefghijklmnopqrstuvwx".into(),
+            expires_at: unix_now().unwrap() + 120,
+            old_values: BTreeMap::new(),
+            new_values: BTreeMap::new(),
+        };
+        store
+            .write_json(WIFI_TRANSACTION_FILE, &transaction)
+            .unwrap();
+
+        let worker_store = store.clone();
+        let worker_id = transaction.id.clone();
+        let started = std::time::Instant::now();
+        let worker = std::thread::spawn(move || {
+            wait_for_wifi_rollback_due_with_poll(
+                worker_store,
+                &worker_id,
+                Duration::from_secs(5),
+                Duration::from_millis(5),
+            )
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        store.remove(WIFI_TRANSACTION_FILE).unwrap();
+
+        assert!(!worker.join().unwrap().unwrap());
+        assert!(started.elapsed() < Duration::from_millis(500));
     }
 
     #[test]

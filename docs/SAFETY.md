@@ -130,8 +130,10 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   2.4 GHz identity, then enables band steering. Disable first removes band
   steering, clears both sync flags and requires distinct SSIDs, deriving the
   stock `_5G` suffix only when it fits the 32-byte limit. Both paths retain the
-  pre-armed independent rollback and exact readback gate; unrelated radio
-  globals are not repurposed.
+  pre-armed independent rollback and exact applied/rollback readback gates.
+  Invariant validation and rollback capture share one pre-apply configuration
+  snapshot, so repeated reads cannot observe a mixed transition. Unrelated
+  radio globals are not repurposed.
 - **procd lifecycle**: signalling or stopping a managed service can cause a
   respawn or block firmware synchronization. The integrated platform performs
   neither operation.

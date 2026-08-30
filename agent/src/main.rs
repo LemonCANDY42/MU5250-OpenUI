@@ -174,9 +174,14 @@ fn wifi_rollback_after(id: &str, seconds: u64) -> Result<(), String> {
     if seconds == 0 || seconds > 300 {
         return Err("wifi rollback delay must be between 1 and 300 seconds".into());
     }
-    std::thread::sleep(std::time::Duration::from_secs(seconds));
     let store = StateStore::open(state_root())?;
-    let _ = daily::DailyService::run_wifi_rollback_worker(store, id)?;
+    if daily::wait_for_wifi_rollback_due(
+        store.clone(),
+        id,
+        std::time::Duration::from_secs(seconds),
+    )? {
+        let _ = daily::DailyService::run_wifi_rollback_worker(store, id)?;
+    }
     Ok(())
 }
 
