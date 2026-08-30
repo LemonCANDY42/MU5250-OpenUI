@@ -3,18 +3,39 @@ import OpenAPIRuntime
 import OpenAPIURLSession
 
 enum AgentServiceError: LocalizedError {
-    case rejected(status: Int, message: String)
+    case rejected(status: Int, message: String, recoveryRequired: Bool = false)
     case authenticationRequired
     case invalidResponse
     case transportSecurity(String)
 
     var errorDescription: String? {
         switch self {
-        case let .rejected(status, message): "U60 rejected the request (\(status)): \(message)"
+        case let .rejected(status, message, _): "U60 rejected the request (\(status)): \(message)"
         case .authenticationRequired: "The secure session expired."
         case .invalidResponse: "The U60 returned a response that does not match the v1 contract."
         case let .transportSecurity(message): message
         }
+    }
+
+    var keepsWifiConfirmationPending: Bool {
+        switch self {
+        case let .rejected(status, _, recoveryRequired):
+            status == 503 && recoveryRequired
+        case .invalidResponse:
+            true
+        case .authenticationRequired, .transportSecurity:
+            false
+        }
+    }
+}
+
+enum WifiSSIDPolicy {
+    static func split5GHzSSID(from ssid2g: String) -> String? {
+        let suffix = "_5G"
+        guard !ssid2g.isEmpty, ssid2g.utf8.count + suffix.utf8.count <= 32 else {
+            return nil
+        }
+        return ssid2g + suffix
     }
 }
 
@@ -174,7 +195,11 @@ final class AgentService: Sendable {
         case let .ok(response): return try response.body.json.data
         case let .serviceUnavailable(response):
             let body = try response.body.json
-            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+            throw AgentServiceError.rejected(
+                status: 503,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         default: throw AgentServiceError.invalidResponse
         }
     }
@@ -191,7 +216,11 @@ final class AgentService: Sendable {
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
         case let .serviceUnavailable(response):
             let body = try response.body.json
-            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+            throw AgentServiceError.rejected(
+                status: 503,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         default: throw AgentServiceError.invalidResponse
         }
     }
@@ -205,7 +234,11 @@ final class AgentService: Sendable {
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
         case let .serviceUnavailable(response):
             let body = try response.body.json
-            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+            throw AgentServiceError.rejected(
+                status: 503,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         default: throw AgentServiceError.invalidResponse
         }
     }
@@ -244,9 +277,20 @@ final class AgentService: Sendable {
         case let .badRequest(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .conflict(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(
+                status: 409,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         case let .serviceUnavailable(response):
             let body = try response.body.json
-            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+            throw AgentServiceError.rejected(
+                status: 503,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         default: throw AgentServiceError.invalidResponse
         }
     }
@@ -260,9 +304,20 @@ final class AgentService: Sendable {
         case let .badRequest(response):
             let body = try response.body.json
             throw AgentServiceError.rejected(status: 400, message: body.error.message)
+        case let .conflict(response):
+            let body = try response.body.json
+            throw AgentServiceError.rejected(
+                status: 409,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         case let .serviceUnavailable(response):
             let body = try response.body.json
-            throw AgentServiceError.rejected(status: 503, message: body.error.message)
+            throw AgentServiceError.rejected(
+                status: 503,
+                message: body.error.message,
+                recoveryRequired: body.error.recovery.required
+            )
         default: throw AgentServiceError.invalidResponse
         }
     }

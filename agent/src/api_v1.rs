@@ -571,7 +571,11 @@ fn daily_request<T: DeserializeOwned, R: Serialize>(
         Err(_) => {
             return (
                 400,
-                json!({"ok": false, "error": {"code": "invalid_request", "message": "invalid request body"}}),
+                json!({"ok": false, "error": {
+                    "code": "invalid_request",
+                    "message": "invalid request body",
+                    "recovery": {"required": false}
+                }}),
             )
         }
     };
@@ -596,7 +600,8 @@ fn daily_result<T: Serialize>(result: Result<T, String>) -> (u16, Value) {
                 || message.starts_with("limit_percent ")
                 || message.starts_with("reset_day ")
                 || message.starts_with("at least ")
-                || message.starts_with("multi-band ");
+                || message.starts_with("multi-band ")
+                || message.starts_with("5 GHz SSID ");
             let conflict = message.contains("awaiting confirmation")
                 || message.contains("deadline expired")
                 || message.contains("identifier did not match");
@@ -607,9 +612,19 @@ fn daily_result<T: Serialize>(result: Result<T, String>) -> (u16, Value) {
             } else {
                 (503, "source_unavailable")
             };
+            let recovery_required = message.contains("recovery is still pending")
+                || message.contains("automatic rollback remains armed")
+                || message.starts_with("another Wi-Fi transaction is awaiting confirmation")
+                || message.starts_with("Wi-Fi transaction identifier did not match");
+            let recovery = RecoveryMetadata {
+                required: recovery_required,
+                action: recovery_required.then(|| {
+                    "retry confirmation before the deadline or allow automatic rollback".into()
+                }),
+            };
             (
                 status,
-                json!({"ok": false, "error": {"code": code, "message": message}}),
+                json!({"ok": false, "error": {"code": code, "message": message, "recovery": recovery}}),
             )
         }
     }
@@ -870,6 +885,30 @@ mod tests {
         assert_eq!(status, 503);
         assert_eq!(body["error"]["code"], "source_unavailable");
         assert_eq!(body["error"]["recovery"]["required"], true);
+    }
+
+    #[test]
+    fn daily_wifi_errors_distinguish_completed_rollback_from_pending_recovery() {
+        let (status, rolled_back) = daily_result::<crate::daily::WriteResult>(Err(
+            "Wi-Fi transaction was rolled back: readback mismatch".into(),
+        ));
+        assert_eq!(status, 503);
+        assert_eq!(rolled_back["error"]["recovery"]["required"], false);
+
+        let (status, pending) = daily_result::<crate::daily::WriteResult>(Err(
+            "Wi-Fi apply failed and recovery is still pending: reload failed".into(),
+        ));
+        assert_eq!(status, 503);
+        assert_eq!(pending["error"]["recovery"]["required"], true);
+    }
+
+    #[test]
+    fn malformed_daily_request_has_terminal_recovery_metadata() {
+        let (_temp, state) = state();
+        let (status, body) = wifi_transaction_begin(&state, b"{");
+        assert_eq!(status, 400);
+        assert_eq!(body["error"]["code"], "invalid_request");
+        assert_eq!(body["error"]["recovery"]["required"], false);
     }
 
     #[tokio::test]

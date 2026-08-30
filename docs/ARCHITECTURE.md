@@ -105,14 +105,18 @@ loopback canary is evidence for a stage, not completion of V1.
    transactional Wi-Fi primary/guest settings. The master operation delegates to
    the firmware's own switch and leaves the saved 2.4/5 GHz primary-AP states
    untouched, so the device UI remains the recovery control after a deliberate
-   disconnect. Independent primary-AP and stock band-steering changes use fixed
-   B04 field paths, require at least one saved primary AP, and reject incompatible
-   band-steering combinations. Every disconnecting transaction has strict
+   disconnect. Independent primary-AP and stock multi-band changes use fixed
+   B04 field paths, require at least one saved primary AP, and treat band
+   steering plus both primary settings-sync flags as one invariant. Separation
+   requires distinct SSIDs; integration uses the 2.4 GHz identity as the
+   canonical source. Every disconnecting transaction has strict
    channel/bandwidth/power allowlists, a client-generated identifier persisted
    and an independent rollback worker armed before mutation, a roughly
    120-second confirmation window, reconnect retries across transient network
    and foreground changes, reboot-safe rollback, applied-state readback and
-   dedicated recovery tests.
+   dedicated recovery tests. Typed daily-error recovery metadata distinguishes
+   a completed rollback from a still-armed transaction, so clients do not keep
+   a stale local confirmation after an explicit terminal response.
    APN and network mode remain read-only.
 4. **Stable owner install**: publish content-addressed releases under
    `/data/u60/releases/<content-hash>/`, switch one atomic symlink, retain one

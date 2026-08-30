@@ -1181,8 +1181,16 @@ fn parse_wifi_status(
             band_steering_supported: boolish_string(
                 capabilities.get("capability.wifi_attr_support_lbd"),
             )
-            .unwrap_or(false),
-            band_steering_enabled: boolish_string(config.get("zte_mbb.lbd")).unwrap_or(false),
+            .unwrap_or(false)
+                && config.contains_key("main_2g.wifiSyncparasFlag")
+                && config.contains_key("main_5g.wifiSyncparasFlag"),
+            band_steering_enabled: boolish_string(config.get("zte_mbb.lbd")).unwrap_or(false)
+                && boolish_string(config.get("main_2g.wifiSyncparasFlag")).unwrap_or(false)
+                && boolish_string(config.get("main_5g.wifiSyncparasFlag")).unwrap_or(false)
+                && config.get("main_2g.ssid") == config.get("main_5g.ssid")
+                && config.get("main_2g.key") == config.get("main_5g.key")
+                && config.get("main_2g.encryption") == config.get("main_5g.encryption")
+                && config.get("main_2g.hidden") == config.get("main_5g.hidden"),
         },
         bands,
         guest,
@@ -2031,6 +2039,8 @@ mod tests {
             ("wifi0.txpowerpercent".into(), "100".into()),
             ("main_2g.disabled".into(), "0".into()),
             ("main_2g.ssid".into(), "Two".into()),
+            ("main_2g.key".into(), "two-passphrase".into()),
+            ("main_2g.wifiSyncparasFlag".into(), "1".into()),
             ("main_2g.hidden".into(), "0".into()),
             ("main_2g.encryption".into(), "psk2".into()),
             ("wifi1.disabled".into(), "0".into()),
@@ -2039,6 +2049,8 @@ mod tests {
             ("wifi1.txpowerpercent".into(), "80".into()),
             ("main_5g.disabled".into(), "0".into()),
             ("main_5g.ssid".into(), "Five".into()),
+            ("main_5g.key".into(), "five-passphrase".into()),
+            ("main_5g.wifiSyncparasFlag".into(), "1".into()),
             ("main_5g.hidden".into(), "1".into()),
             ("main_5g.encryption".into(), "sae-mixed".into()),
             ("guest_2g.disabled".into(), "0".into()),
@@ -2073,7 +2085,8 @@ mod tests {
         assert!(wifi.features.version_switch_reported_supported);
         assert!(!wifi.features.version_switch_state_available);
         assert!(!wifi.features.mlo_supported);
-        assert!(wifi.features.band_steering_enabled);
+        assert!(wifi.features.band_steering_supported);
+        assert!(!wifi.features.band_steering_enabled);
         assert_eq!(wifi.bands[1].clients, Some(2));
         assert_eq!(wifi.bands[0].access_point_enabled, Some(true));
         assert_eq!(wifi.bands[1].access_point_enabled, Some(true));
@@ -2086,6 +2099,25 @@ mod tests {
         assert!(!guest.enabled_5g);
         assert!(guest.isolation);
         assert_eq!(guest.active_time_minutes, 120);
+
+        let mut integrated = config.clone();
+        for key in ["ssid", "key", "hidden", "encryption"] {
+            integrated.insert(
+                format!("main_5g.{key}"),
+                integrated[&format!("main_2g.{key}")].clone(),
+            );
+        }
+        let integrated_wifi = parse_wifi_status(
+            &integrated,
+            &capabilities,
+            Some(&json!({"wifi_onoff":"1"})),
+            Some(1),
+            Some(2),
+            Some(6),
+            Some(149),
+        )
+        .unwrap();
+        assert!(integrated_wifi.features.band_steering_enabled);
 
         let clients = parse_lan_clients(&json!({"dhcp_leases":[{
             "hostname":"phone", "ipaddr":"192.168.0.2",

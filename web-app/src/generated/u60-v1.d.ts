@@ -696,7 +696,9 @@ export interface components {
             readonly version_switch_state_available: boolean;
             readonly mlo_supported: boolean;
             readonly mlo_enabled: boolean;
+            /** @description The stock B04 band-steering capability and both primary-band settings-sync flags are available for one coordinated control. */
             readonly band_steering_supported: boolean;
+            /** @description Compatibility-named composite state for stock multi-band integration: band steering and both settings-sync flags are on, with matching primary network identity. */
             readonly band_steering_enabled: boolean;
         };
         readonly CurrentClientLink: {
@@ -813,7 +815,7 @@ export interface components {
             readonly guest_hidden?: boolean;
             readonly guest_isolation?: boolean;
             readonly guest_active_time_minutes?: number;
-            /** @description Stock multi-band integration; requires both compatible primary APs enabled. */
+            /** @description Stock multi-band integration control. Enabling copies the 2.4 GHz primary identity to 5 GHz and enables both settings-sync flags plus band steering. Disabling clears both sync flags and requires a distinct 5 GHz SSID, deriving the stock _5G suffix when necessary. */
             readonly band_steering_enabled?: boolean;
         };
         readonly WifiMasterRequest: {
@@ -848,6 +850,7 @@ export interface components {
                 /** @enum {string} */
                 readonly code: "invalid_request" | "state_conflict" | "source_unavailable";
                 readonly message: string;
+                readonly recovery: components["schemas"]["RecoveryMetadata"];
             };
         };
         readonly ErrorResponse: {

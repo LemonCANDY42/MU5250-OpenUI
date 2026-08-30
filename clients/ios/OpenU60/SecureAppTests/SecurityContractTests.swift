@@ -31,6 +31,41 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(ConnectionIssue.classify(AgentServiceError.invalidResponse))
     }
 
+    func testWifiBeginFailureKeepsConfirmationOnlyWhenTheOutcomeIsAmbiguousOrRecoveryIsPending() {
+        XCTAssertFalse(
+            AgentServiceError.rejected(
+                status: 503,
+                message: "Wi-Fi transaction was rolled back",
+                recoveryRequired: false
+            ).keepsWifiConfirmationPending
+        )
+        XCTAssertTrue(
+            AgentServiceError.rejected(
+                status: 503,
+                message: "Wi-Fi recovery remains pending",
+                recoveryRequired: true
+            ).keepsWifiConfirmationPending
+        )
+        XCTAssertFalse(
+            AgentServiceError.rejected(
+                status: 409,
+                message: "another transaction is active",
+                recoveryRequired: true
+            ).keepsWifiConfirmationPending
+        )
+        XCTAssertTrue(AgentServiceError.invalidResponse.keepsWifiConfirmationPending)
+    }
+
+    func testStockSplitSSIDUsesAVisibleSuffixWithinTheFirmwareByteLimit() {
+        XCTAssertEqual(WifiSSIDPolicy.split5GHzSSID(from: "slowfast"), "slowfast_5G")
+        XCTAssertEqual(
+            WifiSSIDPolicy.split5GHzSSID(from: "12345678901234567890123456789"),
+            "12345678901234567890123456789_5G"
+        )
+        XCTAssertNil(WifiSSIDPolicy.split5GHzSSID(from: "123456789012345678901234567890"))
+        XCTAssertNil(WifiSSIDPolicy.split5GHzSSID(from: String(repeating: "网", count: 10)))
+    }
+
     @MainActor
     func testReadSessionRecoveryRenewsOnceAfterSessionExpiry() async throws {
         var attempts = 0

@@ -900,7 +900,7 @@ struct DashboardView: View {
                     : String(localized: "Not supported on this B04")
             )
             metric(
-                "Band steering",
+                "Multi-band integration",
                 wifi.features.bandSteeringSupported
                     ? (wifi.features.bandSteeringEnabled ? String(localized: "Enabled") : String(localized: "Disabled"))
                     : String(localized: "Unavailable")

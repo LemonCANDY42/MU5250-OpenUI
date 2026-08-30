@@ -261,6 +261,12 @@ the saved 2.4/5 GHz primary AP switches, and stock multi-band integration. It
 keeps all ten power percentages while labeling the device's documented 40, 80
 and 100 percent presets as short, medium and long range. Per-band and
 multi-band changes use the existing reconnect-confirmed rollback transaction;
+multi-band enable synchronizes the 5 GHz identity from 2.4 GHz, while disable
+uses a distinct 5 GHz identity and the stock `_5G` suffix when needed. An
+explicit terminal rollback response clears the device-local pending record and
+refreshes the form immediately; only an ambiguous response loss or typed
+pending-recovery response continues the confirmation loop. The 5 GHz identity
+fields are read-only in the form while multi-band integration is enabled.
 master-off is deliberately separate because it disconnects the client and the
 device's own Wi-Fi switch is its recovery control. Source and simulator
 acceptance do not establish live Wi-Fi behavior. Physical-device readback and

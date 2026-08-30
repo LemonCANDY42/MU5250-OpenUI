@@ -22,13 +22,13 @@ authentication paths:
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
 | `GET /v1/status/traffic` | Current day, billing-cycle, power-on and total counters |
-| `GET /v1/status/wifi` | Two fixed B04 radio sections with configured and optional active channel, bandwidth/power, security, station counts, optional guest state and optional request-peer link context |
+| `GET /v1/status/wifi` | Two fixed B04 radio sections with configured and optional active channel, bandwidth/power, security, station counts, optional guest state, composite stock multi-band state and optional request-peer link context |
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
 | `GET /v1/charging` | Read-only battery capacity and stock charging-permission state; no public charging writes |
 | `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
-| `POST /v1/wifi/transaction` | Apply allowlisted primary/guest fields with a client-persisted transaction ID known before restart and 120-second rollback |
+| `POST /v1/wifi/transaction` | Apply allowlisted primary/guest fields and coordinated multi-band transitions with a client-persisted transaction ID known before restart and 120-second rollback |
 | `POST /v1/wifi/transaction/confirm` | Re-read the requested fields and commit only a matching pending Wi-Fi transaction |
 | `POST /v1/auth/password/session` | Argon2id password login for a normal scoped session |
 | `POST /v1/auth/password/advanced` | Password re-entry for a non-sliding five-minute advanced session |
@@ -40,6 +40,15 @@ There are no routed `/api` paths. The old SHA login is gone. Read-only domain
 routes require `read`; daily operations require `daily`; advanced-session creation also
 requires an existing `admin` token before password re-entry. Sessions keep only
 SHA-256 token digests in memory.
+
+Daily error responses include typed recovery metadata. A successful rollback
+or validation failure reports no recovery requirement; a still-armed Wi-Fi
+transaction reports one. A begin-client retains its newly created local
+confirmation only for a `503` that says recovery is required: a `409` conflict
+cannot prove ownership of that client-generated identifier. The
+compatibility-named `band_steering_enabled` field represents the
+complete user-facing multi-band invariant, not raw `lbd` alone: both settings
+sync flags must be enabled and the primary network identities must match.
 
 Every other legacy `/api` endpoint is deliberately dormant. In particular,
 there is no routed raw AT console, process killer, reboot/shutdown, Wi-Fi/APN

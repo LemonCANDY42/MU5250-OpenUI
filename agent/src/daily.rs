@@ -266,7 +266,7 @@ impl DailyService {
     ) -> Result<WifiTransactionGrant, String> {
         validate_transaction_id(&request.transaction_id)?;
         let transaction_id = request.transaction_id.clone();
-        let values = wifi_values_from_request(request)?;
+        let mut values = wifi_values_from_request(request)?;
         if values.is_empty() {
             return Err("at least one Wi-Fi setting is required".into());
         }
@@ -278,6 +278,7 @@ impl DailyService {
         {
             return Err("another Wi-Fi transaction is awaiting confirmation".into());
         }
+        resolve_multi_band_values(self.io.as_ref(), &mut values)?;
         validate_wifi_switch_state(self.io.as_ref(), &values)?;
         let old_values = self
             .io
@@ -693,6 +694,96 @@ fn validate_channel(value: &str, five_ghz: bool) -> Result<String, String> {
         .ok_or_else(|| "channel is not in the fixed B04 allowlist".into())
 }
 
+fn resolve_multi_band_values(
+    io: &dyn B04Io,
+    values: &mut BTreeMap<WifiField, String>,
+) -> Result<(), String> {
+    let requested_enabled = values
+        .get(&WifiField::BandSteeringEnabled)
+        .map(|value| parse_binary_value(value, "band steering"))
+        .transpose()?;
+    let touches_primary_state = [
+        WifiField::MainDisabled2g,
+        WifiField::MainDisabled5g,
+        WifiField::Ssid2g,
+        WifiField::Ssid5g,
+        WifiField::Passphrase2g,
+        WifiField::Passphrase5g,
+        WifiField::Hidden2g,
+        WifiField::Hidden5g,
+    ]
+    .iter()
+    .any(|field| values.contains_key(field));
+    if requested_enabled.is_none() && !touches_primary_state {
+        return Ok(());
+    }
+    let fields = [
+        WifiField::MainDisabled2g,
+        WifiField::MainDisabled5g,
+        WifiField::BandSteeringEnabled,
+        WifiField::Ssid2g,
+        WifiField::Ssid5g,
+        WifiField::Passphrase2g,
+        WifiField::Passphrase5g,
+        WifiField::Encryption2g,
+        WifiField::Encryption5g,
+        WifiField::Hidden2g,
+        WifiField::Hidden5g,
+        WifiField::SettingsSync2g,
+        WifiField::SettingsSync5g,
+    ];
+    let mut effective = io.wifi_values(&fields)?;
+    if effective.len() != fields.len() {
+        return Err("one or more multi-band settings are unavailable on this firmware".into());
+    }
+    effective.extend(values.clone());
+    let enabled = requested_enabled.unwrap_or(parse_binary_value(
+        &effective[&WifiField::BandSteeringEnabled],
+        "band steering",
+    )?);
+
+    if enabled {
+        if effective[&WifiField::MainDisabled2g] != "0"
+            || effective[&WifiField::MainDisabled5g] != "0"
+        {
+            return Err("multi-band integration requires both primary Wi-Fi bands enabled".into());
+        }
+        for (source, destination) in [
+            (WifiField::Ssid2g, WifiField::Ssid5g),
+            (WifiField::Passphrase2g, WifiField::Passphrase5g),
+            (WifiField::Encryption2g, WifiField::Encryption5g),
+            (WifiField::Hidden2g, WifiField::Hidden5g),
+        ] {
+            values.insert(destination, effective[&source].clone());
+        }
+    } else if requested_enabled == Some(false)
+        && effective[&WifiField::Ssid2g] == effective[&WifiField::Ssid5g]
+    {
+        values.insert(
+            WifiField::Ssid5g,
+            stock_split_5g_ssid(&effective[&WifiField::Ssid2g])?,
+        );
+    }
+
+    if enabled || requested_enabled == Some(false) {
+        let sync = if enabled { "1" } else { "0" }.to_string();
+        values.insert(WifiField::SettingsSync2g, sync.clone());
+        values.insert(WifiField::SettingsSync5g, sync);
+    }
+    Ok(())
+}
+
+fn stock_split_5g_ssid(ssid_2g: &str) -> Result<String, String> {
+    const SUFFIX: &str = "_5G";
+    if ssid_2g.len().saturating_add(SUFFIX.len()) > 32 {
+        return Err(
+            "5 GHz SSID cannot add the stock _5G suffix within the 32-byte limit; shorten the 2.4 GHz SSID first"
+                .into(),
+        );
+    }
+    Ok(format!("{ssid_2g}{SUFFIX}"))
+}
+
 fn validate_wifi_switch_state(
     io: &dyn B04Io,
     requested: &BTreeMap<WifiField, String>,
@@ -705,6 +796,12 @@ fn validate_wifi_switch_state(
         WifiField::Ssid5g,
         WifiField::Passphrase2g,
         WifiField::Passphrase5g,
+        WifiField::Encryption2g,
+        WifiField::Encryption5g,
+        WifiField::Hidden2g,
+        WifiField::Hidden5g,
+        WifiField::SettingsSync2g,
+        WifiField::SettingsSync5g,
     ];
     if !relevant.iter().any(|field| requested.contains_key(field)) {
         return Ok(());
@@ -720,6 +817,10 @@ fn validate_wifi_switch_state(
         WifiField::Passphrase5g,
         WifiField::Encryption2g,
         WifiField::Encryption5g,
+        WifiField::Hidden2g,
+        WifiField::Hidden5g,
+        WifiField::SettingsSync2g,
+        WifiField::SettingsSync5g,
     ];
     let mut effective = io.wifi_values(&fields)?;
     if effective.len() != fields.len() {
@@ -741,18 +842,32 @@ fn validate_wifi_switch_state(
     }
     let band_steering =
         parse_binary_value(&effective[&WifiField::BandSteeringEnabled], "band steering")?;
+    let sync_2g = parse_binary_value(&effective[&WifiField::SettingsSync2g], "2.4 GHz sync")?;
+    let sync_5g = parse_binary_value(&effective[&WifiField::SettingsSync5g], "5 GHz sync")?;
     if band_steering && (!enabled_2g || !enabled_5g) {
         return Err("multi-band integration requires both primary Wi-Fi bands enabled".into());
+    }
+    if band_steering && (!sync_2g || !sync_5g) {
+        return Err("multi-band integration requires both stock settings-sync flags".into());
     }
     if band_steering
         && (effective[&WifiField::Ssid2g] != effective[&WifiField::Ssid5g]
             || effective[&WifiField::Passphrase2g] != effective[&WifiField::Passphrase5g]
-            || effective[&WifiField::Encryption2g] != effective[&WifiField::Encryption5g])
+            || effective[&WifiField::Encryption2g] != effective[&WifiField::Encryption5g]
+            || effective[&WifiField::Hidden2g] != effective[&WifiField::Hidden5g])
     {
         return Err(
             "multi-band integration requires matching primary SSID, password and security settings"
                 .into(),
         );
+    }
+    if !band_steering && (sync_2g || sync_5g) {
+        return Err(
+            "multi-band separation requires both stock settings-sync flags disabled".into(),
+        );
+    }
+    if !band_steering && effective[&WifiField::Ssid2g] == effective[&WifiField::Ssid5g] {
+        return Err("multi-band separation requires distinct 2.4 GHz and 5 GHz SSIDs".into());
     }
     Ok(())
 }
@@ -1009,6 +1124,8 @@ mod tests {
                     (WifiField::GuestIsolation5g, "0".into()),
                     (WifiField::GuestActiveTime5g, "0".into()),
                     (WifiField::BandSteeringEnabled, "1".into()),
+                    (WifiField::SettingsSync2g, "1".into()),
+                    (WifiField::SettingsSync5g, "1".into()),
                 ])),
                 wifi_master: Mutex::new(true),
                 rollback_armed,
@@ -1290,6 +1407,122 @@ mod tests {
         assert_eq!(values[&WifiField::MainDisabled2g], "1");
         assert_eq!(values[&WifiField::MainDisabled5g], "0");
         assert_eq!(values[&WifiField::BandSteeringEnabled], "0");
+    }
+
+    #[test]
+    fn disabling_multi_band_uses_the_stock_split_ssid_and_sync_state() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+
+        service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let applied = io
+            .wifi_values(&[
+                WifiField::Ssid2g,
+                WifiField::Ssid5g,
+                WifiField::BandSteeringEnabled,
+                WifiField::SettingsSync2g,
+                WifiField::SettingsSync5g,
+            ])
+            .unwrap();
+        assert_eq!(applied[&WifiField::Ssid2g], "owner-wifi");
+        assert_eq!(applied[&WifiField::Ssid5g], "owner-wifi_5G");
+        assert_eq!(applied[&WifiField::BandSteeringEnabled], "0");
+        assert_eq!(applied[&WifiField::SettingsSync2g], "0");
+        assert_eq!(applied[&WifiField::SettingsSync5g], "0");
+
+        assert!(service
+            .rollback_pending_wifi(Some("abcdefghijklmnopqrstuvwx"))
+            .unwrap());
+        let restored = io
+            .wifi_values(&[
+                WifiField::Ssid5g,
+                WifiField::BandSteeringEnabled,
+                WifiField::SettingsSync2g,
+                WifiField::SettingsSync5g,
+            ])
+            .unwrap();
+        assert_eq!(restored[&WifiField::Ssid5g], "owner-wifi");
+        assert_eq!(restored[&WifiField::BandSteeringEnabled], "1");
+        assert_eq!(restored[&WifiField::SettingsSync2g], "1");
+        assert_eq!(restored[&WifiField::SettingsSync5g], "1");
+    }
+
+    #[test]
+    fn enabling_multi_band_copies_the_primary_identity_and_syncs_both_bands() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+        io.wifi.lock().unwrap().extend(BTreeMap::from([
+            (WifiField::Ssid5g, "owner-wifi_5G".into()),
+            (WifiField::Passphrase5g, "different-passphrase".into()),
+            (WifiField::Encryption5g, "psk2".into()),
+            (WifiField::Hidden5g, "1".into()),
+            (WifiField::BandSteeringEnabled, "0".into()),
+            (WifiField::SettingsSync2g, "0".into()),
+            (WifiField::SettingsSync5g, "0".into()),
+        ]));
+
+        service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                band_steering_enabled: Some(true),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let applied = io
+            .wifi_values(&[
+                WifiField::Ssid2g,
+                WifiField::Ssid5g,
+                WifiField::Passphrase2g,
+                WifiField::Passphrase5g,
+                WifiField::Encryption2g,
+                WifiField::Encryption5g,
+                WifiField::Hidden2g,
+                WifiField::Hidden5g,
+                WifiField::BandSteeringEnabled,
+                WifiField::SettingsSync2g,
+                WifiField::SettingsSync5g,
+            ])
+            .unwrap();
+        assert_eq!(applied[&WifiField::Ssid5g], applied[&WifiField::Ssid2g]);
+        assert_eq!(
+            applied[&WifiField::Passphrase5g],
+            applied[&WifiField::Passphrase2g]
+        );
+        assert_eq!(
+            applied[&WifiField::Encryption5g],
+            applied[&WifiField::Encryption2g]
+        );
+        assert_eq!(applied[&WifiField::Hidden5g], applied[&WifiField::Hidden2g]);
+        assert_eq!(applied[&WifiField::BandSteeringEnabled], "1");
+        assert_eq!(applied[&WifiField::SettingsSync2g], "1");
+        assert_eq!(applied[&WifiField::SettingsSync5g], "1");
+    }
+
+    #[test]
+    fn disabling_multi_band_rejects_an_equal_ssid_that_cannot_fit_the_stock_suffix() {
+        let (_temp, io, rollback, service) = service_with_rollback_tracking();
+        let long_ssid = "123456789012345678901234567890";
+        io.wifi.lock().unwrap().extend(BTreeMap::from([
+            (WifiField::Ssid2g, long_ssid.into()),
+            (WifiField::Ssid5g, long_ssid.into()),
+        ]));
+
+        let error = service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(error.contains("5 GHz SSID"));
+        assert!(!rollback.armed.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -124,9 +124,14 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   at least one to remain enabled, and arm an out-of-process two-minute rollback
   before any reload. Turning both bands off is therefore a master-switch action,
   and the device's own Wi-Fi control remains the recovery path.
-- **Multi-band integration**: the control maps only to the stock band-steering
-  setting. It is accepted only when both primary APs are enabled and their SSID,
-  passphrase and encryption state match; no radio-global flag is repurposed.
+- **Multi-band integration**: the control owns the firmware's coordinated
+  transition across `lbd` and both primary `wifiSyncparasFlag` values. Enable
+  first converges the 5 GHz SSID, passphrase, encryption and visibility to the
+  2.4 GHz identity, then enables band steering. Disable first removes band
+  steering, clears both sync flags and requires distinct SSIDs, deriving the
+  stock `_5G` suffix only when it fits the 32-byte limit. Both paths retain the
+  pre-armed independent rollback and exact readback gate; unrelated radio
+  globals are not repurposed.
 - **procd lifecycle**: signalling or stopping a managed service can cause a
   respawn or block firmware synchronization. The integrated platform performs
   neither operation.

@@ -40,6 +40,7 @@ final class AppModel {
     private(set) var batteryRuntimeEstimate: BatteryRuntimeEstimate?
     private(set) var pendingWifiConfirmation: PendingWifiConfirmation?
     private(set) var wifiConfirmationMessage: String?
+    private(set) var wifiSettingsRevision = 0
     private(set) var isConfirmingWifi = false
     private(set) var isWorking = false
     private(set) var notice: Notice?
@@ -240,22 +241,35 @@ final class AppModel {
         }
         wifiConfirmationMessage = String(localized: "Waiting to reconnect. You can switch networks more than once; verification continues until the deadline.")
 
+        var refreshAfterTerminalResponse = false
         do {
             let grant = try await service.beginWifiTransaction(edits, transactionID: pending.transactionId)
             guard grant.transactionId == pending.transactionId else {
                 throw AgentServiceError.invalidResponse
             }
         } catch let error as AgentServiceError {
-            if case .rejected(status: 400, _) = error {
+            if !error.keepsWifiConfirmationPending {
                 clearPendingWifiConfirmation(cancelTask: false)
+                refreshAfterTerminalResponse = true
             }
             errorMessage = error.localizedDescription
         } catch {
             // Losing the response while Wi-Fi restarts is ambiguous. Keep the
             // client-generated identifier and continue safe confirmation probes.
         }
+        if refreshAfterTerminalResponse {
+            do {
+                try await refreshThrowing()
+                wifiSettingsRevision &+= 1
+            } catch {
+                // Preserve the explicit transaction error. A later dashboard
+                // refresh will reconcile the form when connectivity returns.
+            }
+        }
         isWorking = false
-        startWifiConfirmationLoop()
+        if pendingWifiConfirmation != nil {
+            startWifiConfirmationLoop()
+        }
     }
 
     func confirmWifiTransaction() async {
@@ -550,7 +564,13 @@ final class AppModel {
                 title: String(localized: "Wi-Fi updated"),
                 message: String(localized: "Reconnected to the U60. The new Wi-Fi settings were verified and automatic rollback was cancelled.")
             )
-            try? await refreshThrowing()
+            do {
+                try await refreshThrowing()
+                wifiSettingsRevision &+= 1
+            } catch {
+                // Confirmation already proved the committed settings. Normal
+                // dashboard recovery will refresh the form when available.
+            }
             return true
         } catch {
             wifiConfirmationMessage = String(localized: "Not verified yet. The app will keep checking while the rollback window remains open.")

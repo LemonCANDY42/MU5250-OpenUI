@@ -1353,8 +1353,15 @@ components:
           type: boolean
         band_steering_supported:
           type: boolean
+          description: >-
+            The stock B04 band-steering capability and both primary-band
+            settings-sync flags are available for one coordinated control.
         band_steering_enabled:
           type: boolean
+          description: >-
+            Compatibility-named composite state for stock multi-band
+            integration: band steering and both settings-sync flags are on,
+            with matching primary network identity.
     CurrentClientLink:
       type: object
       additionalProperties: false
@@ -1654,7 +1661,11 @@ components:
           maximum: 1440
         band_steering_enabled:
           type: boolean
-          description: Stock multi-band integration; requires both compatible primary APs enabled.
+          description: >-
+            Stock multi-band integration control. Enabling copies the 2.4 GHz
+            primary identity to 5 GHz and enables both settings-sync flags plus
+            band steering. Disabling clears both sync flags and requires a
+            distinct 5 GHz SSID, deriving the stock _5G suffix when necessary.
     WifiMasterRequest:
       type: object
       additionalProperties: false
@@ -1719,13 +1730,15 @@ components:
         error:
           type: object
           additionalProperties: false
-          required: [code, message]
+          required: [code, message, recovery]
           properties:
             code:
               type: string
               enum: [invalid_request, state_conflict, source_unavailable]
             message:
               type: string
+            recovery:
+              $ref: "#/components/schemas/RecoveryMetadata"
     ErrorResponse:
       type: object
       additionalProperties: false

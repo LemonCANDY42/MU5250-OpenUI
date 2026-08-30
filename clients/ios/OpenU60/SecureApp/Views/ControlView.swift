@@ -272,7 +272,12 @@ private struct WifiControlView: View {
                 } header: {
                     Text("Band coordination")
                 } footer: {
-                    Text("Multi-band integration is the device's own band-steering function. It requires both primary bands and matching primary SSID, password, and security settings.")
+                    if !bandSteeringEnabled, ssid2g == ssid5g {
+                        Text("Separated bands require different network names. The U60 will add _5G to the 5 GHz name when it fits; otherwise shorten the 2.4 GHz name first.")
+                            .foregroundStyle(.orange)
+                    } else {
+                        Text("Multi-band integration combines the U60's settings sync and band steering. When enabled, 5 GHz follows the 2.4 GHz network name, password, visibility, and security.")
+                    }
                 }
 
                 WifiRadioSettingsSection(
@@ -286,7 +291,8 @@ private struct WifiControlView: View {
                     ssid: $ssid5g, passphrase: $passphrase5g, hidden: $hidden5g,
                     channel: $channel5g, bandwidth: $bandwidth5g, power: $power5g,
                     channels: channels5g, bandwidths: bandwidths5g, powers: powers,
-                    showsFixed5gNote: true
+                    showsFixed5gNote: true,
+                    identityFollowsPrimary: bandSteeringEnabled
                 )
 
                 if let guest = model.dashboard?.wifi?.guest {
@@ -317,11 +323,31 @@ private struct WifiControlView: View {
         .disabled(model.isWorking)
         .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
         .task { initializeIfNeeded() }
+        .onChange(of: model.wifiSettingsRevision) { _, _ in
+            initializeIfNeeded(force: true)
+        }
         .onChange(of: mainEnabled2g) { _, enabled in
             if !enabled { bandSteeringEnabled = false }
         }
         .onChange(of: mainEnabled5g) { _, enabled in
             if !enabled { bandSteeringEnabled = false }
+        }
+        .onChange(of: bandSteeringEnabled) { _, enabled in
+            if enabled {
+                ssid5g = ssid2g
+                hidden5g = hidden2g
+                passphrase5g = ""
+            } else if ssid5g == ssid2g,
+                      let split = WifiSSIDPolicy.split5GHzSSID(from: ssid2g)
+            {
+                ssid5g = split
+            }
+        }
+        .onChange(of: ssid2g) { _, value in
+            if bandSteeringEnabled { ssid5g = value }
+        }
+        .onChange(of: hidden2g) { _, value in
+            if bandSteeringEnabled { hidden5g = value }
         }
         .alert(item: $confirmation) { confirmation in
             switch confirmation {
@@ -345,8 +371,8 @@ private struct WifiControlView: View {
         }
     }
 
-    private func initializeIfNeeded() {
-        guard !initialized, let wifi = model.dashboard?.wifi else { return }
+    private func initializeIfNeeded(force: Bool = false) {
+        guard (!initialized || force), let wifi = model.dashboard?.wifi else { return }
         initialized = true
         wifiMasterEnabled = wifi.enabled
         bandSteeringEnabled = wifi.features.bandSteeringEnabled
@@ -379,6 +405,15 @@ private struct WifiControlView: View {
     }
 
     private func apply() {
+        if bandSteeringEnabled {
+            ssid5g = ssid2g
+            hidden5g = hidden2g
+            passphrase5g = ""
+        } else if ssid5g == ssid2g,
+                  let split = WifiSSIDPolicy.split5GHzSSID(from: ssid2g)
+        {
+            ssid5g = split
+        }
         let edits = WifiTransactionEdits(
             ssid2g: ssid2g,
             passphrase2g: optional(passphrase2g),
@@ -420,6 +455,7 @@ private struct WifiRadioSettingsSection: View {
     let bandwidths: [String]
     let powers: [Int]
     var showsFixed5gNote = false
+    var identityFollowsPrimary = false
 
     var body: some View {
         Section {
@@ -427,8 +463,16 @@ private struct WifiRadioSettingsSection: View {
             TextField("SSID", text: $ssid)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
+                .disabled(identityFollowsPrimary)
             SecureField("New password (leave blank to keep current)", text: $passphrase)
+                .disabled(identityFollowsPrimary)
             Toggle("Hidden SSID", isOn: $hidden)
+                .disabled(identityFollowsPrimary)
+            if identityFollowsPrimary {
+                Text("Network identity follows 2.4 GHz while multi-band integration is enabled.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
             Picker("Channel", selection: $channel) {
                 ForEach(channels, id: \.self) { Text(channelLabel($0)).tag($0) }
             }

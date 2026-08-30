@@ -191,7 +191,9 @@
 "Band coordination" = "频段协同";
 "Primary AP" = "主 Wi‑Fi";
 "Turning the master switch off disconnects this iPhone. The U60's own Wi-Fi switch can turn Wi-Fi back on; the saved 2.4 GHz and 5 GHz primary-band switches are preserved." = "关闭总开关会使此 iPhone 与 U60 断开。之后可用 U60 原机的 Wi‑Fi 开关重新开启；已保存的 2.4 GHz 和 5 GHz 独立开关状态会保留。";
-"Multi-band integration is the device's own band-steering function. It requires both primary bands and matching primary SSID, password, and security settings." = "多频合一对应原机的频段引导功能。它要求两个主频段都开启，并使用相同的主网络名称、密码和安全设置。";
+"Multi-band integration combines the U60's settings sync and band steering. When enabled, 5 GHz follows the 2.4 GHz network name, password, visibility, and security." = "多频合一会同时启用原机的设置同步和频段引导。开启后，5 GHz 会跟随 2.4 GHz 的网络名称、密码、隐藏状态和安全设置。";
+"Separated bands require different network names. The U60 will add _5G to the 5 GHz name when it fits; otherwise shorten the 2.4 GHz name first." = "拆分频段后两个网络名称必须不同。长度允许时，U60 会为 5 GHz 名称自动添加 _5G；否则请先缩短 2.4 GHz 名称。";
+"Network identity follows 2.4 GHz while multi-band integration is enabled." = "多频合一开启时，5 GHz 的网络身份设置跟随 2.4 GHz。";
 "At least one primary band must remain enabled here. Use the Wi-Fi master switch to turn all Wi-Fi off." = "这里必须至少保留一个主频段。若要关闭全部 Wi‑Fi，请使用 Wi‑Fi 总开关。";
 "The U60 saves the old values and arms an independent rollback process before changing Wi-Fi. Only verified device readback can cancel rollback." = "U60 会先保存原值并启动独立回滚进程，再修改 Wi‑Fi。只有设备回读核验成功才会取消回滚。";
 "Apply Wi-Fi master switch?" = "应用 Wi‑Fi 总开关？";

@@ -41,7 +41,13 @@ longer fans out one HTTPS request per card. There are no raw commands,
 firmware dictionaries or legacy endpoint bindings. The authenticated controls
 remain limited to the typed V1 daily-operation surface; charging is read-only.
 The shared API additionally describes the stock Wi-Fi master switch, saved
-primary-AP switches and stock multi-band integration. The current web UI keeps
+primary-AP switches and stock multi-band integration. Multi-band integration
+is one composite operation over the firmware's band steering and both
+primary-band settings-sync flags: disabling derives a distinct `_5G` name when
+the current names match, while enabling copies the 2.4 GHz network identity to
+5 GHz before coordination is enabled. Daily error responses carry typed
+recovery metadata so clients retain a confirmation only when recovery is
+actually pending. The current web UI keeps
 its existing transactional settings surface: its Wi-Fi changes store a
 client-generated confirmation identifier in IndexedDB before mutation so a
 page reload can resume the bounded rollback handshake. The native iOS client

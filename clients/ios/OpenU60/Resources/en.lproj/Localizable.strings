@@ -191,7 +191,9 @@
 "Band coordination" = "Band coordination";
 "Primary AP" = "Primary AP";
 "Turning the master switch off disconnects this iPhone. The U60's own Wi-Fi switch can turn Wi-Fi back on; the saved 2.4 GHz and 5 GHz primary-band switches are preserved." = "Turning the master switch off disconnects this iPhone. The U60's own Wi-Fi switch can turn Wi-Fi back on; the saved 2.4 GHz and 5 GHz primary-band switches are preserved.";
-"Multi-band integration is the device's own band-steering function. It requires both primary bands and matching primary SSID, password, and security settings." = "Multi-band integration is the device's own band-steering function. It requires both primary bands and matching primary SSID, password, and security settings.";
+"Multi-band integration combines the U60's settings sync and band steering. When enabled, 5 GHz follows the 2.4 GHz network name, password, visibility, and security." = "Multi-band integration combines the U60's settings sync and band steering. When enabled, 5 GHz follows the 2.4 GHz network name, password, visibility, and security.";
+"Separated bands require different network names. The U60 will add _5G to the 5 GHz name when it fits; otherwise shorten the 2.4 GHz name first." = "Separated bands require different network names. The U60 will add _5G to the 5 GHz name when it fits; otherwise shorten the 2.4 GHz name first.";
+"Network identity follows 2.4 GHz while multi-band integration is enabled." = "Network identity follows 2.4 GHz while multi-band integration is enabled.";
 "At least one primary band must remain enabled here. Use the Wi-Fi master switch to turn all Wi-Fi off." = "At least one primary band must remain enabled here. Use the Wi-Fi master switch to turn all Wi-Fi off.";
 "The U60 saves the old values and arms an independent rollback process before changing Wi-Fi. Only verified device readback can cancel rollback." = "The U60 saves the old values and arms an independent rollback process before changing Wi-Fi. Only verified device readback can cancel rollback.";
 "Apply Wi-Fi master switch?" = "Apply Wi-Fi master switch?";

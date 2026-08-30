@@ -86,6 +86,8 @@ pub enum WifiField {
     GuestIsolation5g,
     GuestActiveTime5g,
     BandSteeringEnabled,
+    SettingsSync2g,
+    SettingsSync5g,
 }
 
 impl WifiField {
@@ -120,6 +122,8 @@ impl WifiField {
             Self::GuestIsolation5g => "wireless.guest_5g.isolate",
             Self::GuestActiveTime5g => "wireless.guest_5g.active_time",
             Self::BandSteeringEnabled => "wireless.zte_mbb.lbd",
+            Self::SettingsSync2g => "wireless.main_2g.wifiSyncparasFlag",
+            Self::SettingsSync5g => "wireless.main_5g.wifiSyncparasFlag",
         }
     }
 }
@@ -327,7 +331,16 @@ impl B04Io for SystemB04Io {
     }
 
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
-        let band_steering = values.get(&WifiField::BandSteeringEnabled);
+        let band_steering = values
+            .get(&WifiField::BandSteeringEnabled)
+            .map(|value| parse_binary_setting(value, "band steering"))
+            .transpose()?;
+        // Preserve a valid firmware invariant throughout the transition:
+        // coordination is removed before identities split, but is enabled
+        // only after both primary identities and sync flags converge.
+        if band_steering == Some(false) {
+            self.apply_band_steering(false)?;
+        }
         let uci_values = values
             .iter()
             .filter(|(field, _)| **field != WifiField::BandSteeringEnabled);
@@ -352,15 +365,8 @@ impl B04Io for SystemB04Io {
             )?;
             parse_ubus_write_response("Wi-Fi reload", &output)?;
         }
-        if let Some(value) = band_steering {
-            let enabled = parse_binary_setting(value, "band steering")?;
-            let payload = wifi_master_payload(self.wifi_master_enabled()?, Some(enabled));
-            let output = run_fixed(
-                "band steering update",
-                "ubus",
-                &["call", "zwrt_wlan", "set", &payload],
-            )?;
-            parse_ubus_write_response("band steering update", &output)?;
+        if band_steering == Some(true) {
+            self.apply_band_steering(true)?;
         }
         Ok(())
     }
@@ -411,6 +417,18 @@ impl B04Io for SystemB04Io {
             .ok()
             .filter(|value| *value <= 100)
             .ok_or_else(|| "battery capacity source is invalid".to_string())
+    }
+}
+
+impl SystemB04Io {
+    fn apply_band_steering(&self, enabled: bool) -> Result<(), String> {
+        let payload = wifi_master_payload(self.wifi_master_enabled()?, Some(enabled));
+        let output = run_fixed(
+            "band steering update",
+            "ubus",
+            &["call", "zwrt_wlan", "set", &payload],
+        )?;
+        parse_ubus_write_response("band steering update", &output).map(|_| ())
     }
 }
 
@@ -760,9 +778,11 @@ mod tests {
             WifiField::Hidden5g,
             WifiField::MainDisabled5g,
             WifiField::BandSteeringEnabled,
+            WifiField::SettingsSync2g,
+            WifiField::SettingsSync5g,
         ]
         .map(WifiField::uci_path);
-        assert_eq!(paths.len(), 11);
+        assert_eq!(paths.len(), 13);
         assert!(paths.iter().all(|path| path.starts_with("wireless.")));
     }
 
