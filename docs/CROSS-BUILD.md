@@ -6,7 +6,7 @@ the NAS or any host route/TUN setting.
 
 The accepted tool versions are intentionally pinned:
 
-- Rust 1.94.0 with the `aarch64-unknown-linux-musl` standard library;
+- Rust 1.97.1 with the `aarch64-unknown-linux-musl` standard library;
 - cargo-zigbuild 0.23.0;
 - ziglang/Zig 0.16.0.
 

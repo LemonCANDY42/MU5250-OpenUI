@@ -4,8 +4,8 @@ set -euo pipefail
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 TARGET=aarch64-unknown-linux-musl
 BINARY="$ROOT/target/$TARGET/release/zte-agent"
-EXPECTED_RUSTC="rustc 1.94.0 "
-EXPECTED_CARGO="cargo 1.94.0 "
+EXPECTED_RUSTC="rustc 1.97.1 "
+EXPECTED_CARGO="cargo 1.97.1 "
 EXPECTED_ZIGBUILD="cargo-zigbuild 0.23.0"
 EXPECTED_ZIG="0.16.0"
 
@@ -59,11 +59,11 @@ command -v shasum >/dev/null 2>&1 || fail "shasum is unavailable"
   fail "CARGO_ZIGBUILD_PYTHON_PATH is not executable"
 case "$(rustc --version)" in
   "$EXPECTED_RUSTC"*) ;;
-  *) fail "rustc must be exactly 1.94.0" ;;
+  *) fail "rustc must be exactly 1.97.1" ;;
 esac
 case "$(cargo --version)" in
   "$EXPECTED_CARGO"*) ;;
-  *) fail "cargo must be exactly 1.94.0" ;;
+  *) fail "cargo must be exactly 1.97.1" ;;
 esac
 [ "$(cargo-zigbuild --version)" = "$EXPECTED_ZIGBUILD" ] ||
   fail "cargo-zigbuild must be exactly 0.23.0"

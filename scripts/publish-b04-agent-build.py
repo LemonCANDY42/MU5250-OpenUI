@@ -31,8 +31,8 @@ EXPECTED_CARGO_CONFIG = (
     b'--target aarch64-unknown-linux-musl"\n'
 )
 EXPECTED_TOOL_VERSIONS = {
-    "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
-    "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30)",
     "cargo_zigbuild": "cargo-zigbuild 0.23.0",
     "zig": "0.16.0",
 }
