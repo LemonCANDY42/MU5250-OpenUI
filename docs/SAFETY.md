@@ -123,7 +123,15 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   flags. Independent 2.4/5 GHz controls target only the two primary APs, require
   at least one to remain enabled, and arm an out-of-process two-minute rollback
   before any reload. Turning both bands off is therefore a master-switch action,
-  and the device's own Wi-Fi control remains the recovery path.
+  and the device's own Wi-Fi control remains the recovery path. Stock Wi-Fi
+  writes are asynchronous: after an acknowledgement, V1 follows the stock UI's
+  two-second grace period and polls the typed `zwrt_wlan report.load_status`
+  until `idle`, with a fixed 20-second bound, before exact readback. Transient
+  report failures are retried only inside that bound; timeout enters the
+  existing rollback path instead of guessing success. Only one protected Wi-Fi
+  operation is admitted at a time, and an admitted operation retains that slot
+  if its client disconnects; overlapping requests cannot queue more hardware
+  writes or blocking workers.
 - **Multi-band integration**: the control owns the firmware's coordinated
   transition across `lbd` and both primary `wifiSyncparasFlag` values. Enable
   first converges the 5 GHz SSID, passphrase, encryption and visibility to the
@@ -131,6 +139,9 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
   steering, clears both sync flags and requires distinct SSIDs, deriving the
   stock `_5G` suffix only when it fits the 32-byte limit. Both paths retain the
   pre-armed independent rollback and exact applied/rollback readback gates.
+  Disabling steering must settle before identities split; identity reload must
+  settle before steering is enabled. This prevents overlapping firmware jobs
+  from rewriting a newer phase with an older intermediate state.
   Invariant validation and rollback capture share one pre-apply configuration
   snapshot, so repeated reads cannot observe a mixed transition. Unrelated
   radio globals are not repurposed.

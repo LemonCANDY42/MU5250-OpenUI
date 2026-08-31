@@ -300,6 +300,11 @@ impl DailyService {
         Self::with_io_and_rollback(store, io, Arc::new(ProcessWifiRollbackScheduler))
     }
 
+    #[cfg(test)]
+    pub(crate) fn with_test_io(store: StateStore, io: Arc<dyn B04Io>) -> Result<Self, String> {
+        Self::with_io(store, io)
+    }
+
     fn with_io_and_rollback(
         store: StateStore,
         io: Arc<dyn B04Io>,
@@ -468,6 +473,9 @@ impl DailyService {
         if let Err(apply_error) = self.io.apply_wifi_values(&values) {
             return self.rollback_after_failed_apply(&transaction, apply_error);
         }
+        if let Err(readiness_error) = self.io.wait_for_wifi_ready() {
+            return self.rollback_after_failed_apply(&transaction, readiness_error);
+        }
         match self
             .io
             .wifi_values(&values.keys().copied().collect::<Vec<_>>())
@@ -508,6 +516,9 @@ impl DailyService {
             return Ok(WriteResult { result: "applied" });
         }
         if let Err(error) = self.io.set_wifi_master_enabled(request.enabled) {
+            return self.restore_wifi_master(previous, error);
+        }
+        if let Err(error) = self.io.wait_for_wifi_ready() {
             return self.restore_wifi_master(previous, error);
         }
         match self.io.wifi_master_enabled() {
@@ -618,6 +629,7 @@ impl DailyService {
 
     fn restore_wifi_transaction(&self, transaction: &PendingWifiTransaction) -> Result<(), String> {
         self.io.apply_wifi_values(&transaction.old_values)?;
+        self.io.wait_for_wifi_ready()?;
         let restored = self
             .io
             .wifi_values(&transaction.old_values.keys().copied().collect::<Vec<_>>())?;
@@ -641,21 +653,21 @@ impl DailyService {
     }
 
     fn restore_wifi_master<T>(&self, previous: bool, cause: String) -> Result<T, DailyError> {
-        match self.io.set_wifi_master_enabled(previous) {
-            Ok(()) if self.io.wifi_master_enabled() == Ok(previous) => {
+        let restored = self
+            .io
+            .set_wifi_master_enabled(previous)
+            .and_then(|()| self.io.wait_for_wifi_ready())
+            .and_then(|()| match self.io.wifi_master_enabled() {
+                Ok(value) if value == previous => Ok(()),
+                Ok(_) => Err("Wi-Fi master recovery readback did not match".into()),
+                Err(error) => Err(error),
+            });
+        match restored {
+            Ok(()) => {
                 self.audit("wifi_master_update", "rolled_back");
                 Err(DailyError::unavailable(
                     format!("Wi-Fi master update was rolled back: {cause}"),
                     false,
-                ))
-            }
-            Ok(()) => {
-                self.audit("wifi_master_update", "rollback_failed");
-                Err(DailyError::unavailable(
-                    format!(
-                        "Wi-Fi master update failed and recovery readback did not match: {cause}"
-                    ),
-                    true,
                 ))
             }
             Err(rollback_error) => {
@@ -1285,6 +1297,12 @@ mod tests {
         fail_next_cycle_readback: AtomicBool,
         corrupt_cycle_readback: AtomicBool,
         ignore_next_wifi_apply: AtomicBool,
+        defer_wifi_apply_until_ready: AtomicBool,
+        deferred_wifi_values: Mutex<Option<BTreeMap<WifiField, String>>>,
+        defer_wifi_master_until_ready: AtomicBool,
+        deferred_wifi_master: Mutex<Option<bool>>,
+        wifi_ready_waits: AtomicUsize,
+        wifi_ready_failures: AtomicUsize,
         wifi_read_count: AtomicUsize,
     }
 
@@ -1337,6 +1355,12 @@ mod tests {
                 fail_next_cycle_readback: AtomicBool::new(false),
                 corrupt_cycle_readback: AtomicBool::new(false),
                 ignore_next_wifi_apply: AtomicBool::new(false),
+                defer_wifi_apply_until_ready: AtomicBool::new(false),
+                deferred_wifi_values: Mutex::new(None),
+                defer_wifi_master_until_ready: AtomicBool::new(false),
+                deferred_wifi_master: Mutex::new(None),
+                wifi_ready_waits: AtomicUsize::new(0),
+                wifi_ready_failures: AtomicUsize::new(0),
                 wifi_read_count: AtomicUsize::new(0),
             }
         }
@@ -1407,7 +1431,31 @@ mod tests {
             if self.ignore_next_wifi_apply.swap(false, Ordering::SeqCst) {
                 return Ok(());
             }
+            if self.defer_wifi_apply_until_ready.load(Ordering::SeqCst) {
+                *self.deferred_wifi_values.lock().unwrap() = Some(values.clone());
+                return Ok(());
+            }
             self.wifi.lock().unwrap().extend(values.clone());
+            Ok(())
+        }
+
+        fn wait_for_wifi_ready(&self) -> Result<(), String> {
+            self.wifi_ready_waits.fetch_add(1, Ordering::SeqCst);
+            if self
+                .wifi_ready_failures
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |failures| {
+                    failures.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err("Wi-Fi readiness source failed".into());
+            }
+            if let Some(values) = self.deferred_wifi_values.lock().unwrap().take() {
+                self.wifi.lock().unwrap().extend(values);
+            }
+            if let Some(enabled) = self.deferred_wifi_master.lock().unwrap().take() {
+                *self.wifi_master.lock().unwrap() = enabled;
+            }
             Ok(())
         }
 
@@ -1416,6 +1464,10 @@ mod tests {
         }
 
         fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String> {
+            if self.defer_wifi_master_until_ready.load(Ordering::SeqCst) {
+                *self.deferred_wifi_master.lock().unwrap() = Some(enabled);
+                return Ok(());
+            }
             *self.wifi_master.lock().unwrap() = enabled;
             Ok(())
         }
@@ -1542,6 +1594,109 @@ mod tests {
                 (WifiField::MainDisabled5g, "1".into()),
             ])
         );
+    }
+
+    #[test]
+    fn wifi_master_waits_for_stock_readiness_before_readback() {
+        let (_temp, io, service) = service();
+        io.defer_wifi_master_until_ready
+            .store(true, Ordering::SeqCst);
+
+        service
+            .wifi_master_update(WifiMasterRequest { enabled: false })
+            .unwrap();
+
+        assert!(!io.wifi_master_enabled().unwrap());
+        assert_eq!(io.wifi_ready_waits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wifi_transaction_waits_for_stock_readiness_before_readback() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+        io.defer_wifi_apply_until_ready
+            .store(true, Ordering::SeqCst);
+
+        service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let applied = io
+            .wifi_values(&[
+                WifiField::Ssid5g,
+                WifiField::BandSteeringEnabled,
+                WifiField::SettingsSync2g,
+                WifiField::SettingsSync5g,
+            ])
+            .unwrap();
+        assert_eq!(applied[&WifiField::Ssid5g], "owner-wifi_5G");
+        assert_eq!(applied[&WifiField::BandSteeringEnabled], "0");
+        assert_eq!(applied[&WifiField::SettingsSync2g], "0");
+        assert_eq!(applied[&WifiField::SettingsSync5g], "0");
+        assert_eq!(io.wifi_ready_waits.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn wifi_readiness_failure_rolls_back_before_reporting_terminal_failure() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+        io.defer_wifi_apply_until_ready
+            .store(true, Ordering::SeqCst);
+        io.wifi_ready_failures.store(1, Ordering::SeqCst);
+
+        let error = service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(!error.recovery_required);
+        assert!(error.contains("rolled back"));
+        assert!(service
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_none());
+        let restored = io
+            .wifi_values(&[
+                WifiField::Ssid5g,
+                WifiField::BandSteeringEnabled,
+                WifiField::SettingsSync2g,
+                WifiField::SettingsSync5g,
+            ])
+            .unwrap();
+        assert_eq!(restored[&WifiField::Ssid5g], "owner-wifi");
+        assert_eq!(restored[&WifiField::BandSteeringEnabled], "1");
+        assert_eq!(restored[&WifiField::SettingsSync2g], "1");
+        assert_eq!(restored[&WifiField::SettingsSync5g], "1");
+    }
+
+    #[test]
+    fn wifi_readiness_and_rollback_failure_leave_recovery_armed() {
+        let (_temp, io, _rollback, service) = service_with_rollback_tracking();
+        io.defer_wifi_apply_until_ready
+            .store(true, Ordering::SeqCst);
+        io.wifi_ready_failures.store(2, Ordering::SeqCst);
+
+        let error = service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+                band_steering_enabled: Some(false),
+                ..Default::default()
+            })
+            .unwrap_err();
+
+        assert!(error.recovery_required);
+        assert!(error.contains("recovery is still pending"));
+        assert!(service
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_some());
     }
 
     #[test]

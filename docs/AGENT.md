@@ -53,6 +53,16 @@ cannot prove ownership of that client-generated identifier. The
 compatibility-named `band_steering_enabled` field represents the
 complete user-facing multi-band invariant, not raw `lbd` alone: both settings
 sync flags must be enabled and the primary network identities must match.
+The B04 firmware completes Wi-Fi writes asynchronously. V1 therefore gives the
+stock state machine its two-second grace period, polls only the typed
+`zwrt_wlan report.load_status` until `idle`, and stops after 20 seconds per
+settle phase. Multi-band phase ordering waits between steering and identity
+reloads, and applied or rollback readback happens only after the final settle.
+These waits run on Tokio's blocking pool, so the single-thread HTTPS runtime can
+continue serving independent requests; a disconnected client does not cancel
+an already-started protected Wi-Fi operation. A one-slot admission gate stays
+with that blocking operation until it ends, so overlapping Wi-Fi writes fail
+closed instead of queuing additional hardware jobs or blocking more workers.
 
 Every other legacy `/api` endpoint is deliberately dormant. In particular,
 there is no routed raw AT console, process killer, reboot/shutdown, Wi-Fi/APN

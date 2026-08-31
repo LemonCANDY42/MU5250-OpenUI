@@ -10,6 +10,9 @@ use serde_json::{json, Value};
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_OUTPUT_BYTES: usize = 256 * 1024;
 const COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const WIFI_READY_INITIAL_DELAY: Duration = Duration::from_secs(2);
+const WIFI_READY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+const WIFI_READY_TIMEOUT: Duration = Duration::from_secs(20);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UbusRead {
@@ -146,6 +149,7 @@ pub trait B04Io: Send + Sync {
     }
     fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String>;
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String>;
+    fn wait_for_wifi_ready(&self) -> Result<(), String>;
     fn wifi_master_enabled(&self) -> Result<bool, String>;
     fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String>;
     fn battery_capacity(&self) -> Result<u8, String>;
@@ -338,6 +342,7 @@ impl B04Io for SystemB04Io {
         // only after both primary identities and sync flags converge.
         if band_steering == Some(false) {
             self.apply_band_steering(false)?;
+            self.wait_for_wifi_ready()?;
         }
         let uci_values = values
             .iter()
@@ -364,9 +369,29 @@ impl B04Io for SystemB04Io {
             parse_ubus_write_response("Wi-Fi reload", &output)?;
         }
         if band_steering == Some(true) {
+            if uci_changed {
+                self.wait_for_wifi_ready()?;
+            }
             self.apply_band_steering(true)?;
         }
         Ok(())
+    }
+
+    fn wait_for_wifi_ready(&self) -> Result<(), String> {
+        wait_for_wifi_ready_with(
+            WIFI_READY_TIMEOUT,
+            WIFI_READY_INITIAL_DELAY,
+            WIFI_READY_POLL_INTERVAL,
+            |remaining| {
+                run_fixed_with_timeout(
+                    "Wi-Fi readiness",
+                    "ubus",
+                    &["call", "zwrt_wlan", "report", "{}"],
+                    remaining.min(COMMAND_TIMEOUT),
+                )
+            },
+            std::thread::sleep,
+        )
     }
 
     fn wifi_master_enabled(&self) -> Result<bool, String> {
@@ -436,6 +461,45 @@ fn wifi_master_payload(enabled: bool, band_steering: Option<bool>) -> String {
         module.insert("lbd".into(), json!(u8::from(value)));
     }
     json!({"zte_mbb": module}).to_string()
+}
+
+fn parse_wifi_load_status(output: &[u8]) -> Result<bool, String> {
+    serde_json::from_slice::<Value>(output)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("load_status")
+                .and_then(Value::as_str)
+                .map(|status| status == "idle")
+        })
+        .ok_or_else(|| "Wi-Fi readiness source was invalid".into())
+}
+
+fn wait_for_wifi_ready_with(
+    timeout: Duration,
+    initial_delay: Duration,
+    poll_interval: Duration,
+    mut read_status: impl FnMut(Duration) -> Result<Vec<u8>, String>,
+    mut sleep: impl FnMut(Duration),
+) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    sleep(initial_delay.min(timeout));
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            return Err("Wi-Fi operation did not settle within the bounded window".into());
+        }
+        if let Ok(true) =
+            read_status(deadline - now).and_then(|output| parse_wifi_load_status(&output))
+        {
+            return Ok(());
+        }
+        let now = Instant::now();
+        if now >= deadline {
+            return Err("Wi-Fi operation did not settle within the bounded window".into());
+        }
+        sleep(poll_interval.min(deadline - now));
+    }
 }
 
 fn parse_binary_setting(value: &str, label: &str) -> Result<bool, String> {
@@ -833,6 +897,64 @@ mod tests {
             serde_json::from_str::<Value>(&wifi_master_payload(true, Some(false))).unwrap(),
             json!({"zte_mbb":{"wifi_onoff":1,"lbd":0}})
         );
+    }
+
+    #[test]
+    fn stock_wifi_readiness_uses_only_the_typed_load_status() {
+        assert_eq!(
+            parse_wifi_load_status(br#"{"load_status":"idle"}"#),
+            Ok(true)
+        );
+        assert_eq!(
+            parse_wifi_load_status(br#"{"load_status":"loading"}"#),
+            Ok(false)
+        );
+        assert!(parse_wifi_load_status(br#"{"load_status":1}"#).is_err());
+        assert!(parse_wifi_load_status(br#"{"status":"idle"}"#).is_err());
+        assert!(parse_wifi_load_status(b"not-json").is_err());
+    }
+
+    #[test]
+    fn stock_wifi_readiness_retries_transient_busy_and_source_failures() {
+        let mut responses = std::collections::VecDeque::from([
+            Err("temporary source failure".to_string()),
+            Ok(br#"{"load_status":"loading"}"#.to_vec()),
+            Ok(br#"{"load_status":"idle"}"#.to_vec()),
+        ]);
+        let mut sleeps = Vec::new();
+
+        let result = wait_for_wifi_ready_with(
+            Duration::from_secs(1),
+            Duration::ZERO,
+            Duration::ZERO,
+            |_| responses.pop_front().expect("fixed readiness sequence"),
+            |duration| sleeps.push(duration),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert!(responses.is_empty());
+        assert_eq!(sleeps.len(), 3);
+    }
+
+    #[test]
+    fn stock_wifi_readiness_timeout_is_terminal_and_bounded() {
+        let mut reads = 0;
+        let result = wait_for_wifi_ready_with(
+            Duration::ZERO,
+            Duration::ZERO,
+            Duration::ZERO,
+            |_| {
+                reads += 1;
+                Ok(br#"{"load_status":"idle"}"#.to_vec())
+            },
+            |_| {},
+        );
+
+        assert_eq!(
+            result,
+            Err("Wi-Fi operation did not settle within the bounded window".into())
+        );
+        assert_eq!(reads, 0, "no readiness command may start after its budget");
     }
 
     #[test]

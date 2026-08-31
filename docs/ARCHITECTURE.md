@@ -117,7 +117,12 @@ loopback canary is evidence for a stage, not completion of V1.
    dedicated recovery tests. The transaction derives invariant checks and saved
    rollback values from one pre-apply UCI snapshot, verifies the applied values
    with a second snapshot, and verifies restored values before clearing pending
-   recovery. Confirmed workers observe the cleared transaction record and exit
+   recovery. Each asynchronous firmware Wi-Fi phase waits, within a fixed
+   bound, for the same typed `load_status=idle` state used by the stock UI;
+   these waits are offloaded so they cannot starve the single-thread HTTPS
+   runtime. A one-slot admission permit is owned by the blocking job, including
+   after client disconnect, so overlapping Wi-Fi operations are rejected rather
+   than queued. Confirmed workers observe the cleared transaction record and exit
    promptly instead of retaining a child for the full window. Typed daily-error recovery metadata distinguishes
    a completed rollback from a still-armed transaction, so clients do not keep
    a stale local confirmation after an explicit terminal response.

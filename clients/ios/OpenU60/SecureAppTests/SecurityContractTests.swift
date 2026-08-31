@@ -95,6 +95,28 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertTrue(AgentServiceError.invalidResponse.keepsPendingWifiTransactionAfterConfirmation)
     }
 
+    func testWifiMasterFailureRefreshesOnlyAfterATerminalServerOutcome() {
+        XCTAssertTrue(
+            AgentServiceError.rejected(
+                status: 503,
+                message: "the master update was rolled back",
+                recoveryRequired: false
+            ).refreshesWifiStateAfterMasterFailure
+        )
+        XCTAssertFalse(
+            AgentServiceError.rejected(
+                status: 503,
+                message: "the master outcome is still uncertain",
+                recoveryRequired: true
+            ).refreshesWifiStateAfterMasterFailure
+        )
+        XCTAssertFalse(AgentServiceError.invalidResponse.refreshesWifiStateAfterMasterFailure)
+        XCTAssertFalse(
+            AgentServiceError.transportSecurity("certificate rejected")
+                .refreshesWifiStateAfterMasterFailure
+        )
+    }
+
     func testStockSplitSSIDUsesAVisibleSuffixWithinTheFirmwareByteLimit() {
         XCTAssertEqual(WifiSSIDPolicy.split5GHzSSID(from: "slowfast"), "slowfast_5G")
         XCTAssertEqual(

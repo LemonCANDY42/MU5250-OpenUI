@@ -272,7 +272,11 @@ explicit terminal rollback response clears the device-local pending record and
 refreshes the form immediately; only an ambiguous response loss or typed
 pending-recovery response continues the confirmation loop. The 5 GHz identity
 fields are read-only in the form while multi-band integration is enabled.
-master-off is deliberately separate because it disconnects the client and the
+An explicit terminal master-switch failure also refreshes the current dashboard
+before revising the form, so a rolled-back operation cannot leave the toggle
+showing the requested value as though it were the device state. Ambiguous
+disconnects and still-pending recovery never trigger that terminal refresh.
+Master-off is deliberately separate because it disconnects the client and the
 device's own Wi-Fi switch is its recovery control. Source and simulator
 acceptance do not establish live Wi-Fi behavior. Physical-device readback and
 recovery acceptance, stable activation, boot integration and the final soak

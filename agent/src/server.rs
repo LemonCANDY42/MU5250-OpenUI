@@ -373,9 +373,14 @@ async fn wifi_transaction_begin(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    protected_body(&state, &headers, Scope::Daily, body, |body| {
-        api_v1::wifi_transaction_begin(&state, body)
-    })
+    protected_body_blocking(
+        state,
+        &headers,
+        Scope::Daily,
+        body,
+        api_v1::wifi_transaction_begin,
+    )
+    .await
 }
 
 async fn wifi_master_update(
@@ -383,9 +388,14 @@ async fn wifi_master_update(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    protected_body(&state, &headers, Scope::Daily, body, |body| {
-        api_v1::wifi_master_update(&state, body)
-    })
+    protected_body_blocking(
+        state,
+        &headers,
+        Scope::Daily,
+        body,
+        api_v1::wifi_master_update,
+    )
+    .await
 }
 
 async fn wifi_transaction_confirm(
@@ -393,9 +403,14 @@ async fn wifi_transaction_confirm(
     headers: HeaderMap,
     body: Result<Bytes, BytesRejection>,
 ) -> Response {
-    protected_body(&state, &headers, Scope::Daily, body, |body| {
-        api_v1::wifi_transaction_confirm(&state, body)
-    })
+    protected_body_blocking(
+        state,
+        &headers,
+        Scope::Daily,
+        body,
+        api_v1::wifi_transaction_confirm,
+    )
+    .await
 }
 
 async fn password_session(
@@ -517,6 +532,57 @@ fn protected_body(
     value_response(operation(&body))
 }
 
+async fn protected_body_blocking(
+    state: AppState,
+    headers: &HeaderMap,
+    scope: Scope,
+    body: Result<Bytes, BytesRejection>,
+    operation: fn(&AppState, &[u8]) -> (u16, Value),
+) -> Response {
+    if let Err(error) = authorize(&state, headers, scope) {
+        return value_response(handlers::failure(error));
+    }
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    let permit = match Arc::clone(&state.wifi_operation_admission).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return value_response((
+                503,
+                json!({"ok": false, "error": {
+                    "code": "source_unavailable",
+                    "message": "another Wi-Fi operation is already in progress",
+                    "recovery": {
+                        "required": true,
+                        "action": "wait for the current Wi-Fi operation to finish before retrying"
+                    }
+                }}),
+            ));
+        }
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation(&state, &body)
+    })
+    .await
+    {
+        Ok(result) => value_response(result),
+        Err(_) => value_response((
+            503,
+            json!({"ok": false, "error": {
+                "code": "source_unavailable",
+                "message": "Wi-Fi operation result is unavailable",
+                "recovery": {
+                    "required": true,
+                    "action": "check the current Wi-Fi state before retrying"
+                }
+            }}),
+        )),
+    }
+}
+
 fn authorize(state: &AppState, headers: &HeaderMap, scope: Scope) -> Result<(), AuthFailure> {
     let token = headers
         .get(AUTHORIZATION)
@@ -620,13 +686,87 @@ fn value_response((status, body): (u16, Value)) -> Response {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+    use std::net::Ipv4Addr;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
     use axum::body::{to_bytes, Body};
     use axum::http::{Method, Request};
     use tower::ServiceExt;
 
     use super::*;
     use crate::auth::AuthService;
+    use crate::b04_io::{
+        B04Io, UbusRead, UbusWrite, WifiClientLinkSource, WifiField, WifiInterface,
+    };
+    use crate::daily::DailyService;
     use crate::state_store::StateStore;
+
+    struct SlowWifiIo {
+        master_enabled: AtomicBool,
+        readiness_started: Arc<AtomicBool>,
+    }
+
+    impl B04Io for SlowWifiIo {
+        fn ubus_read(&self, _operation: UbusRead) -> Result<Value, String> {
+            Err("unused".into())
+        }
+
+        fn ubus_write(&self, _operation: UbusWrite) -> Result<Value, String> {
+            Err("unused".into())
+        }
+
+        fn wireless_config(&self) -> Result<BTreeMap<String, String>, String> {
+            Err("unused".into())
+        }
+
+        fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String> {
+            Err("unused".into())
+        }
+
+        fn station_count(&self, _interface: WifiInterface) -> Result<u32, String> {
+            Err("unused".into())
+        }
+
+        fn active_wifi_channel(&self, _interface: WifiInterface) -> Result<u16, String> {
+            Err("unused".into())
+        }
+
+        fn current_client_link(&self, _peer: Ipv4Addr) -> Result<WifiClientLinkSource, String> {
+            Err("unused".into())
+        }
+
+        fn wifi_values(
+            &self,
+            _fields: &[WifiField],
+        ) -> Result<BTreeMap<WifiField, String>, String> {
+            Err("unused".into())
+        }
+
+        fn apply_wifi_values(&self, _values: &BTreeMap<WifiField, String>) -> Result<(), String> {
+            Err("unused".into())
+        }
+
+        fn wait_for_wifi_ready(&self) -> Result<(), String> {
+            self.readiness_started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        }
+
+        fn wifi_master_enabled(&self) -> Result<bool, String> {
+            Ok(self.master_enabled.load(Ordering::SeqCst))
+        }
+
+        fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String> {
+            self.master_enabled.store(enabled, Ordering::SeqCst);
+            Ok(())
+        }
+
+        fn battery_capacity(&self) -> Result<u8, String> {
+            Err("unused".into())
+        }
+    }
 
     fn state() -> (tempfile::TempDir, AppState) {
         let temp = tempfile::tempdir().unwrap();
@@ -644,6 +784,19 @@ mod tests {
         request
             .extensions_mut()
             .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 41234))));
+        request
+    }
+
+    fn authorized_request(
+        method: Method,
+        path: &str,
+        body: &'static str,
+        token: &str,
+    ) -> Request<Body> {
+        let mut request = request(method, path, body);
+        request
+            .headers_mut()
+            .insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
         request
     }
 
@@ -831,6 +984,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn wifi_settle_wait_does_not_block_other_api_responses() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let auth = AuthService::open(store.clone()).unwrap();
+        let password = "host test management password";
+        auth.set_password(password).unwrap();
+        let token = auth.password_session(password, "127.0.0.1").unwrap().token;
+        let readiness_started = Arc::new(AtomicBool::new(false));
+        let daily = DailyService::with_test_io(
+            store,
+            Arc::new(SlowWifiIo {
+                master_enabled: AtomicBool::new(true),
+                readiness_started: Arc::clone(&readiness_started),
+            }),
+        )
+        .unwrap();
+        let app = router_with_web_root(AppState::with_daily(auth, daily), None);
+        let started_at = Instant::now();
+        let update = tokio::spawn(app.clone().oneshot(authorized_request(
+            Method::POST,
+            "/v1/wifi/master",
+            r#"{"enabled":false}"#,
+            &token,
+        )));
+
+        while !readiness_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let response = app
+            .oneshot(authorized_request(Method::GET, "/v1/device", "", &token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            started_at.elapsed() < Duration::from_millis(200),
+            "a Wi-Fi settle wait starved the single-thread API runtime"
+        );
+        assert_eq!(update.await.unwrap().unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn overlapping_wifi_operations_fail_closed_without_queueing_hardware_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let auth = AuthService::open(store.clone()).unwrap();
+        let password = "host test management password";
+        auth.set_password(password).unwrap();
+        let token = auth.password_session(password, "127.0.0.1").unwrap().token;
+        let readiness_started = Arc::new(AtomicBool::new(false));
+        let daily = DailyService::with_test_io(
+            store,
+            Arc::new(SlowWifiIo {
+                master_enabled: AtomicBool::new(true),
+                readiness_started: Arc::clone(&readiness_started),
+            }),
+        )
+        .unwrap();
+        let app = router_with_web_root(AppState::with_daily(auth, daily), None);
+        let first = tokio::spawn(app.clone().oneshot(authorized_request(
+            Method::POST,
+            "/v1/wifi/master",
+            r#"{"enabled":false}"#,
+            &token,
+        )));
+
+        while !readiness_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let started_at = Instant::now();
+        let second = app
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/wifi/master",
+                r#"{"enabled":true}"#,
+                &token,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            started_at.elapsed() < Duration::from_millis(200),
+            "an overlapping Wi-Fi operation queued behind active hardware work"
+        );
+        let body = to_bytes(second.into_body(), 8 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["recovery"]["required"], true);
+        assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
     }
 
     #[tokio::test]

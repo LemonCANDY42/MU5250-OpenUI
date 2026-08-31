@@ -40,6 +40,15 @@ enum AgentServiceError: LocalizedError {
             true
         }
     }
+
+    var refreshesWifiStateAfterMasterFailure: Bool {
+        switch self {
+        case let .rejected(status, _, recoveryRequired):
+            (status == 400 || status == 503) && !recoveryRequired
+        case .authenticationRequired, .invalidResponse, .transportSecurity:
+            false
+        }
+    }
 }
 
 enum WifiSSIDPolicy {

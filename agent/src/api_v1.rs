@@ -989,6 +989,7 @@ mod tests {
             adapter: lifecycle_adapter.clone(),
             daily: None,
             dashboard_admission: Arc::clone(&state.dashboard_admission),
+            wifi_operation_admission: Arc::clone(&state.wifi_operation_admission),
         };
         drop(lifecycle_adapter);
         let lifecycle_response =

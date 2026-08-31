@@ -214,6 +214,15 @@ final class AppModel {
             } else {
                 errorMessage = error.localizedDescription
             }
+            if (error as? AgentServiceError)?.refreshesWifiStateAfterMasterFailure == true {
+                do {
+                    try await refreshThrowing()
+                    wifiSettingsRevision &+= 1
+                } catch {
+                    // The structured failure is terminal. Preserve it while a
+                    // later dashboard refresh reconciles the form if needed.
+                }
+            }
         }
     }
 

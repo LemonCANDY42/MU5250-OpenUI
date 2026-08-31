@@ -13,6 +13,7 @@ pub struct AppState {
     pub adapter: Arc<dyn DeviceAdapter>,
     pub daily: Option<Arc<DailyService>>,
     pub dashboard_admission: Arc<Semaphore>,
+    pub wifi_operation_admission: Arc<Semaphore>,
 }
 
 impl Clone for AppState {
@@ -22,6 +23,7 @@ impl Clone for AppState {
             adapter: Arc::clone(&self.adapter),
             daily: self.daily.as_ref().map(Arc::clone),
             dashboard_admission: Arc::clone(&self.dashboard_admission),
+            wifi_operation_admission: Arc::clone(&self.wifi_operation_admission),
         }
     }
 }
@@ -39,6 +41,7 @@ impl AppState {
             adapter,
             daily: None,
             dashboard_admission: Arc::new(Semaphore::new(1)),
+            wifi_operation_admission: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -48,6 +51,7 @@ impl AppState {
             adapter: Arc::new(B04Adapter::new()),
             daily: Some(Arc::new(daily)),
             dashboard_admission: Arc::new(Semaphore::new(1)),
+            wifi_operation_admission: Arc::new(Semaphore::new(1)),
         }
     }
 }
