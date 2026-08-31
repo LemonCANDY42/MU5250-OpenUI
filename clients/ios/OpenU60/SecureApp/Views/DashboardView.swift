@@ -107,6 +107,56 @@ private struct DashboardTelemetrySeries: Identifiable {
     let segments: [TelemetryChartSegment]
 }
 
+struct BatteryCapacityPresentation: Equatable {
+    let displayedPercent: Int
+    let fuelGaugePercent: Int?
+}
+
+func batteryCapacityPresentation(
+    fuelGaugePercent: Int,
+    deviceDisplayPercent: Int?
+) -> BatteryCapacityPresentation {
+    guard let deviceDisplayPercent, deviceDisplayPercent != fuelGaugePercent else {
+        return BatteryCapacityPresentation(
+            displayedPercent: fuelGaugePercent,
+            fuelGaugePercent: nil
+        )
+    }
+    return BatteryCapacityPresentation(
+        displayedPercent: deviceDisplayPercent,
+        fuelGaugePercent: fuelGaugePercent
+    )
+}
+
+private struct BatteryProtectionStatusRow: View {
+    @State private var showsExplanation = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text("Protection state")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("Battery long-charge protection")
+                .multilineTextAlignment(.trailing)
+            Button {
+                showsExplanation = true
+            } label: {
+                Image(systemName: "info.circle")
+            }
+            .buttonStyle(.plain)
+            .frame(minWidth: 44, minHeight: 44)
+            .contentShape(.rect)
+            .accessibilityLabel("About battery long-charge protection")
+        }
+        .font(.subheadline)
+        .alert("Battery long-charge protection", isPresented: $showsExplanation) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("When the U60 stays connected to power for a long time, stock firmware can hold the fuel-gauge capacity near 80% while showing 100% to indicate that the protection target is complete. OpenU60 keeps using the fuel-gauge value for history and runtime estimates. Stock firmware says reconnecting the charger exits this mode.")
+        }
+    }
+}
+
 struct DashboardView: View {
     let model: AppModel
     @State private var sectionOrder = DashboardSection.allCases
@@ -491,6 +541,10 @@ struct DashboardView: View {
     }
 
     private func batteryCard(_ battery: Components.Schemas.BatteryStatus) -> some View {
+        let capacity = batteryCapacityPresentation(
+            fuelGaugePercent: battery.capacityPercent,
+            deviceDisplayPercent: battery.deviceUiCapacityPercent
+        )
         let batterySegments = telemetrySegments { sample in
             sample.batteryPercent.map(Double.init)
         }
@@ -498,10 +552,18 @@ struct DashboardView: View {
         return statusCard(
             id: DashboardSection.battery.rawValue,
             title: "Battery",
-            icon: batteryIcon(battery.capacityPercent),
-            tint: batteryColor(battery.capacityPercent)
+            icon: batteryIcon(capacity.displayedPercent),
+            tint: batteryColor(capacity.displayedPercent)
         ) {
-            metric("Capacity", "\(battery.capacityPercent)%")
+            if let fuelGaugePercent = capacity.fuelGaugePercent {
+                metric("Device display capacity", "\(capacity.displayedPercent)%")
+                metric("Fuel-gauge capacity", "\(fuelGaugePercent)%")
+            } else {
+                metric("Capacity", "\(capacity.displayedPercent)%")
+            }
+            if battery.protectionMode == .longCharging {
+                BatteryProtectionStatusRow()
+            }
             metric("State", localizedBatteryState(battery.state))
             metric("Voltage", String(format: "%.3f V", Double(battery.voltageMv) / 1000))
             metric("Current", "\(battery.currentMa) mA")

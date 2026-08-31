@@ -31,7 +31,7 @@ It displays:
 - normalized device identity;
 - capability status and recovery metadata;
 - system uptime, kernel and load average, plus optional current CPU, memory and fixed `/data` storage usage;
-- battery state, capacity, voltage, current, derived instantaneous power and temperature, plus optional validated health, cycle, capacity and kernel-estimate details;
+- battery state, real fuel-gauge capacity, voltage, current, derived instantaneous power and temperature, plus optional stock display capacity, recognized protection mode, validated health, cycle, capacity and kernel-estimate details;
 - validated thermal sensors.
 
 An unsupported capability is shown explicitly. A degraded capability retains
@@ -62,7 +62,11 @@ read earlier V1 agents. The existing Wi-Fi card shows router-observed RSSI and
 rates when the request peer has one unique DHCP-to-station correlation. An
 unmatched or ambiguous peer leaves the optional context absent without failing
 Wi-Fi status. New system and battery fields are optional so the dashboard still
-accepts earlier V1 agents. The signed battery charge counter is labeled as a
+accepts earlier V1 agents. Optional stock display capacity is bounded to 0–100,
+and only the recognized `long_charging` protection value is accepted; malformed
+optional values reject the affected battery panel instead of being guessed.
+The required fuel-gauge capacity remains the history and runtime source. The
+signed battery charge counter is labeled as a
 relative kernel counter rather than remaining capacity, and applicable time
 values are labeled as kernel estimates; a zero time-to-full at the charging/full
 boundary is shown as complete, while estimates beyond the 30-day plausibility

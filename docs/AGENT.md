@@ -17,7 +17,7 @@ authentication paths:
 | `GET /v1/capabilities` | `available`, `degraded` or `unsupported` state plus reason/recovery metadata |
 | `GET /v1/status/dashboard` | One partial-success snapshot containing the capability report, all available normalized status values, optional charging status and independent typed component failures |
 | `GET /v1/status/system` | Hostname, kernel, uptime and load average, with optional current CPU, memory and `/data` storage metrics |
-| `GET /v1/status/battery` | Normalized capacity, voltage, current, derived battery-side power, temperature and state, with optional validated health, cycle, capacity-counter and kernel-estimate fields |
+| `GET /v1/status/battery` | Real fuel-gauge capacity, voltage, current, derived battery-side power, temperature and state, with optional stock display capacity, recognized protection mode, validated health, cycle, capacity-counter and kernel-estimate fields |
 | `GET /v1/status/thermal` | Validated readings from the fixed B04 sensor map |
 | `GET /v1/status/signal` | Normalized LTE/NR signal and serving-band state |
 | `GET /v1/status/cellular` | Bounded WAN connection and address state |
@@ -95,6 +95,15 @@ plausibility window so maximum-value sentinels and near-zero-current artefacts
 are not presented as durations:
 discharging may report time to empty, charging may report time to full, and full
 may report only a completed zero time to full. Zero is a valid boundary value.
+
+The adapter also makes one fixed, read-only stock device-manager query for the
+optional B04 UI percentage and battery mode. Only a percentage from 0 through
+100 is accepted, and only the proven mode value is normalized to
+`long_charging`; unknown, malformed or unavailable stock data is omitted without
+failing the required kernel fuel-gauge status. The kernel `capacity_percent`
+remains authoritative for telemetry and runtime estimation, while
+`device_ui_capacity_percent` explains why the stock screen or webpage can show
+100% during protection when the real fuel-gauge value remains near 80%.
 
 System metrics are likewise optional. CPU usage is derived without sleeping or
 a background worker from consecutive aggregate `/proc/stat` samples, with

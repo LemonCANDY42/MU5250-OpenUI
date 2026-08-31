@@ -141,6 +141,14 @@ When both capacity fields are available, it derives battery health as learned
 full capacity divided by design capacity without capping the result at 100%; it
 keeps the kernel-reported condition as a separate status and omits the derived
 percentage when either input is unavailable or invalid.
+The required battery percentage remains the real kernel fuel-gauge value. When
+the optional stock-device percentage differs, the card shows both the stock
+device display percentage and the fuel-gauge percentage instead of silently
+choosing one. A recognized long-charge protection mode adds a named status row
+with a native, accessible information button explaining the expected 100% stock
+display versus approximately 80% fuel-gauge behavior and the stock reconnect-
+charger exit guidance. Older agents omit these optional fields and retain the
+single-capacity presentation.
 The signed charge counter is explicitly labeled as relative, never as remaining
 capacity, and is not charted. Zero time-to-full at the charging/full boundary is
 shown as complete; other kernel estimates are omitted beyond the 30-day
@@ -148,7 +156,7 @@ plausibility window.
 
 While the battery is discharging, the native app also derives two local runtime
 estimates without adding any agent endpoint, background sampler or Web feature.
-It uses only the current battery percentage, learned full capacity (falling back
+It uses only the real fuel-gauge battery percentage, learned full capacity (falling back
 to design capacity) and signed instantaneous current already returned by V1.
 The first preliminary result can appear after at least one minute and three
 continuous discharge samples. During this early window, samples use ten-second

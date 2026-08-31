@@ -998,6 +998,20 @@ components:
           type: integer
           minimum: 0
           maximum: 100
+          description: >-
+            Real battery state of charge from the standard kernel fuel-gauge
+            source. This value remains authoritative for history and runtime
+            estimates and can differ from the stock B04 user-interface value.
+        device_ui_capacity_percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+          description: >-
+            Optional percentage reported by the stock B04 user-interface API.
+            In long-charge protection mode it can report 100 while the kernel
+            fuel gauge intentionally remains near 80.
+        protection_mode:
+          $ref: "#/components/schemas/BatteryProtectionMode"
         voltage_mv:
           type: integer
         current_ma:
@@ -1057,6 +1071,13 @@ components:
             Kernel estimate exposed only while charging, or as zero when full.
             Values beyond the bounded 30-day plausibility window are omitted.
             Zero is a valid completed boundary; this is not a client-derived forecast.
+    BatteryProtectionMode:
+      type: string
+      enum:
+        - long_charging
+      description: >-
+        Recognized stock B04 battery protection state. Unknown or malformed
+        vendor modes are omitted rather than forwarded through the V1 API.
     BatteryHealth:
       type: string
       enum:

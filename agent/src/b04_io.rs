@@ -25,6 +25,7 @@ pub enum UbusRead {
     SmsList { page: u16, per_page: u16 },
     SmsCommandStatus { command: u8 },
     ChargerStatus,
+    BatteryDisplayInfo,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,60 +170,70 @@ impl SystemB04Io {
     }
 }
 
+fn ubus_read_spec(operation: UbusRead) -> (&'static str, &'static str, &'static str, Value) {
+    match operation {
+        UbusRead::NetworkInfo => (
+            "network information",
+            "zte_nwinfo_api",
+            "nwinfo_get_netinfo",
+            json!({}),
+        ),
+        UbusRead::WanStatus => (
+            "WAN status",
+            "network.interface.zte_wan",
+            "status",
+            json!({}),
+        ),
+        UbusRead::DataUsage => (
+            "traffic usage",
+            "zwrt_data",
+            "get_wwandst",
+            json!({"source_module":"web","cid":1,"type":4}),
+        ),
+        UbusRead::DataCycle => (
+            "traffic cycle",
+            "zwrt_data",
+            "get_wwandst_clearday",
+            json!({"source_module":"web","cid":1,"type":4}),
+        ),
+        UbusRead::WifiReport => ("Wi-Fi report", "zwrt_wlan", "report", json!({})),
+        UbusRead::DhcpLeases => (
+            "LAN clients",
+            "luci-rpc",
+            "getDHCPLeases",
+            json!({"family":4}),
+        ),
+        UbusRead::SmsList { page, per_page } => (
+            "SMS list",
+            "zwrt_wms",
+            "zte_libwms_get_sms_data",
+            json!({
+                "page": page,
+                "data_per_page": per_page,
+                "mem_store": 1,
+                "tags": 10,
+                "order_by": "order by id desc"
+            }),
+        ),
+        UbusRead::SmsCommandStatus { command } => (
+            "SMS command status",
+            "zwrt_wms",
+            "zwrt_wms_get_cmd_status",
+            json!({"sms_cmd": command}),
+        ),
+        UbusRead::ChargerStatus => ("charger status", "zwrt_bsp.charger", "list", json!({})),
+        UbusRead::BatteryDisplayInfo => (
+            "battery display information",
+            "zwrt_mc.device.manager",
+            "get_device_info",
+            json!({"deviceInfoList":["bat_percent","bat_mode"]}),
+        ),
+    }
+}
+
 impl B04Io for SystemB04Io {
     fn ubus_read(&self, operation: UbusRead) -> Result<Value, String> {
-        let (label, object, method, payload) = match operation {
-            UbusRead::NetworkInfo => (
-                "network information",
-                "zte_nwinfo_api",
-                "nwinfo_get_netinfo",
-                json!({}),
-            ),
-            UbusRead::WanStatus => (
-                "WAN status",
-                "network.interface.zte_wan",
-                "status",
-                json!({}),
-            ),
-            UbusRead::DataUsage => (
-                "traffic usage",
-                "zwrt_data",
-                "get_wwandst",
-                json!({"source_module":"web","cid":1,"type":4}),
-            ),
-            UbusRead::DataCycle => (
-                "traffic cycle",
-                "zwrt_data",
-                "get_wwandst_clearday",
-                json!({"source_module":"web","cid":1,"type":4}),
-            ),
-            UbusRead::WifiReport => ("Wi-Fi report", "zwrt_wlan", "report", json!({})),
-            UbusRead::DhcpLeases => (
-                "LAN clients",
-                "luci-rpc",
-                "getDHCPLeases",
-                json!({"family":4}),
-            ),
-            UbusRead::SmsList { page, per_page } => (
-                "SMS list",
-                "zwrt_wms",
-                "zte_libwms_get_sms_data",
-                json!({
-                    "page": page,
-                    "data_per_page": per_page,
-                    "mem_store": 1,
-                    "tags": 10,
-                    "order_by": "order by id desc"
-                }),
-            ),
-            UbusRead::SmsCommandStatus { command } => (
-                "SMS command status",
-                "zwrt_wms",
-                "zwrt_wms_get_cmd_status",
-                json!({"sms_cmd": command}),
-            ),
-            UbusRead::ChargerStatus => ("charger status", "zwrt_bsp.charger", "list", json!({})),
-        };
+        let (label, object, method, payload) = ubus_read_spec(operation);
         let payload = payload.to_string();
         let output = run_fixed(label, "ubus", &["call", object, method, &payload])?;
         parse_ubus_write_response(label, &output)
@@ -780,8 +791,21 @@ mod tests {
             },
             UbusRead::SmsCommandStatus { command: 4 },
             UbusRead::ChargerStatus,
+            UbusRead::BatteryDisplayInfo,
         ];
-        assert_eq!(operations.len(), 9);
+        assert_eq!(operations.len(), 10);
+    }
+
+    #[test]
+    fn battery_display_read_uses_only_the_proven_stock_fields() {
+        let (label, object, method, payload) = ubus_read_spec(UbusRead::BatteryDisplayInfo);
+        assert_eq!(label, "battery display information");
+        assert_eq!(object, "zwrt_mc.device.manager");
+        assert_eq!(method, "get_device_info");
+        assert_eq!(
+            payload,
+            json!({"deviceInfoList":["bat_percent","bat_mode"]})
+        );
     }
 
     #[test]

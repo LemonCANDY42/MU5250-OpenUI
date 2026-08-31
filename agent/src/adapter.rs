@@ -121,6 +121,10 @@ pub enum BatteryHealth {
 pub struct BatteryStatus {
     pub state: String,
     pub capacity_percent: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_ui_capacity_percent: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protection_mode: Option<BatteryProtectionMode>,
     pub voltage_mv: i64,
     pub current_ma: i64,
     pub power_mw: i64,
@@ -139,6 +143,12 @@ pub struct BatteryStatus {
     pub time_to_empty_seconds: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_to_full_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BatteryProtectionMode {
+    LongCharging,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -417,6 +427,12 @@ struct BatteryExtensions {
     time_to_full_seconds: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct StockBatteryDisplay {
+    device_ui_capacity_percent: Option<i64>,
+    protection_mode: Option<BatteryProtectionMode>,
+}
+
 impl B04Adapter {
     pub fn new() -> Self {
         Self {
@@ -685,9 +701,17 @@ impl DeviceAdapter for B04Adapter {
                 }
             })?;
         let extensions = read_battery_extensions(&battery.status);
+        let stock_display = self
+            .io
+            .ubus_read(UbusRead::BatteryDisplayInfo)
+            .ok()
+            .map(|value| normalize_stock_battery_display(&value))
+            .unwrap_or_default();
         Ok(BatteryStatus {
             state: battery.status,
             capacity_percent: battery.capacity,
+            device_ui_capacity_percent: stock_display.device_ui_capacity_percent,
+            protection_mode: stock_display.protection_mode,
             voltage_mv: battery.voltage_uv / 1000,
             current_ma: battery.current_ua / 1000,
             power_mw,
@@ -1357,6 +1381,17 @@ fn value_i64(value: Option<&Value>) -> Option<i64> {
     }
 }
 
+fn normalize_stock_battery_display(value: &Value) -> StockBatteryDisplay {
+    StockBatteryDisplay {
+        device_ui_capacity_percent: value_i64(value.get("bat_percent"))
+            .filter(|percent| (0..=100).contains(percent)),
+        protection_mode: match value_i64(value.get("bat_mode")) {
+            Some(2) => Some(BatteryProtectionMode::LongCharging),
+            _ => None,
+        },
+    }
+}
+
 fn value_f64(value: Option<&Value>) -> Option<f64> {
     match value? {
         Value::Number(number) => number.as_f64(),
@@ -1819,6 +1854,34 @@ mod tests {
         assert_eq!(battery_power_mw(4_000_000, -500_000), Some(-2_000));
         assert_eq!(battery_power_mw(4_000_000, 0), Some(0));
         assert_eq!(battery_power_mw(i64::MAX, i64::MAX), None);
+    }
+
+    #[test]
+    fn stock_battery_display_normalization_is_bounded_and_mode_specific() {
+        let display = normalize_stock_battery_display(&json!({
+            "bat_percent": "100",
+            "bat_mode": "2",
+        }));
+        assert_eq!(display.device_ui_capacity_percent, Some(100));
+        assert_eq!(
+            display.protection_mode,
+            Some(BatteryProtectionMode::LongCharging)
+        );
+
+        let invalid = normalize_stock_battery_display(&json!({
+            "bat_percent": 101,
+            "bat_mode": 7,
+        }));
+        assert_eq!(invalid.device_ui_capacity_percent, None);
+        assert_eq!(invalid.protection_mode, None);
+
+        assert_eq!(
+            normalize_stock_battery_display(&json!({
+                "bat_percent": "not-a-number",
+                "bat_mode": null,
+            })),
+            StockBatteryDisplay::default()
+        );
     }
 
     #[test]

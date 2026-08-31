@@ -543,7 +543,11 @@ export interface components {
         };
         readonly BatteryStatus: {
             readonly state: string;
+            /** @description Real battery state of charge from the standard kernel fuel-gauge source. This value remains authoritative for history and runtime estimates and can differ from the stock B04 user-interface value. */
             readonly capacity_percent: number;
+            /** @description Optional percentage reported by the stock B04 user-interface API. In long-charge protection mode it can report 100 while the kernel fuel gauge intentionally remains near 80. */
+            readonly device_ui_capacity_percent?: number;
+            readonly protection_mode?: components["schemas"]["BatteryProtectionMode"];
             readonly voltage_mv: number;
             readonly current_ma: number;
             /** @description Signed instantaneous battery-side power derived from the fixed B04 voltage_now and current_now sources. The sign follows current_ma; this is not USB input or wall power. */
@@ -563,6 +567,11 @@ export interface components {
             /** @description Kernel estimate exposed only while charging, or as zero when full. Values beyond the bounded 30-day plausibility window are omitted. Zero is a valid completed boundary; this is not a client-derived forecast. */
             readonly time_to_full_seconds?: number;
         };
+        /**
+         * @description Recognized stock B04 battery protection state. Unknown or malformed vendor modes are omitted rather than forwarded through the V1 API.
+         * @enum {string}
+         */
+        readonly BatteryProtectionMode: "long_charging";
         /** @enum {string} */
         readonly BatteryHealth: "good" | "overheat" | "dead" | "over_voltage" | "under_voltage" | "unspecified_failure" | "cold" | "watchdog_timer_expire" | "safety_timer_expire" | "over_current" | "calibration_required" | "warm" | "cool" | "hot" | "no_battery" | "blown_fuse" | "cell_imbalance";
         readonly ThermalStatusResponse: {

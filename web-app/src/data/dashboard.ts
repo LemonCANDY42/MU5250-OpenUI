@@ -263,6 +263,8 @@ function parseBattery(value: unknown): V1BatteryStatus {
     typeof value.state !== 'string' ||
     !isNonNegativeInteger(value.capacity_percent) ||
     value.capacity_percent > 100 ||
+    !optionalBoundedInteger(value.device_ui_capacity_percent, 0, 100) ||
+    (value.protection_mode !== undefined && value.protection_mode !== 'long_charging') ||
     !Number.isInteger(value.voltage_mv) ||
     !Number.isInteger(value.current_ma) ||
     !Number.isInteger(value.power_mw) ||

@@ -73,6 +73,8 @@ describe('capability-driven dashboard loading', () => {
     delete battery.design_capacity_mah
     delete battery.charge_counter_mah
     delete battery.time_to_full_seconds
+    delete battery.device_ui_capacity_percent
+    delete battery.protection_mode
     getJsonMock.mockImplementation(async (path) => responses[path])
 
     await expect(loadDashboard()).resolves.toBeDefined()
@@ -112,6 +114,14 @@ describe('capability-driven dashboard loading', () => {
         const battery = responses['/v1/status/battery'] as Record<string, unknown>
         battery.state = 'Full'
         battery.time_to_full_seconds = 1
+      },
+      (responses) => {
+        const battery = responses['/v1/status/battery'] as Record<string, unknown>
+        battery.device_ui_capacity_percent = 101
+      },
+      (responses) => {
+        const battery = responses['/v1/status/battery'] as Record<string, unknown>
+        battery.protection_mode = 'unknown_mode'
       },
     ]
 
@@ -230,6 +240,8 @@ function fixtures(overrides: Partial<Record<string, CapabilityState>>): Record<s
     '/v1/status/battery': {
       state: 'charging',
       capacity_percent: 80,
+      device_ui_capacity_percent: 100,
+      protection_mode: 'long_charging',
       voltage_mv: 4000,
       current_ma: 100,
       power_mw: 400,

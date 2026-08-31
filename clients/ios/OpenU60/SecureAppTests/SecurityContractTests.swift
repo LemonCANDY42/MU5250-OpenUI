@@ -458,6 +458,35 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertNil(battery.cycleCount)
         XCTAssertNil(battery.learnedFullCapacityMah)
         XCTAssertNil(battery.timeToFullSeconds)
+        XCTAssertNil(battery.deviceUiCapacityPercent)
+        XCTAssertNil(battery.protectionMode)
+    }
+
+    func testBatteryCapacityPresentationSeparatesStockDisplayFromFuelGaugeOnlyWhenNeeded() throws {
+        let battery = try JSONDecoder().decode(
+            Components.Schemas.BatteryStatus.self,
+            from: Data(
+                #"{"state":"Charging","capacity_percent":80,"device_ui_capacity_percent":100,"protection_mode":"long_charging","voltage_mv":4173,"current_ma":-2,"power_mw":-8,"temperature_c":35}"#.utf8
+            )
+        )
+
+        XCTAssertEqual(battery.deviceUiCapacityPercent, 100)
+        XCTAssertEqual(battery.protectionMode, .longCharging)
+        XCTAssertEqual(
+            batteryCapacityPresentation(
+                fuelGaugePercent: battery.capacityPercent,
+                deviceDisplayPercent: battery.deviceUiCapacityPercent
+            ),
+            BatteryCapacityPresentation(displayedPercent: 100, fuelGaugePercent: 80)
+        )
+        XCTAssertEqual(
+            batteryCapacityPresentation(fuelGaugePercent: 80, deviceDisplayPercent: 80),
+            BatteryCapacityPresentation(displayedPercent: 80, fuelGaugePercent: nil)
+        )
+        XCTAssertEqual(
+            batteryCapacityPresentation(fuelGaugePercent: 80, deviceDisplayPercent: nil),
+            BatteryCapacityPresentation(displayedPercent: 80, fuelGaugePercent: nil)
+        )
     }
 
     func testBatteryCapacityHealthUsesDesignCapacityWithoutClamping() throws {
