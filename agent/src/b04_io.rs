@@ -135,6 +135,13 @@ impl WifiField {
             .strip_prefix("wireless.")
             .expect("all Wi-Fi fields belong to the fixed wireless package")
     }
+
+    fn is_writable(self) -> bool {
+        !matches!(
+            self,
+            Self::BandSteeringEnabled | Self::SettingsSync2g | Self::SettingsSync5g
+        )
+    }
 }
 
 pub trait B04Io: Send + Sync {
@@ -150,8 +157,6 @@ pub trait B04Io: Send + Sync {
     fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String>;
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String>;
     fn wait_for_wifi_ready(&self) -> Result<(), String>;
-    fn wifi_master_enabled(&self) -> Result<bool, String>;
-    fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String>;
     fn battery_capacity(&self) -> Result<u8, String>;
 }
 
@@ -333,22 +338,11 @@ impl B04Io for SystemB04Io {
     }
 
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
-        let band_steering = values
-            .get(&WifiField::BandSteeringEnabled)
-            .map(|value| parse_binary_setting(value, "band steering"))
-            .transpose()?;
-        // Preserve a valid firmware invariant throughout the transition:
-        // coordination is removed before identities split, but is enabled
-        // only after both primary identities and sync flags converge.
-        if band_steering == Some(false) {
-            self.apply_band_steering(false)?;
-            self.wait_for_wifi_ready()?;
+        if values.keys().any(|field| !field.is_writable()) {
+            return Err("stock Wi-Fi coordination settings are read-only".into());
         }
-        let uci_values = values
-            .iter()
-            .filter(|(field, _)| **field != WifiField::BandSteeringEnabled);
         let mut uci_changed = false;
-        for (field, value) in uci_values {
+        for (field, value) in values {
             let assignment = format!("{}={value}", field.uci_path());
             if let Err(error) = run_fixed("Wi-Fi setting", "uci", &["set", &assignment]) {
                 let _ = run_fixed("Wi-Fi revert", "uci", &["revert", "wireless"]);
@@ -367,12 +361,6 @@ impl B04Io for SystemB04Io {
                 &["call", "zwrt_wlan", "reload", "{}"],
             )?;
             parse_ubus_write_response("Wi-Fi reload", &output)?;
-        }
-        if band_steering == Some(true) {
-            if uci_changed {
-                self.wait_for_wifi_ready()?;
-            }
-            self.apply_band_steering(true)?;
         }
         Ok(())
     }
@@ -394,43 +382,6 @@ impl B04Io for SystemB04Io {
         )
     }
 
-    fn wifi_master_enabled(&self) -> Result<bool, String> {
-        let output = run_fixed(
-            "Wi-Fi master setting",
-            "uci",
-            &["-q", "get", "wireless.zte_mbb.wifi_onoff"],
-        )?;
-        match output.as_slice() {
-            b"0\n" | b"0\r\n" | b"0" => Ok(false),
-            b"1\n" | b"1\r\n" | b"1" => Ok(true),
-            _ => Err("Wi-Fi master setting was invalid".into()),
-        }
-    }
-
-    fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String> {
-        let band_steering = if enabled {
-            let output = run_fixed(
-                "band steering setting",
-                "uci",
-                &["-q", "get", "wireless.zte_mbb.lbd"],
-            )?;
-            match output.as_slice() {
-                b"0\n" | b"0\r\n" | b"0" => Some(false),
-                b"1\n" | b"1\r\n" | b"1" => Some(true),
-                _ => return Err("band steering setting was invalid".into()),
-            }
-        } else {
-            None
-        };
-        let payload = wifi_master_payload(enabled, band_steering);
-        let output = run_fixed(
-            "Wi-Fi master update",
-            "ubus",
-            &["call", "zwrt_wlan", "set", &payload],
-        )?;
-        parse_ubus_write_response("Wi-Fi master update", &output).map(|_| ())
-    }
-
     fn battery_capacity(&self) -> Result<u8, String> {
         let value = std::fs::read_to_string("/sys/class/power_supply/battery/capacity")
             .map_err(|_| "battery capacity source is unavailable".to_string())?;
@@ -441,26 +392,6 @@ impl B04Io for SystemB04Io {
             .filter(|value| *value <= 100)
             .ok_or_else(|| "battery capacity source is invalid".to_string())
     }
-}
-
-impl SystemB04Io {
-    fn apply_band_steering(&self, enabled: bool) -> Result<(), String> {
-        let payload = wifi_master_payload(self.wifi_master_enabled()?, Some(enabled));
-        let output = run_fixed(
-            "band steering update",
-            "ubus",
-            &["call", "zwrt_wlan", "set", &payload],
-        )?;
-        parse_ubus_write_response("band steering update", &output).map(|_| ())
-    }
-}
-
-fn wifi_master_payload(enabled: bool, band_steering: Option<bool>) -> String {
-    let mut module = serde_json::Map::from_iter([("wifi_onoff".into(), json!(u8::from(enabled)))]);
-    if let Some(value) = band_steering {
-        module.insert("lbd".into(), json!(u8::from(value)));
-    }
-    json!({"zte_mbb": module}).to_string()
 }
 
 fn parse_wifi_load_status(output: &[u8]) -> Result<bool, String> {
@@ -499,14 +430,6 @@ fn wait_for_wifi_ready_with(
             return Err("Wi-Fi operation did not settle within the bounded window".into());
         }
         sleep(poll_interval.min(deadline - now));
-    }
-}
-
-fn parse_binary_setting(value: &str, label: &str) -> Result<bool, String> {
-    match value {
-        "0" => Ok(false),
-        "1" => Ok(true),
-        _ => Err(format!("{label} setting was invalid")),
     }
 }
 
@@ -884,19 +807,21 @@ mod tests {
     }
 
     #[test]
-    fn stock_wifi_master_payload_preserves_band_steering_when_enabling() {
-        assert_eq!(
-            serde_json::from_str::<Value>(&wifi_master_payload(false, None)).unwrap(),
-            json!({"zte_mbb":{"wifi_onoff":0}})
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(&wifi_master_payload(true, Some(true))).unwrap(),
-            json!({"zte_mbb":{"wifi_onoff":1,"lbd":1}})
-        );
-        assert_eq!(
-            serde_json::from_str::<Value>(&wifi_master_payload(true, Some(false))).unwrap(),
-            json!({"zte_mbb":{"wifi_onoff":1,"lbd":0}})
-        );
+    fn stock_wifi_coordination_fields_are_read_only() {
+        assert!(!WifiField::BandSteeringEnabled.is_writable());
+        assert!(!WifiField::SettingsSync2g.is_writable());
+        assert!(!WifiField::SettingsSync5g.is_writable());
+        assert!(WifiField::MainDisabled2g.is_writable());
+        assert!(WifiField::MainDisabled5g.is_writable());
+        assert!(WifiField::Ssid2g.is_writable());
+
+        let error = SystemB04Io::new()
+            .apply_wifi_values(&BTreeMap::from([(
+                WifiField::BandSteeringEnabled,
+                "0".into(),
+            )]))
+            .unwrap_err();
+        assert_eq!(error, "stock Wi-Fi coordination settings are read-only");
     }
 
     #[test]

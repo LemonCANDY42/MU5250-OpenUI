@@ -36,6 +36,7 @@ FORBIDDEN_PUBLIC_PATHS = {
     "/api/at/send",
     "/api/at/port",
     "/api/system/kill-bloat",
+    "/v1/wifi/master",
 }
 EXPECTED_BOOTSTRAP_PATHS: set[str] = set()
 REQUIRED_RESPONSE_CODES = {
@@ -108,6 +109,29 @@ def openapi_operations(source: str) -> dict[tuple[str, str], set[str]]:
         if operation and status_match:
             operations[operation].add(status_match.group(1))
     return operations
+
+
+def openapi_schema_properties(source: str, schema: str) -> set[str]:
+    """Return direct property names from one top-level component schema."""
+    lines = source.splitlines()
+    marker = f"    {schema}:"
+    try:
+        start = lines.index(marker)
+    except ValueError:
+        return set()
+    properties: set[str] = set()
+    in_properties = False
+    for line in lines[start + 1 :]:
+        if line.startswith("    ") and not line.startswith("      "):
+            break
+        if line == "      properties:":
+            in_properties = True
+            continue
+        if in_properties:
+            match = re.match(r"^        ([a-zA-Z0-9_]+):\s*$", line)
+            if match:
+                properties.add(match.group(1))
+    return properties
 
 
 def main() -> int:
@@ -206,6 +230,15 @@ def main() -> int:
         "Forbidden command surfaces appear in OpenAPI:",
         forbidden_contract_terms,
         "the versioned domain contract must not expose generic execution",
+    )
+
+    retired_wifi_write_fields = {"band_steering_enabled"} & openapi_schema_properties(
+        openapi_source, "WifiTransactionRequest"
+    )
+    ok &= report(
+        "Retired Wi-Fi coordination writes remain in OpenAPI:",
+        retired_wifi_write_fields,
+        "keep multi-band state read-only and remove the transaction write field",
     )
 
     print("\nOK: B04 public surface matches OpenAPI." if ok else "\nFAILED")

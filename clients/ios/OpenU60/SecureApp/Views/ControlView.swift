@@ -108,10 +108,8 @@ private struct ChargingControlView: View {
 
 private struct WifiControlView: View {
     let model: AppModel
-    @State private var wifiMasterEnabled = true
     @State private var mainEnabled2g = true
     @State private var mainEnabled5g = true
-    @State private var bandSteeringEnabled = false
     @State private var ssid2g = ""
     @State private var passphrase2g = ""
     @State private var hidden2g = false
@@ -124,7 +122,7 @@ private struct WifiControlView: View {
     @State private var channel5g = "0"
     @State private var bandwidth5g = "EHT160"
     @State private var power5g = 50
-    @State private var confirmation: WifiApplyConfirmation?
+    @State private var showsApplyConfirmation = false
     @State private var initialized = false
     @State private var pane = WifiPane.status
 
@@ -136,18 +134,15 @@ private struct WifiControlView: View {
         var title: LocalizedStringKey { self == .status ? "Status" : "Modify" }
     }
 
-    private enum WifiApplyConfirmation: String, Identifiable {
-        case settings
-        case master
-
-        var id: Self { self }
-    }
-
     private let channels2g = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
     private let channels5g = ["0", "36", "40", "44", "48", "52", "56", "60", "64", "100", "104", "108", "112", "116", "120", "124", "128", "132", "136", "140", "149", "153", "157", "161", "165"]
     private let bandwidths2g = ["EHT20", "EHT40", "EHT20_40"]
     private let bandwidths5g = ["EHT20", "EHT40", "EHT80", "EHT160"]
     private let powers = Array(stride(from: 10, through: 100, by: 10))
+
+    private var stockMultiBandEnabled: Bool {
+        model.dashboard?.wifi?.features.bandSteeringEnabled == true
+    }
 
     var body: some View {
         Form {
@@ -252,31 +247,12 @@ private struct WifiControlView: View {
             }
 
             if pane == .settings {
-                Section {
-                    Toggle("Wi-Fi master switch", isOn: $wifiMasterEnabled)
-                    Button("Apply master switch") { confirmation = .master }
-                        .frame(maxWidth: .infinity)
-                } header: {
-                    Text("Overall Wi-Fi")
-                } footer: {
-                    Text("Turning the master switch off disconnects this iPhone. The U60's own Wi-Fi switch can turn Wi-Fi back on; the saved 2.4 GHz and 5 GHz primary-band switches are preserved.")
-                }
-
-                Section {
-                    if model.dashboard?.wifi?.features.bandSteeringSupported == true {
-                        Toggle("Multi-band integration", isOn: $bandSteeringEnabled)
-                            .disabled(!mainEnabled2g || !mainEnabled5g)
-                    } else {
-                        LabeledContent("Multi-band integration", value: String(localized: "Unavailable"))
-                    }
-                } header: {
-                    Text("Band coordination")
-                } footer: {
-                    if !bandSteeringEnabled, ssid2g == ssid5g {
-                        Text("Separated bands require different network names. The U60 will add _5G to the 5 GHz name when it fits; otherwise shorten the 2.4 GHz name first.")
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text("Multi-band integration combines the U60's settings sync and band steering. When enabled, 5 GHz follows the 2.4 GHz network name, password, visibility, and security.")
+                if stockMultiBandEnabled {
+                    Section {
+                        LabeledContent("Stock multi-band mode", value: String(localized: "Enabled on the U60"))
+                    } footer: {
+                        Text("This App treats the U60's stock multi-band mode as read-only. 5 GHz network identity follows 2.4 GHz, and individual band switches become available after you turn multi-band mode off on the U60 itself.")
+                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -284,7 +260,8 @@ private struct WifiControlView: View {
                     title: "2.4 GHz", enabled: $mainEnabled2g,
                     ssid: $ssid2g, passphrase: $passphrase2g, hidden: $hidden2g,
                     channel: $channel2g, bandwidth: $bandwidth2g, power: $power2g,
-                    channels: channels2g, bandwidths: bandwidths2g, powers: powers
+                    channels: channels2g, bandwidths: bandwidths2g, powers: powers,
+                    enabledControlDisabled: stockMultiBandEnabled
                 )
                 WifiRadioSettingsSection(
                     title: "5 GHz", enabled: $mainEnabled5g,
@@ -292,7 +269,8 @@ private struct WifiControlView: View {
                     channel: $channel5g, bandwidth: $bandwidth5g, power: $power5g,
                     channels: channels5g, bandwidths: bandwidths5g, powers: powers,
                     showsFixed5gNote: true,
-                    identityFollowsPrimary: bandSteeringEnabled
+                    enabledControlDisabled: stockMultiBandEnabled,
+                    identityFollowsPrimary: stockMultiBandEnabled
                 )
 
                 if let guest = model.dashboard?.wifi?.guest {
@@ -306,12 +284,12 @@ private struct WifiControlView: View {
                 }
 
                 Section {
-                    Button("Apply with two-minute rollback") { confirmation = .settings }
+                    Button("Apply with two-minute rollback") { showsApplyConfirmation = true }
                         .frame(maxWidth: .infinity)
                         .disabled(!mainEnabled2g && !mainEnabled5g)
                 } footer: {
                     if !mainEnabled2g && !mainEnabled5g {
-                        Text("At least one primary band must remain enabled here. Use the Wi-Fi master switch to turn all Wi-Fi off.")
+                        Text("At least one primary band must remain enabled here. Use the U60's own Wi-Fi control to turn all Wi-Fi off.")
                             .foregroundStyle(.orange)
                     } else {
                         Text("The U60 saves the old values and arms an independent rollback process before changing Wi-Fi. Only verified device readback can cancel rollback.")
@@ -326,56 +304,23 @@ private struct WifiControlView: View {
         .onChange(of: model.wifiSettingsRevision) { _, _ in
             initializeIfNeeded(force: true)
         }
-        .onChange(of: mainEnabled2g) { _, enabled in
-            if !enabled { bandSteeringEnabled = false }
-        }
-        .onChange(of: mainEnabled5g) { _, enabled in
-            if !enabled { bandSteeringEnabled = false }
-        }
-        .onChange(of: bandSteeringEnabled) { _, enabled in
-            if enabled {
-                ssid5g = ssid2g
-                hidden5g = hidden2g
-                passphrase5g = ""
-            } else if ssid5g == ssid2g,
-                      let split = WifiSSIDPolicy.split5GHzSSID(from: ssid2g)
-            {
-                ssid5g = split
-            }
-        }
         .onChange(of: ssid2g) { _, value in
-            if bandSteeringEnabled { ssid5g = value }
+            if stockMultiBandEnabled { ssid5g = value }
         }
         .onChange(of: hidden2g) { _, value in
-            if bandSteeringEnabled { hidden5g = value }
+            if stockMultiBandEnabled { hidden5g = value }
         }
-        .alert(item: $confirmation) { confirmation in
-            switch confirmation {
-            case .settings:
-                Alert(
-                    title: Text("Apply Wi-Fi changes?"),
-                    message: Text("Wi-Fi will restart briefly. Reconnect within two minutes; the app will keep checking even if you switch networks more than once."),
-                    primaryButton: .default(Text("Apply with rollback"), action: apply),
-                    secondaryButton: .cancel()
-                )
-            case .master:
-                Alert(
-                    title: Text("Apply Wi-Fi master switch?"),
-                    message: Text(wifiMasterEnabled
-                        ? String(localized: "Wi-Fi will turn on using the saved primary-band switches.")
-                        : String(localized: "Wi-Fi will turn off and this iPhone will disconnect. Use the U60's own Wi-Fi switch to turn it back on.")),
-                    primaryButton: .default(Text("Apply master switch"), action: applyMaster),
-                    secondaryButton: .cancel()
-                )
-            }
+        .alert("Apply Wi-Fi changes?", isPresented: $showsApplyConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Apply with rollback", action: apply)
+        } message: {
+            Text("Wi-Fi will restart briefly. Reconnect within two minutes; the app will keep checking even if you switch networks more than once.")
         }
     }
 
     private func initializeIfNeeded(force: Bool = false) {
         guard (!initialized || force), let wifi = model.dashboard?.wifi else { return }
         initialized = true
-        wifiMasterEnabled = wifi.enabled
-        bandSteeringEnabled = wifi.features.bandSteeringEnabled
         if let band = wifi.bands.first(where: { $0.band.contains("2.4") }) {
             mainEnabled2g = band.accessPointEnabled ?? band.enabled
             ssid2g = band.ssid
@@ -405,14 +350,10 @@ private struct WifiControlView: View {
     }
 
     private func apply() {
-        if bandSteeringEnabled {
+        if stockMultiBandEnabled {
             ssid5g = ssid2g
             hidden5g = hidden2g
             passphrase5g = ""
-        } else if ssid5g == ssid2g,
-                  let split = WifiSSIDPolicy.split5GHzSSID(from: ssid2g)
-        {
-            ssid5g = split
         }
         let edits = WifiTransactionEdits(
             ssid2g: ssid2g,
@@ -428,18 +369,13 @@ private struct WifiControlView: View {
             mainEnabled5g: mainEnabled5g,
             channel5g: channel5g,
             bandwidth5g: bandwidth5g,
-            transmitPower5g: power5g,
-            bandSteeringEnabled: bandSteeringEnabled
+            transmitPower5g: power5g
         )
         passphrase2g = ""
         passphrase5g = ""
         Task { await model.beginWifiTransaction(edits) }
     }
 
-    private func applyMaster() {
-        let enabled = wifiMasterEnabled
-        Task { await model.setWifiMasterEnabled(enabled) }
-    }
 }
 
 private struct WifiRadioSettingsSection: View {
@@ -455,11 +391,13 @@ private struct WifiRadioSettingsSection: View {
     let bandwidths: [String]
     let powers: [Int]
     var showsFixed5gNote = false
+    var enabledControlDisabled = false
     var identityFollowsPrimary = false
 
     var body: some View {
         Section {
             Toggle("Primary AP", isOn: $enabled)
+                .disabled(enabledControlDisabled)
             TextField("SSID", text: $ssid)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()

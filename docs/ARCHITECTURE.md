@@ -101,15 +101,14 @@ loopback canary is evidence for a stage, not completion of V1.
    physical-iPhone CA installation/full trust, Secure Enclave key pairing and an
    authenticated handshake are also accepted. The
    web and iOS clients share generated `/v1` models and capability-driven UI. Daily
-   writes are SMS send, traffic-cycle reset, the stock Wi-Fi master switch, and
-   transactional Wi-Fi primary/guest settings. The master operation delegates to
-   the firmware's own switch and leaves the saved 2.4/5 GHz primary-AP states
-   untouched, so the device UI remains the recovery control after a deliberate
-   disconnect. Independent primary-AP and stock multi-band changes use fixed
-   B04 field paths, require at least one saved primary AP, and treat band
-   steering plus both primary settings-sync flags as one invariant. Separation
-   requires distinct SSIDs; integration uses the 2.4 GHz identity as the
-   canonical source. Every disconnecting transaction has strict
+   writes are SMS send, traffic-cycle reset and transactional Wi-Fi primary/guest
+   settings. The stock Wi-Fi master and multi-band state are read-only because
+   their asynchronous firmware transitions did not provide a deterministic
+   applied-state boundary. Independent primary-AP changes use fixed B04 field
+   paths, require at least one saved primary AP and fail closed while stock
+   multi-band mode requires both bands. Integrated identity edits keep 5 GHz
+   aligned with 2.4 GHz without writing band steering or either settings-sync
+   flag. Every disconnecting transaction has strict
    channel/bandwidth/power allowlists, a client-generated identifier persisted
    and an independent rollback worker armed before mutation, a roughly
    120-second confirmation window, reconnect retries across transient network

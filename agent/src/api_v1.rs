@@ -14,8 +14,7 @@ use crate::adapter::{
 };
 use crate::daily::{ChargingStatus, DailyError, DailyErrorKind};
 use crate::daily::{
-    SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiMasterRequest,
-    WifiTransactionRequest,
+    SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiTransactionRequest,
 };
 use crate::handlers::AppState;
 
@@ -552,12 +551,6 @@ pub fn traffic_cycle_update(state: &AppState, body: &[u8]) -> (u16, Value) {
 pub fn wifi_transaction_begin(state: &AppState, body: &[u8]) -> (u16, Value) {
     daily_request::<WifiTransactionRequest, _>(state, body, |service, request| {
         service.wifi_transaction_begin(request)
-    })
-}
-
-pub fn wifi_master_update(state: &AppState, body: &[u8]) -> (u16, Value) {
-    daily_request::<WifiMasterRequest, _>(state, body, |service, request| {
-        service.wifi_master_update(request)
     })
 }
 

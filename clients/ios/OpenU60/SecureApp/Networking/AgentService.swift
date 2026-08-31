@@ -41,24 +41,6 @@ enum AgentServiceError: LocalizedError {
         }
     }
 
-    var refreshesWifiStateAfterMasterFailure: Bool {
-        switch self {
-        case let .rejected(status, _, recoveryRequired):
-            (status == 400 || status == 503) && !recoveryRequired
-        case .authenticationRequired, .invalidResponse, .transportSecurity:
-            false
-        }
-    }
-}
-
-enum WifiSSIDPolicy {
-    static func split5GHzSSID(from ssid2g: String) -> String? {
-        let suffix = "_5G"
-        guard !ssid2g.isEmpty, ssid2g.utf8.count + suffix.utf8.count <= 32 else {
-            return nil
-        }
-        return ssid2g + suffix
-    }
 }
 
 struct WifiTransactionEdits: Sendable {
@@ -83,7 +65,6 @@ struct WifiTransactionEdits: Sendable {
     var guestHidden: Bool? = nil
     var guestIsolation: Bool? = nil
     var guestActiveTimeMinutes: Int? = nil
-    var bandSteeringEnabled: Bool? = nil
 }
 
 final class AgentService: Sendable {
@@ -255,26 +236,6 @@ final class AgentService: Sendable {
         }
     }
 
-    func updateWifiMaster(enabled: Bool) async throws {
-        let output = try await client.updateWifiMaster(.init(body: .json(.init(enabled: enabled))))
-        switch output {
-        case .ok: return
-        case .unauthorized:
-            throw AgentServiceError.authenticationRequired
-        case let .badRequest(response):
-            let body = try response.body.json
-            throw AgentServiceError.rejected(status: 400, message: body.error.message)
-        case let .serviceUnavailable(response):
-            let body = try response.body.json
-            throw AgentServiceError.rejected(
-                status: 503,
-                message: body.error.message,
-                recoveryRequired: body.error.recovery.required
-            )
-        default: throw AgentServiceError.invalidResponse
-        }
-    }
-
     func beginWifiTransaction(
         _ edits: WifiTransactionEdits,
         transactionID: String
@@ -301,8 +262,7 @@ final class AgentService: Sendable {
             guestPassphrase: edits.guestPassphrase,
             guestHidden: edits.guestHidden,
             guestIsolation: edits.guestIsolation,
-            guestActiveTimeMinutes: edits.guestActiveTimeMinutes,
-            bandSteeringEnabled: edits.bandSteeringEnabled
+            guestActiveTimeMinutes: edits.guestActiveTimeMinutes
         ))))
         switch output {
         case let .ok(response): return try response.body.json.data

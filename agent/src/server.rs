@@ -199,7 +199,6 @@ pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) ->
         .route("/v1/sms/send", post(sms_send))
         .route("/v1/charging", get(charging_status))
         .route("/v1/traffic/cycle", put(traffic_cycle_update))
-        .route("/v1/wifi/master", post(wifi_master_update))
         .route("/v1/wifi/transaction", post(wifi_transaction_begin))
         .route(
             "/v1/wifi/transaction/confirm",
@@ -379,21 +378,6 @@ async fn wifi_transaction_begin(
         Scope::Daily,
         body,
         api_v1::wifi_transaction_begin,
-    )
-    .await
-}
-
-async fn wifi_master_update(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    body: Result<Bytes, BytesRejection>,
-) -> Response {
-    protected_body_blocking(
-        state,
-        &headers,
-        Scope::Daily,
-        body,
-        api_v1::wifi_master_update,
     )
     .await
 }
@@ -688,7 +672,7 @@ fn value_response((status, body): (u16, Value)) -> Response {
 mod tests {
     use std::collections::BTreeMap;
     use std::net::Ipv4Addr;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::{Duration, Instant};
 
     use axum::body::{to_bytes, Body};
@@ -704,7 +688,7 @@ mod tests {
     use crate::state_store::StateStore;
 
     struct SlowWifiIo {
-        master_enabled: AtomicBool,
+        transmit_power_2g: AtomicUsize,
         readiness_started: Arc<AtomicBool>,
     }
 
@@ -737,29 +721,34 @@ mod tests {
             Err("unused".into())
         }
 
-        fn wifi_values(
-            &self,
-            _fields: &[WifiField],
-        ) -> Result<BTreeMap<WifiField, String>, String> {
-            Err("unused".into())
+        fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
+            Ok(fields
+                .iter()
+                .filter(|field| **field == WifiField::TransmitPower2g)
+                .map(|field| {
+                    (
+                        *field,
+                        self.transmit_power_2g.load(Ordering::SeqCst).to_string(),
+                    )
+                })
+                .collect())
         }
 
-        fn apply_wifi_values(&self, _values: &BTreeMap<WifiField, String>) -> Result<(), String> {
-            Err("unused".into())
+        fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
+            if let Some(value) = values.get(&WifiField::TransmitPower2g) {
+                self.transmit_power_2g.store(
+                    value
+                        .parse()
+                        .map_err(|_| "invalid test power".to_string())?,
+                    Ordering::SeqCst,
+                );
+            }
+            Ok(())
         }
 
         fn wait_for_wifi_ready(&self) -> Result<(), String> {
             self.readiness_started.store(true, Ordering::SeqCst);
             std::thread::sleep(Duration::from_millis(300));
-            Ok(())
-        }
-
-        fn wifi_master_enabled(&self) -> Result<bool, String> {
-            Ok(self.master_enabled.load(Ordering::SeqCst))
-        }
-
-        fn set_wifi_master_enabled(&self, enabled: bool) -> Result<(), String> {
-            self.master_enabled.store(enabled, Ordering::SeqCst);
             Ok(())
         }
 
@@ -998,7 +987,7 @@ mod tests {
         let daily = DailyService::with_test_io(
             store,
             Arc::new(SlowWifiIo {
-                master_enabled: AtomicBool::new(true),
+                transmit_power_2g: AtomicUsize::new(30),
                 readiness_started: Arc::clone(&readiness_started),
             }),
         )
@@ -1007,8 +996,8 @@ mod tests {
         let started_at = Instant::now();
         let update = tokio::spawn(app.clone().oneshot(authorized_request(
             Method::POST,
-            "/v1/wifi/master",
-            r#"{"enabled":false}"#,
+            "/v1/wifi/transaction",
+            r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","transmit_power_2g":40}"#,
             &token,
         )));
 
@@ -1040,7 +1029,7 @@ mod tests {
         let daily = DailyService::with_test_io(
             store,
             Arc::new(SlowWifiIo {
-                master_enabled: AtomicBool::new(true),
+                transmit_power_2g: AtomicUsize::new(30),
                 readiness_started: Arc::clone(&readiness_started),
             }),
         )
@@ -1048,8 +1037,8 @@ mod tests {
         let app = router_with_web_root(AppState::with_daily(auth, daily), None);
         let first = tokio::spawn(app.clone().oneshot(authorized_request(
             Method::POST,
-            "/v1/wifi/master",
-            r#"{"enabled":false}"#,
+            "/v1/wifi/transaction",
+            r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","transmit_power_2g":40}"#,
             &token,
         )));
 
@@ -1060,8 +1049,8 @@ mod tests {
         let second = app
             .oneshot(authorized_request(
                 Method::POST,
-                "/v1/wifi/master",
-                r#"{"enabled":true}"#,
+                "/v1/wifi/transaction",
+                r#"{"transaction_id":"zyxwvutsrqponmlkjihgfedc","transmit_power_2g":50}"#,
                 &token,
             ))
             .await

@@ -95,38 +95,6 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertTrue(AgentServiceError.invalidResponse.keepsPendingWifiTransactionAfterConfirmation)
     }
 
-    func testWifiMasterFailureRefreshesOnlyAfterATerminalServerOutcome() {
-        XCTAssertTrue(
-            AgentServiceError.rejected(
-                status: 503,
-                message: "the master update was rolled back",
-                recoveryRequired: false
-            ).refreshesWifiStateAfterMasterFailure
-        )
-        XCTAssertFalse(
-            AgentServiceError.rejected(
-                status: 503,
-                message: "the master outcome is still uncertain",
-                recoveryRequired: true
-            ).refreshesWifiStateAfterMasterFailure
-        )
-        XCTAssertFalse(AgentServiceError.invalidResponse.refreshesWifiStateAfterMasterFailure)
-        XCTAssertFalse(
-            AgentServiceError.transportSecurity("certificate rejected")
-                .refreshesWifiStateAfterMasterFailure
-        )
-    }
-
-    func testStockSplitSSIDUsesAVisibleSuffixWithinTheFirmwareByteLimit() {
-        XCTAssertEqual(WifiSSIDPolicy.split5GHzSSID(from: "slowfast"), "slowfast_5G")
-        XCTAssertEqual(
-            WifiSSIDPolicy.split5GHzSSID(from: "12345678901234567890123456789"),
-            "12345678901234567890123456789_5G"
-        )
-        XCTAssertNil(WifiSSIDPolicy.split5GHzSSID(from: "123456789012345678901234567890"))
-        XCTAssertNil(WifiSSIDPolicy.split5GHzSSID(from: String(repeating: "网", count: 10)))
-    }
-
     @MainActor
     func testReadSessionRecoveryRenewsOnceAfterSessionExpiry() async throws {
         var attempts = 0

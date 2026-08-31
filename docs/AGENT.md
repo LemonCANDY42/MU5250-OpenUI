@@ -28,7 +28,7 @@ authentication paths:
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
 | `GET /v1/charging` | Read-only battery capacity and stock charging-permission state; no public charging writes |
 | `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
-| `POST /v1/wifi/transaction` | Apply allowlisted primary/guest fields and coordinated multi-band transitions with a client-persisted transaction ID known before restart and 120-second rollback |
+| `POST /v1/wifi/transaction` | Apply allowlisted primary/guest fields with a client-persisted transaction ID known before restart and 120-second rollback; stock master and multi-band state are read-only |
 | `POST /v1/wifi/transaction/confirm` | Re-read the requested fields and commit only a matching pending Wi-Fi transaction |
 | `POST /v1/auth/password/session` | Argon2id password login for a normal scoped session |
 | `POST /v1/auth/password/advanced` | Password re-entry for a non-sliding five-minute advanced session |
@@ -49,15 +49,16 @@ removes the pending record only after an exact old-value readback. Each Wi-Fi
 transaction uses one consistent pre-apply configuration snapshot for invariant
 checks and rollback values, then one exact post-apply snapshot. A begin-client retains its newly created local
 confirmation only for a `503` that says recovery is required: a `409` conflict
-cannot prove ownership of that client-generated identifier. The
-compatibility-named `band_steering_enabled` field represents the
-complete user-facing multi-band invariant, not raw `lbd` alone: both settings
-sync flags must be enabled and the primary network identities must match.
+cannot prove ownership of that client-generated identifier. The read-only
+compatibility-named `band_steering_enabled` field represents the complete
+observed multi-band invariant, not raw `lbd` alone: both settings sync flags
+must be enabled and the primary network identities must match. It is not
+accepted by `WifiTransactionRequest`; the I/O layer also rejects attempts to
+write steering or either settings-sync field.
 The B04 firmware completes Wi-Fi writes asynchronously. V1 therefore gives the
 stock state machine its two-second grace period, polls only the typed
 `zwrt_wlan report.load_status` until `idle`, and stops after 20 seconds per
-settle phase. Multi-band phase ordering waits between steering and identity
-reloads, and applied or rollback readback happens only after the final settle.
+settle phase. Applied or rollback readback happens only after the final settle.
 These waits run on Tokio's blocking pool, so the single-thread HTTPS runtime can
 continue serving independent requests; a disconnected client does not cancel
 an already-started protected Wi-Fi operation. A one-slot admission gate stays

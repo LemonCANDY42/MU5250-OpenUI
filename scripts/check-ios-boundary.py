@@ -125,6 +125,11 @@ for forbidden in (
     "UserDefaults",
     "@AppStorage",
     "Not exposed by the iOS public API",
+    "updateWifiMaster",
+    "setWifiMasterEnabled",
+    "bandSteeringEnabled:",
+    'Toggle("Wi-Fi master switch"',
+    'Toggle("Multi-band integration"',
 ):
     if forbidden in source:
         fail(f"compiled source contains forbidden marker {forbidden!r}")

@@ -483,31 +483,6 @@ paths:
           $ref: "#/components/responses/AuthInternalError"
         "503":
           $ref: "#/components/responses/DailySourceUnavailable"
-  /v1/wifi/master:
-    post:
-      operationId: updateWifiMaster
-      summary: Use the stock B04 master switch without changing saved primary-band states
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/WifiMasterRequest"
-      responses:
-        "200":
-          $ref: "#/components/responses/WriteApplied"
-        "400":
-          $ref: "#/components/responses/InvalidRequest"
-        "401":
-          $ref: "#/components/responses/AuthenticationFailed"
-        "403":
-          $ref: "#/components/responses/Forbidden"
-        "413":
-          $ref: "#/components/responses/PayloadTooLarge"
-        "500":
-          $ref: "#/components/responses/AuthInternalError"
-        "503":
-          $ref: "#/components/responses/DailySourceUnavailable"
   /v1/wifi/transaction/confirm:
     post:
       operationId: confirmWifiTransaction
@@ -1355,7 +1330,7 @@ components:
           type: boolean
           description: >-
             The stock B04 band-steering capability and both primary-band
-            settings-sync flags are available for one coordinated control.
+            settings-sync flags are available for read-only observation.
         band_steering_enabled:
           type: boolean
           description: >-
@@ -1424,7 +1399,7 @@ components:
           type: boolean
         access_point_enabled:
           type: boolean
-          description: Saved primary AP switch independent of the stock Wi-Fi master switch.
+          description: Saved primary AP state reported independently for each primary band.
         ssid:
           type: string
         hidden:
@@ -1659,20 +1634,6 @@ components:
           type: integer
           minimum: 0
           maximum: 1440
-        band_steering_enabled:
-          type: boolean
-          description: >-
-            Stock multi-band integration control. Enabling copies the 2.4 GHz
-            primary identity to 5 GHz and enables both settings-sync flags plus
-            band steering. Disabling clears both sync flags and requires a
-            distinct 5 GHz SSID, deriving the stock _5G suffix when necessary.
-    WifiMasterRequest:
-      type: object
-      additionalProperties: false
-      required: [enabled]
-      properties:
-        enabled:
-          type: boolean
     WifiConfirmRequest:
       type: object
       additionalProperties: false

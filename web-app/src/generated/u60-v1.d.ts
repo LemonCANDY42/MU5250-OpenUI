@@ -361,23 +361,6 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
-    readonly "/v1/wifi/master": {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly get?: never;
-        readonly put?: never;
-        /** Use the stock B04 master switch without changing saved primary-band states */
-        readonly post: operations["updateWifiMaster"];
-        readonly delete?: never;
-        readonly options?: never;
-        readonly head?: never;
-        readonly patch?: never;
-        readonly trace?: never;
-    };
     readonly "/v1/wifi/transaction/confirm": {
         readonly parameters: {
             readonly query?: never;
@@ -696,7 +679,7 @@ export interface components {
             readonly version_switch_state_available: boolean;
             readonly mlo_supported: boolean;
             readonly mlo_enabled: boolean;
-            /** @description The stock B04 band-steering capability and both primary-band settings-sync flags are available for one coordinated control. */
+            /** @description The stock B04 band-steering capability and both primary-band settings-sync flags are available for read-only observation. */
             readonly band_steering_supported: boolean;
             /** @description Compatibility-named composite state for stock multi-band integration: band steering and both settings-sync flags are on, with matching primary network identity. */
             readonly band_steering_enabled: boolean;
@@ -722,7 +705,7 @@ export interface components {
         readonly WifiBandStatus: {
             readonly band: string;
             readonly enabled: boolean;
-            /** @description Saved primary AP switch independent of the stock Wi-Fi master switch. */
+            /** @description Saved primary AP state reported independently for each primary band. */
             readonly access_point_enabled?: boolean;
             readonly ssid: string;
             readonly hidden: boolean;
@@ -815,11 +798,6 @@ export interface components {
             readonly guest_hidden?: boolean;
             readonly guest_isolation?: boolean;
             readonly guest_active_time_minutes?: number;
-            /** @description Stock multi-band integration control. Enabling copies the 2.4 GHz primary identity to 5 GHz and enables both settings-sync flags plus band steering. Disabling clears both sync flags and requires a distinct 5 GHz SSID, deriving the stock _5G suffix when necessary. */
-            readonly band_steering_enabled?: boolean;
-        };
-        readonly WifiMasterRequest: {
-            readonly enabled: boolean;
         };
         readonly WifiConfirmRequest: {
             readonly transaction_id: string;
@@ -1514,28 +1492,6 @@ export interface operations {
             readonly 401: components["responses"]["AuthenticationFailed"];
             readonly 403: components["responses"]["Forbidden"];
             readonly 409: components["responses"]["StateConflict"];
-            readonly 413: components["responses"]["PayloadTooLarge"];
-            readonly 500: components["responses"]["AuthInternalError"];
-            readonly 503: components["responses"]["DailySourceUnavailable"];
-        };
-    };
-    readonly updateWifiMaster: {
-        readonly parameters: {
-            readonly query?: never;
-            readonly header?: never;
-            readonly path?: never;
-            readonly cookie?: never;
-        };
-        readonly requestBody: {
-            readonly content: {
-                readonly "application/json": components["schemas"]["WifiMasterRequest"];
-            };
-        };
-        readonly responses: {
-            readonly 200: components["responses"]["WriteApplied"];
-            readonly 400: components["responses"]["InvalidRequest"];
-            readonly 401: components["responses"]["AuthenticationFailed"];
-            readonly 403: components["responses"]["Forbidden"];
             readonly 413: components["responses"]["PayloadTooLarge"];
             readonly 500: components["responses"]["AuthInternalError"];
             readonly 503: components["responses"]["DailySourceUnavailable"];

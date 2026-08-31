@@ -261,23 +261,20 @@ Current evidence establishes XcodeGen generation, generated-contract simulator
 tests, owner-signed physical-device build/install/launch, owner-CA full trust,
 Secure Enclave QR pairing through a real maintenance window and a completed
 authenticated physical-device session against the nonpersistent LAN canary.
-The current source adds separate controls for the stock Wi-Fi master switch,
-the saved 2.4/5 GHz primary AP switches, and stock multi-band integration. It
-keeps all ten power percentages while labeling the device's documented 40, 80
-and 100 percent presets as short, medium and long range. Per-band and
-multi-band changes use the existing reconnect-confirmed rollback transaction;
-multi-band enable synchronizes the 5 GHz identity from 2.4 GHz, while disable
-uses a distinct 5 GHz identity and the stock `_5G` suffix when needed. An
+The current source exposes the saved 2.4/5 GHz primary AP switches only when
+the stock multi-band state permits independent control. It keeps all ten power
+percentages while labeling the device's documented 40, 80 and 100 percent
+presets as short, medium and long range. Per-band changes use the existing
+reconnect-confirmed rollback transaction. The stock Wi-Fi master and
+multi-band controls are intentionally absent after physical-device behavior
+proved they could not be made deterministic through this control plane. Their
+state remains observable; while stock multi-band mode is active, 5 GHz identity
+follows 2.4 GHz and the independent AP toggles are disabled. An
 explicit terminal rollback response clears the device-local pending record and
 refreshes the form immediately; only an ambiguous response loss or typed
 pending-recovery response continues the confirmation loop. The 5 GHz identity
 fields are read-only in the form while multi-band integration is enabled.
-An explicit terminal master-switch failure also refreshes the current dashboard
-before revising the form, so a rolled-back operation cannot leave the toggle
-showing the requested value as though it were the device state. Ambiguous
-disconnects and still-pending recovery never trigger that terminal refresh.
-Master-off is deliberately separate because it disconnects the client and the
-device's own Wi-Fi switch is its recovery control. Source and simulator
+Source and simulator
 acceptance do not establish live Wi-Fi behavior. Physical-device readback and
 recovery acceptance, stable activation, boot integration and the final soak
 remain separate gates.
