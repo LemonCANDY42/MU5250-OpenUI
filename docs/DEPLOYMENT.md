@@ -108,11 +108,17 @@ agent.
 check automatically restores it when available. Because stable HTTPS binds only
 the management address, this health check runs on-device against
 `192.168.0.1:9443` with the accepted public CA instead of incorrectly probing
-device loopback through an ADB TCP forward. `rollback` is also explicit.
+device loopback through an ADB TCP forward. Device-shell gates are delivered as
+encoded scripts and must return an explicit remote status sentinel because this
+B04 ADB transport does not propagate the remote shell exit code. Release-link
+updates use BusyBox `mv -T` and exact post-write readback so an existing symlink
+cannot be followed as a directory. `rollback` is also explicit.
 The boot hook is exactly one backgrounded `start-current.sh` line in
 `/etc/rc.local`, inserted before its single `exit 0` after byte backup and
-syntax validation. No firewall/init hook, UCI service, USB/FOTA change or
-partition action exists in this path. The background launcher waits up to two
+syntax validation. The installed launcher hash, full `rc.local` bytes, metadata
+and exact one-line count must all survive an independent readback before the
+gate succeeds. No firewall/init hook, UCI service, USB/FOTA change or partition
+action exists in this path. The background launcher waits up to two
 minutes for the fixed management address and gives each service at most three
 startup attempts with five-second spacing; it then exits and is not a watchdog.
 Agent and Dropbear stdout/stderr go to `/dev/null`, so long-running services do

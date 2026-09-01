@@ -182,6 +182,10 @@ exact firmware, root ADB, Mac default route/TUN, device USB properties and
 the dormant `/data/zte-agent` paths. The boot entry is permitted only after a
 current release, stable agent PID, Dropbear PID and exactly two public keys are
 present; it adds no init/firewall/UCI hook. Root ADB is never removed.
+Remote shell gates use a parsed status sentinel rather than trusting the local
+`adb exec-out` return code. BusyBox symlink replacement uses `mv -T`, and both
+release links and boot files must pass exact post-write readback before evidence
+can be completed.
 
 The boot line backgrounds a finite launcher so stock boot never waits on it.
 The launcher waits no more than two minutes for `192.168.0.1`, then gives Agent

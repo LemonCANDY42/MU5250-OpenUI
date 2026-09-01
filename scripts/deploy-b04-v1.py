@@ -9,6 +9,7 @@ configuration untouched. Boot persistence is a separate explicit subcommand.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -35,6 +36,7 @@ BOOT_LINE = b"sh /data/u60/start-current.sh >/dev/null 2>&1 &\n"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 COMPLETION_PREFIX = "u60-b04-v1-deploy-evidence-complete-v1:"
 MAX_ADB_OUTPUT = 256 * 1024
+ADB_SHELL_STATUS_PREFIX = b"u60-b04-remote-status-v1:"
 
 
 class DeployError(RuntimeError):
@@ -65,7 +67,7 @@ def run(
     result = subprocess.run(
         command,
         input=input_bytes,
-        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
+        stdin=None if input_bytes is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=False,
@@ -81,9 +83,44 @@ def run(
     return result
 
 
+def adb_shell_bytes(
+    script: str, *, timeout: int = 20, limit: int = 16_384
+) -> bytes:
+    script_bytes = script.encode("utf-8")
+    if len(script_bytes) > 64 * 1024:
+        raise DeployError("device shell script exceeded the fixed bound")
+    encoded = base64.b64encode(script_bytes).decode("ascii")
+    remote = (
+        f"printf '%s' {encoded} | base64 -d | sh; "
+        "u60_b04_remote_status=$?; printf '\\n"
+        + ADB_SHELL_STATUS_PREFIX.decode("ascii")
+        + "%s\\n' \"$u60_b04_remote_status\""
+    )
+    result = run(
+        ["adb", "exec-out", remote],
+        timeout=timeout,
+        limit=limit + len(ADB_SHELL_STATUS_PREFIX) + 32,
+    )
+    marker = b"\n" + ADB_SHELL_STATUS_PREFIX
+    marker_at = result.stdout.rfind(marker)
+    if marker_at < 0:
+        raise DeployError("device shell did not return a status sentinel")
+    status_bytes = result.stdout[marker_at + len(marker) :]
+    if not re.fullmatch(rb"[0-9]{1,3}\n", status_bytes):
+        raise DeployError("device shell returned an invalid status sentinel")
+    output = result.stdout[:marker_at]
+    if len(output) > limit:
+        raise DeployError("bounded device shell output exceeded")
+    status = int(status_bytes)
+    if status != 0:
+        raise DeployError(f"device shell command failed with status {status}")
+    return output
+
+
 def adb_shell(script: str, *, timeout: int = 20, limit: int = 16_384) -> str:
-    result = run(["adb", "exec-out", "sh", "-c", script], timeout=timeout, limit=limit)
-    return result.stdout.decode("utf-8", "strict").strip()
+    return adb_shell_bytes(script, timeout=timeout, limit=limit).decode(
+        "utf-8", "strict"
+    ).strip()
 
 
 def adb_push(source: Path, destination: str, *, timeout: int = 120) -> None:
@@ -173,11 +210,7 @@ def read_usb_properties() -> dict[str, str]:
 
 
 def read_rc_local() -> bytes:
-    return run(
-        ["adb", "exec-out", "cat", "/etc/rc.local"],
-        timeout=10,
-        limit=128 * 1024,
-    ).stdout
+    return adb_shell_bytes("cat /etc/rc.local", timeout=10, limit=128 * 1024)
 
 
 def read_rc_metadata() -> dict[str, int]:
@@ -206,6 +239,22 @@ def read_release_links() -> dict[str, str | None]:
         )
         result[name] = None if value == "absent" else value
     return result
+
+
+def normalize_release_link(value: str, label: str) -> tuple[str, str]:
+    absolute_prefix = f"{DEVICE_ROOT}/releases/"
+    relative_prefix = "releases/"
+    if value.startswith(absolute_prefix):
+        release_id = value.removeprefix(absolute_prefix)
+        absolute = value
+    elif value.startswith(relative_prefix):
+        release_id = value.removeprefix(relative_prefix)
+        absolute = f"{DEVICE_ROOT}/{value}"
+    else:
+        raise DeployError(f"{label} release link is outside the release root")
+    if not HEX64.fullmatch(release_id):
+        raise DeployError(f"{label} release link is not content-addressed")
+    return release_id, absolute
 
 
 def capture_invariants() -> dict[str, Any]:
@@ -358,14 +407,35 @@ def start_canary(release_id: str) -> None:
 def switch_current(release_id: str) -> None:
     release = f"{DEVICE_ROOT}/releases/{release_id}"
     adb_shell(verify_device_release_script(release_id, release), timeout=45)
+    before = read_release_links()
+    old = before["current"]
+    old_absolute: str | None = None
+    if old is not None:
+        old_id, old_absolute = normalize_release_link(old, "current")
+        adb_shell(
+            verify_device_release_script(old_id, old_absolute),
+            timeout=45,
+        )
+        if old_absolute == release:
+            return
+    previous_update = ""
+    if old_absolute is not None:
+        previous_update = (
+            f"ln -s {old_absolute} previous.next; "
+            "mv -fT previous.next previous; "
+        )
     script = (
         f"set -eu; cd {DEVICE_ROOT}; rm -f current.next previous.next; "
-        'if [ -L current ]; then old=$(readlink current); case "$old" in '
-        f"{DEVICE_ROOT}/releases/[0-9a-f]*|releases/[0-9a-f]*) ;; *) exit 1;; esac; "
-        'ln -s "$old" previous.next; mv -f previous.next previous; fi; '
-        f"ln -s {release} current.next; mv -f current.next current"
+        + previous_update
+        + f"ln -s {release} current.next; mv -fT current.next current; "
+        f'[ "$(readlink current)" = {release} ]'
     )
     adb_shell(script)
+    after = read_release_links()
+    if after["current"] != release:
+        raise DeployError("current release switch did not survive readback")
+    if old_absolute is not None and after["previous"] != old_absolute:
+        raise DeployError("previous release switch did not survive readback")
 
 
 def rollback_current() -> str:
@@ -382,10 +452,14 @@ def rollback_current() -> str:
     stop_managed_agent("agent.pid")
     adb_shell(
         f"set -eu; cd {DEVICE_ROOT}; rm -f current.next; "
-        f"ln -s {DEVICE_ROOT}/releases/{release_id} current.next; mv -f current.next current; "
+        f"ln -s {DEVICE_ROOT}/releases/{release_id} current.next; "
+        f"mv -fT current.next current; "
+        f'[ "$(readlink current)" = {DEVICE_ROOT}/releases/{release_id} ]; '
         f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable",
         timeout=45,
     )
+    if read_release_links()["current"] != f"{DEVICE_ROOT}/releases/{release_id}":
+        raise DeployError("rollback release switch did not survive readback")
     return release_id
 
 
@@ -602,9 +676,19 @@ def build_rc_candidate(current: bytes) -> bytes:
 
 def install_boot_hook(before_rc: bytes, metadata: dict[str, int]) -> bool:
     candidate = build_rc_candidate(before_rc)
-    if candidate == before_rc:
-        return False
     start_digest = sha256_file(START_CURRENT_SOURCE)
+    if candidate == before_rc:
+        installed_digest = adb_shell(
+            f"set -eu; [ -f {DEVICE_ROOT}/start-current.sh ]; "
+            f"[ ! -L {DEVICE_ROOT}/start-current.sh ]; "
+            f"sha256sum {DEVICE_ROOT}/start-current.sh | cut -d' ' -f1",
+            limit=128,
+        )
+        if installed_digest != start_digest or read_rc_local() != candidate:
+            raise DeployError("existing boot installation failed readback")
+        if read_rc_metadata() != metadata:
+            raise DeployError("existing rc.local metadata failed readback")
+        return False
     candidate_digest = sha256_bytes(candidate)
     with tempfile.TemporaryDirectory(prefix="u60-v1-boot-") as temporary:
         candidate_path = Path(temporary) / "rc.local.candidate"
@@ -632,37 +716,43 @@ def install_boot_hook(before_rc: bytes, metadata: dict[str, int]) -> bool:
         f"[ \"$(sha256sum {DEVICE_ROOT}/runtime/rc.local.candidate | cut -d' ' -f1)\" = {candidate_digest} ]; "
         f"sh -n {DEVICE_ROOT}/start-current.sh.new; sh -n {DEVICE_ROOT}/runtime/rc.local.candidate; "
         f"chmod 700 {DEVICE_ROOT}/start-current.sh.new; chmod 755 {DEVICE_ROOT}/runtime/rc.local.candidate; "
-        f"mv -f {DEVICE_ROOT}/start-current.sh.new {DEVICE_ROOT}/start-current.sh; "
+        f"mv -fT {DEVICE_ROOT}/start-current.sh.new {DEVICE_ROOT}/start-current.sh; "
         f"cp {DEVICE_ROOT}/runtime/rc.local.candidate /etc/rc.local.u60-v1-new; "
         f"chown {uid}:{gid} /etc/rc.local.u60-v1-new; chmod {mode} /etc/rc.local.u60-v1-new; "
-        "sh -n /etc/rc.local.u60-v1-new; mv -f /etc/rc.local.u60-v1-new /etc/rc.local; "
+        "sh -n /etc/rc.local.u60-v1-new; "
+        "mv -fT /etc/rc.local.u60-v1-new /etc/rc.local; "
         f"rm -f {DEVICE_ROOT}/runtime/rc.local.candidate; "
-        f"[ \"$(sha256sum /etc/rc.local | cut -d' ' -f1)\" = {candidate_digest} ]"
+        f"[ \"$(sha256sum /etc/rc.local | cut -d' ' -f1)\" = {candidate_digest} ]; "
+        f"[ \"$(sha256sum {DEVICE_ROOT}/start-current.sh | cut -d' ' -f1)\" = {start_digest} ]"
     )
     adb_shell(script, timeout=30)
+    if read_rc_local() != candidate:
+        raise DeployError("boot hook did not survive rc.local readback")
+    if read_rc_metadata() != metadata:
+        raise DeployError("boot hook changed rc.local metadata")
+    installed_digest = adb_shell(
+        f"sha256sum {DEVICE_ROOT}/start-current.sh | cut -d' ' -f1",
+        limit=128,
+    )
+    if installed_digest != start_digest:
+        raise DeployError("boot launcher did not survive readback")
     return True
 
 
 def read_existing_authorized_keys() -> bytes | None:
-    result = run(
-        [
-            "adb",
-            "exec-out",
-            "sh",
-            "-c",
-            f"if [ -f {DEVICE_ROOT}/ssh/authorized_keys ] && "
-            f"[ ! -L {DEVICE_ROOT}/ssh/authorized_keys ]; then "
-            f"cat {DEVICE_ROOT}/ssh/authorized_keys; else exit 3; fi",
-        ],
+    result = adb_shell_bytes(
+        f"if [ -f {DEVICE_ROOT}/ssh/authorized_keys ] && "
+        f"[ ! -L {DEVICE_ROOT}/ssh/authorized_keys ]; then "
+        f"printf 'present\\n'; cat {DEVICE_ROOT}/ssh/authorized_keys; "
+        "else printf 'absent\\n'; fi",
         timeout=10,
         limit=64 * 1024,
-        check=False,
     )
-    if result.returncode == 3:
+    if result == b"absent\n":
         return None
-    if result.returncode != 0:
+    if not result.startswith(b"present\n"):
         raise DeployError("could not safely read the existing authorized_keys")
-    return result.stdout
+    return result.removeprefix(b"present\n")
 
 
 def validate_authorized_keys(path: Path) -> bytes:
@@ -922,11 +1012,12 @@ def command_activate(arguments: argparse.Namespace) -> dict[str, Any]:
     installed = install_release(arguments.release, release_id)
     verify_device_public_ca_matches(arguments.ca_cert)
     switch_current(release_id)
-    stop_managed_agent("agent.pid")
-    adb_shell(
-        f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30
-    )
     try:
+        stop_managed_agent("agent.pid")
+        adb_shell(
+            f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable",
+            timeout=30,
+        )
         verify_device_lan_tls_unauthorized()
     except BaseException:
         stop_managed_agent("agent.pid")

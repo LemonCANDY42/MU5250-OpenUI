@@ -240,6 +240,29 @@ class ReleasePreparationTests(unittest.TestCase):
 
 
 class DeploymentBoundaryTests(unittest.TestCase):
+    def test_adb_shell_requires_an_explicit_remote_status_sentinel(self) -> None:
+        success = subprocess.CompletedProcess(
+            ["adb", "exec-out", "wrapped"],
+            0,
+            b"value\n\n" + DEPLOY.ADB_SHELL_STATUS_PREFIX + b"0\n",
+            b"",
+        )
+        with mock.patch.object(DEPLOY, "run", return_value=success) as run:
+            self.assertEqual(DEPLOY.adb_shell("printf value"), "value")
+        remote = run.call_args.args[0]
+        self.assertEqual(remote[:2], ["adb", "exec-out"])
+        self.assertIn("base64 -d | sh", remote[2])
+
+        failure = subprocess.CompletedProcess(
+            ["adb", "exec-out", "wrapped"],
+            0,
+            b"\n" + DEPLOY.ADB_SHELL_STATUS_PREFIX + b"7\n",
+            b"",
+        )
+        with mock.patch.object(DEPLOY, "run", return_value=failure):
+            with self.assertRaises(DEPLOY.DeployError):
+                DEPLOY.adb_shell("exit 7")
+
     def test_invariants_reject_unexpected_release_link_change(self) -> None:
         before = {
             "firmware": "HK-B04",
@@ -368,6 +391,32 @@ class DeploymentBoundaryTests(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(details["tls_401"], True)
 
+    def test_activate_rolls_back_when_the_new_agent_cannot_start(self) -> None:
+        arguments = mock.Mock(
+            release=Path("/accepted/release"), ca_cert=Path("/accepted/ca.pem")
+        )
+        with (
+            mock.patch.object(DEPLOY, "require_local_release", return_value="a" * 64),
+            mock.patch.object(DEPLOY, "install_release", return_value=False),
+            mock.patch.object(DEPLOY, "verify_device_public_ca_matches"),
+            mock.patch.object(DEPLOY, "switch_current"),
+            mock.patch.object(DEPLOY, "stop_managed_agent"),
+            mock.patch.object(
+                DEPLOY,
+                "adb_shell",
+                side_effect=DEPLOY.DeployError("synthetic start failure"),
+            ),
+            mock.patch.object(
+                DEPLOY,
+                "read_release_links",
+                return_value={"current": "new", "previous": "old"},
+            ),
+            mock.patch.object(DEPLOY, "rollback_current") as rollback,
+        ):
+            with self.assertRaises(DEPLOY.DeployError):
+                DEPLOY.command_activate(arguments)
+        rollback.assert_called_once_with()
+
     def test_rc_metadata_accepts_only_exact_b04_baseline(self) -> None:
         with mock.patch.object(DEPLOY, "adb_shell", return_value="775|0|0"):
             self.assertEqual(
@@ -466,9 +515,23 @@ class DeploymentBoundaryTests(unittest.TestCase):
 
     def test_boot_install_requires_both_live_services_and_two_keys(self) -> None:
         original = b"#!/bin/sh\necho stock\nexit 0\n"
+        candidate = DEPLOY.build_rc_candidate(original)
+        start_digest = DEPLOY.sha256_file(DEPLOY.START_CURRENT_SOURCE)
         with (
             mock.patch.object(DEPLOY, "adb_push"),
-            mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
+            mock.patch.object(
+                DEPLOY,
+                "adb_shell",
+                side_effect=lambda script, **_kwargs: (
+                    start_digest if script.startswith("sha256sum ") else ""
+                ),
+            ) as adb_shell,
+            mock.patch.object(DEPLOY, "read_rc_local", return_value=candidate),
+            mock.patch.object(
+                DEPLOY,
+                "read_rc_metadata",
+                return_value={"mode": 0o775, "uid": 0, "gid": 0},
+            ),
         ):
             self.assertTrue(
                 DEPLOY.install_boot_hook(
@@ -476,11 +539,50 @@ class DeploymentBoundaryTests(unittest.TestCase):
                     {"mode": 0o775, "uid": 0, "gid": 0},
                 )
             )
-        gate = adb_shell.call_args.args[0]
+        gate = next(
+            call.args[0]
+            for call in adb_shell.call_args_list
+            if f"{DEPLOY.DEVICE_ROOT}/runtime/agent.pid" in call.args[0]
+        )
         self.assertIn(f"{DEPLOY.DEVICE_ROOT}/runtime/agent.pid", gate)
         self.assertIn(f"{DEPLOY.DEVICE_ROOT}/runtime/dropbear.pid", gate)
         self.assertIn(f"{DEPLOY.DEVICE_ROOT}/ssh/authorized_keys", gate)
         self.assertIn('" -eq 2 ]', gate)
+        self.assertIn("mv -fT", gate)
+
+    def test_boot_install_rejects_missing_post_write_readback(self) -> None:
+        original = b"#!/bin/sh\necho stock\nexit 0\n"
+        with (
+            mock.patch.object(DEPLOY, "adb_push"),
+            mock.patch.object(DEPLOY, "adb_shell"),
+            mock.patch.object(DEPLOY, "read_rc_local", return_value=original),
+        ):
+            with self.assertRaises(DEPLOY.DeployError):
+                DEPLOY.install_boot_hook(
+                    original,
+                    {"mode": 0o775, "uid": 0, "gid": 0},
+                )
+
+    def test_release_switch_uses_no_directory_target_and_checks_readback(self) -> None:
+        old_id = "a" * 64
+        new_id = "b" * 64
+        old = f"{DEPLOY.DEVICE_ROOT}/releases/{old_id}"
+        new = f"{DEPLOY.DEVICE_ROOT}/releases/{new_id}"
+        with (
+            mock.patch.object(
+                DEPLOY,
+                "read_release_links",
+                side_effect=[
+                    {"current": old, "previous": None},
+                    {"current": new, "previous": old},
+                ],
+            ),
+            mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
+        ):
+            DEPLOY.switch_current(new_id)
+        switch_script = adb_shell.call_args_list[-1].args[0]
+        self.assertIn("mv -fT previous.next previous", switch_script)
+        self.assertIn("mv -fT current.next current", switch_script)
 
     def test_authorized_keys_requires_two_independent_safe_public_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
