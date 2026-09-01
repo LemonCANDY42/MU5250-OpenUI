@@ -281,6 +281,7 @@
 "Device display capacity" = "Device display capacity";
 "Fuel-gauge capacity" = "Fuel-gauge capacity";
 "Protection state" = "Protection state";
+"Long-charge protection" = "Long-charge protection";
 "Battery long-charge protection" = "Battery long-charge protection";
 "About battery long-charge protection" = "About battery long-charge protection";
 "When the U60 stays connected to power for a long time, stock firmware can hold the fuel-gauge capacity near 80% while showing 100% to indicate that the protection target is complete. OpenU60 keeps using the fuel-gauge value for history and runtime estimates. Stock firmware says reconnecting the charger exits this mode." = "When the U60 stays connected to power for a long time, stock firmware can hold the fuel-gauge capacity near 80% while showing 100% to indicate that the protection target is complete. OpenU60 keeps using the fuel-gauge value for history and runtime estimates. Stock firmware says reconnecting the charger exits this mode.";

@@ -281,9 +281,10 @@
 "Device display capacity" = "设备显示电量";
 "Fuel-gauge capacity" = "实际电芯电量";
 "Protection state" = "保护状态";
-"Battery long-charge protection" = "电池长充保护模式";
-"About battery long-charge protection" = "了解电池长充保护模式";
-"When the U60 stays connected to power for a long time, stock firmware can hold the fuel-gauge capacity near 80% while showing 100% to indicate that the protection target is complete. OpenU60 keeps using the fuel-gauge value for history and runtime estimates. Stock firmware says reconnecting the charger exits this mode." = "U60 长时间连接电源后，原厂固件可能将燃料计电量维持在约 80%，同时显示 100% 表示已经达到保护目标。OpenU60 仍使用燃料计电量绘制历史曲线和估算续航。原厂固件说明，断开并重新连接充电器可退出此模式。";
+"Long-charge protection" = "长充保护";
+"Battery long-charge protection" = "电池长充保护";
+"About battery long-charge protection" = "了解长充保护";
+"When the U60 stays connected to power for a long time, stock firmware can hold the fuel-gauge capacity near 80% while showing 100% to indicate that the protection target is complete. OpenU60 keeps using the fuel-gauge value for history and runtime estimates. Stock firmware says reconnecting the charger exits this mode." = "U60 长时间连接电源后，原厂固件可能启动长充保护：实际电芯电量维持在约 80%，设备界面仍显示 100%。OpenU60 的历史曲线和续航估算仍以实际电芯电量为准。根据原厂说明，断开后重新连接充电器即可退出此模式。";
 "Connection is weak. Showing the latest available status." = "连接较弱，暂时显示最近一次状态。";
 "U60 disconnected. Updates will resume after you return to its Wi-Fi." = "U60 连接已断开。回到 U60 Wi‑Fi 后会自动恢复更新。";
 "Reported condition" = "系统报告状态";
@@ -291,7 +292,7 @@
 "Learned full capacity" = "当前学习满充容量";
 "Design capacity" = "设计容量";
 "Relative charge counter" = "相对电量计数器";
-"The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity." = "相对电量计数器是内核提供的带符号燃料计数值，不表示剩余容量。";
+"The relative charge counter is a signed kernel fuel-gauge value, not remaining capacity." = "相对电量计数器是内核提供的带符号电量计数值，不表示剩余电量。";
 "Kernel estimate to empty" = "内核预计耗尽时间";
 "Kernel estimate to full" = "内核预计充满时间";
 "Estimated usable time" = "预计可用时间";

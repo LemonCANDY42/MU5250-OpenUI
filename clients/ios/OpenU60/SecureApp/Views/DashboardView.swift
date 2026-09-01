@@ -132,20 +132,22 @@ private struct BatteryProtectionStatusRow: View {
     @State private var showsExplanation = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("Protection state")
                 .foregroundStyle(.secondary)
-            Spacer()
-            Text("Battery long-charge protection")
-                .multilineTextAlignment(.trailing)
+            Spacer(minLength: 8)
             Button {
                 showsExplanation = true
             } label: {
-                Image(systemName: "info.circle")
+                HStack(spacing: 6) {
+                    Text("Long-charge protection")
+                        .multilineTextAlignment(.trailing)
+                    Image(systemName: "info.circle")
+                }
+                .frame(minHeight: 44)
+                .contentShape(.rect)
             }
             .buttonStyle(.plain)
-            .frame(minWidth: 44, minHeight: 44)
-            .contentShape(.rect)
             .accessibilityLabel("About battery long-charge protection")
         }
         .font(.subheadline)
