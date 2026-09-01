@@ -105,7 +105,10 @@ Wi-Fi for this gate. Any failed TLS or evidence step stops the managed LAN
 agent.
 
 `activate` preserves the old `current` target as `previous`; a failed TLS health
-check automatically restores it when available. `rollback` is also explicit.
+check automatically restores it when available. Because stable HTTPS binds only
+the management address, this health check runs on-device against
+`192.168.0.1:9443` with the accepted public CA instead of incorrectly probing
+device loopback through an ADB TCP forward. `rollback` is also explicit.
 The boot hook is exactly one backgrounded `start-current.sh` line in
 `/etc/rc.local`, inserted before its single `exit 0` after byte backup and
 syntax validation. No firewall/init hook, UCI service, USB/FOTA change or

@@ -878,14 +878,14 @@ def command_lan_canary(arguments: argparse.Namespace) -> dict[str, Any]:
 def command_activate(arguments: argparse.Namespace) -> dict[str, Any]:
     release_id = require_local_release(arguments.release)
     installed = install_release(arguments.release, release_id)
+    verify_device_public_ca_matches(arguments.ca_cert)
     switch_current(release_id)
     stop_managed_agent("agent.pid")
     adb_shell(
         f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30
     )
-    run(["adb", "forward", "tcp:9443", "tcp:9443"], timeout=10, limit=4096)
     try:
-        verify_tls_unauthorized(9443, arguments.ca_cert)
+        verify_device_lan_tls_unauthorized()
     except BaseException:
         stop_managed_agent("agent.pid")
         links = read_release_links()
