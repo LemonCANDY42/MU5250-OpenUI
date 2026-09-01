@@ -191,6 +191,15 @@ physical-device workflows and keeps machine-specific device identifiers out of
 Git. A Codex/XcodeBuildMCP session must be reloaded after this file is added or
 changed before physical-device tools become available.
 
+Physical-device signing must take `DEVELOPMENT_TEAM` from Xcode's selected
+developer team or from a verified provisioning profile `TeamIdentifier`. The
+parenthesized ten-character suffix displayed in an `Apple Development`
+certificate name is an account/certificate identifier and must not be inferred
+to be the team identifier. Before installation, verify the built app's signed
+`com.apple.developer.team-identifier` and exact paired
+`application-identifier`; a successful build of a differently signed or default
+bundle is not physical-client acceptance.
+
 Credential metadata, certificate pin and endpoint are also device-local
 Keychain records. Bearer tokens exist only in the in-memory `SessionVault` and
 are cleared on sign-out. The dedicated management password is copied out of the
