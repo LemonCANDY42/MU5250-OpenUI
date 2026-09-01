@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[1]
 APPROVED_NAS_ROOT = Path("/Volumes/backups/U60-Pro")
 APPROVED_RELEASE_ROOT = APPROVED_NAS_ROOT / "releases"
 DEVICE_ROOT = "/data/u60"
+MANAGEMENT_ADDRESS = "192.168.0.1"
+SSH_PORT = 2222
 START_CURRENT_SOURCE = ROOT / "device" / "b04-v1" / "start-current.sh"
 BOOT_LINE = b"sh /data/u60/start-current.sh >/dev/null 2>&1 &\n"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -721,7 +723,6 @@ def install_ssh(release_id: str, authorized_keys: bytes) -> dict[str, Any]:
         f"{release}/bin/run-dropbear.sh"
     )
     adb_shell(script, timeout=45)
-    run(["adb", "forward", "tcp:2222", "tcp:2222"], timeout=10, limit=4096)
     public_host = adb_shell(
         f"{release}/dropbearmulti dropbearkey -y "
         f"-f {DEVICE_ROOT}/ssh/dropbear_ed25519_host_key | "
@@ -735,7 +736,7 @@ def install_ssh(release_id: str, authorized_keys: bytes) -> dict[str, Any]:
         "authorized_keys_sha256": digest,
         "host_public_key_sha256": sha256_bytes(public_host.encode()),
         "dropbear_started": True,
-        "password_auth_flags": ["-s", "-g"],
+        "password_auth": "compiled_out",
     }
 
 
@@ -756,7 +757,7 @@ def verify_one_ssh_key(key: Path, known_hosts: Path) -> None:
         [
             "ssh",
             "-p",
-            "2222",
+            str(SSH_PORT),
             "-i",
             str(key),
             "-o",
@@ -769,7 +770,7 @@ def verify_one_ssh_key(key: Path, known_hosts: Path) -> None:
             f"UserKnownHostsFile={known_hosts}",
             "-o",
             "ConnectTimeout=8",
-            "root@127.0.0.1",
+            f"root@{MANAGEMENT_ADDRESS}",
             "printf u60-v1-ssh-ok",
         ],
         timeout=15,
@@ -779,17 +780,58 @@ def verify_one_ssh_key(key: Path, known_hosts: Path) -> None:
         raise DeployError("SSH key did not produce the fixed acceptance response")
 
 
+def read_device_ssh_host_public() -> str:
+    current = read_release_links()["current"]
+    prefix = f"{DEVICE_ROOT}/releases/"
+    if current is None or not current.startswith(prefix):
+        raise DeployError("current release is absent or outside the release root")
+    release_id = current.removeprefix(prefix)
+    if not HEX64.fullmatch(release_id):
+        raise DeployError("current release link is not content-addressed")
+    adb_shell(verify_device_release_script(release_id, current), timeout=45)
+    public_host = adb_shell(
+        f"{current}/dropbearmulti dropbearkey -y "
+        f"-f {DEVICE_ROOT}/ssh/dropbear_ed25519_host_key | "
+        "awk '/^ssh-ed25519 / {print $1 \" \" $2; exit}'",
+        limit=4096,
+    )
+    if not re.fullmatch(r"ssh-ed25519 [A-Za-z0-9+/=]{32,2048}", public_host):
+        raise DeployError("Dropbear host key public readback failed")
+    return public_host
+
+
+def verify_scanned_ssh_host_key(scan: bytes, expected_public: str) -> None:
+    try:
+        records = [
+            line.strip()
+            for line in scan.decode("ascii").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+    except UnicodeError as error:
+        raise DeployError("SSH host key scan was not ASCII") from error
+    if len(records) != 1:
+        raise DeployError("SSH host key scan did not return exactly one key")
+    fields = records[0].split()
+    expected_host = f"[{MANAGEMENT_ADDRESS}]:{SSH_PORT}"
+    if len(fields) != 3 or fields[0] != expected_host:
+        raise DeployError("SSH host key scan returned an unexpected host")
+    if fields[1] != "ssh-ed25519" or not re.fullmatch(
+        r"[A-Za-z0-9+/=]{32,2048}", fields[2]
+    ):
+        raise DeployError("SSH host key scan returned an invalid key")
+    if f"{fields[1]} {fields[2]}" != expected_public:
+        raise DeployError("LAN SSH host key does not match the root-ADB device key")
+
+
 def command_verify_ssh(arguments: argparse.Namespace) -> dict[str, Any]:
-    run(["adb", "forward", "tcp:2222", "tcp:2222"], timeout=10, limit=4096)
     with tempfile.TemporaryDirectory(prefix="u60-v1-ssh-check-") as temporary:
         known_hosts = Path(temporary) / "known_hosts"
         scan = run(
-            ["ssh-keyscan", "-p", "2222", "127.0.0.1"],
+            ["ssh-keyscan", "-p", str(SSH_PORT), MANAGEMENT_ADDRESS],
             timeout=15,
             limit=64 * 1024,
         )
-        if b"ssh-ed25519" not in scan.stdout:
-            raise DeployError("SSH host key scan did not return Ed25519")
+        verify_scanned_ssh_host_key(scan.stdout, read_device_ssh_host_public())
         known_hosts.write_bytes(scan.stdout)
         os.chmod(known_hosts, 0o600)
         verify_one_ssh_key(arguments.key_one, known_hosts)
@@ -799,7 +841,7 @@ def command_verify_ssh(arguments: argparse.Namespace) -> dict[str, Any]:
                 "ssh",
                 "-vv",
                 "-p",
-                "2222",
+                str(SSH_PORT),
                 "-o",
                 "BatchMode=yes",
                 "-o",
@@ -812,7 +854,7 @@ def command_verify_ssh(arguments: argparse.Namespace) -> dict[str, Any]:
                 f"UserKnownHostsFile={known_hosts}",
                 "-o",
                 "ConnectTimeout=8",
-                "root@127.0.0.1",
+                f"root@{MANAGEMENT_ADDRESS}",
                 "true",
             ],
             timeout=15,

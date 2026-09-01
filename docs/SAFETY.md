@@ -171,7 +171,9 @@ Those historical actions remain disabled. The reviewed V1 path uses only
 `state`, `pki`, `ssh`, `runtime` and bounded `logs` directories. A canary binds
 only loopback `19443`; stable HTTPS binds only the management address at `9443`;
 Dropbear binds only that address at `2222` with password/PAM and forwarding
-compiled out plus runtime `-s -g -j -k`.
+compiled out. Its compiled feature set does not expose `-s`, `-g` or `-E`; the
+launcher retains `-j -k`, and direct LAN host-key verification must match the
+device key read independently through root ADB.
 
 `scripts/deploy-b04-v1.py` keeps release install, canary, stable activation,
 SSH, rollback and the single `rc.local` line as separate gates. It rechecks

@@ -7,7 +7,8 @@ generator into one static AArch64 musl binary.
 
 The committed `device/dropbear/localoptions.h` compiles out password/PAM
 authentication, local and remote TCP forwarding, agent forwarding and X11.
-The runtime launcher additionally supplies `-s -g -j -k`, binds only
+It also compiles out syslog, so the unsupported runtime flags `-s`, `-g` and
+`-E` must not be passed. The runtime launcher supplies `-j -k`, binds only
 `192.168.0.1:2222`, caps authentication attempts and idle time, and reads
 exactly two owner-controlled public keys from `/data/u60/ssh/authorized_keys`.
 
@@ -31,4 +32,7 @@ The output must still pass both device tests before persistence:
    authentication method.
 
 Root ADB remains available during and after both tests. Host private keys never
-enter the repository, release bundle or unencrypted NAS evidence.
+enter the repository, release bundle or unencrypted NAS evidence. LAN
+verification accepts the scanned Ed25519 host key only when it exactly matches
+the public host key read from the same device over root ADB; it does not route
+SSH through an ADB TCP forward.

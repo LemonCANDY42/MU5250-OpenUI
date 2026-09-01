@@ -131,8 +131,10 @@ loopback canary is evidence for a stage, not completion of V1.
    known-good rollback release and use one minimal startup entry without a new
    firewall or init hook. Updates remain manual and fail back to the previous
    release. Dropbear must listen only on the management address and port `2222`
-   with `-s -g`; public-key success, password failure and two independent
-   recovery keys are accepted while root USB ADB remains available. Final V1
+   with password/PAM and forwarding compiled out plus runtime `-j -k`; direct
+   LAN host-key verification must match the device key read through root ADB.
+   Public-key success, password failure and two independent recovery keys are
+   accepted while root USB ADB remains available. Final V1
    acceptance is a one-hour active soak covering polling, client reconnect,
    agent restart, failed-version rollback, bounded logs and unchanged USB, WAN,
    Wi-Fi, FOTA, boot and Mac route/TUN invariants. This owner-approved gate does

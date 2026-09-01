@@ -515,8 +515,14 @@ class DeploymentBoundaryTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, combined.lower())
         dropbear = (ROOT / "device/b04-v1/run-dropbear.sh").read_text()
-        self.assertIn("-F -E -s -g -j -k -m", dropbear)
+        self.assertIn("-F -j -k -m", dropbear)
+        self.assertNotIn("-E", dropbear)
+        self.assertNotIn("-s -g", dropbear)
         self.assertIn("192.168.0.1:2222", dropbear)
+        compile_options = (ROOT / "device/dropbear/localoptions.h").read_text()
+        self.assertIn("#define DROPBEAR_SVR_PASSWORD_AUTH 0", compile_options)
+        self.assertIn("#define DROPBEAR_SVR_PAM_AUTH 0", compile_options)
+        self.assertIn("#define DROPBEAR_SVR_PUBKEY_AUTH 1", compile_options)
         agent = (ROOT / "device/b04-v1/run-agent.sh").read_text()
         self.assertIn("127.0.0.1:19443", agent)
         self.assertIn("192.168.0.1:9443", agent)
@@ -537,6 +543,21 @@ class DeploymentBoundaryTests(unittest.TestCase):
         self.assertIn('>/dev/null 2>&1 </dev/null &', dropbear)
         self.assertNotIn('>>"$log"', agent)
         self.assertNotIn('>>"$log"', dropbear)
+
+    def test_ssh_host_scan_must_match_the_adb_device_key(self) -> None:
+        expected = "ssh-ed25519 " + "A" * 48
+        accepted = f"[192.168.0.1]:2222 {expected}\n".encode()
+        DEPLOY.verify_scanned_ssh_host_key(accepted, expected)
+        with self.assertRaises(DEPLOY.DeployError):
+            DEPLOY.verify_scanned_ssh_host_key(
+                b"[192.168.0.1]:2222 ssh-ed25519 " + b"B" * 48 + b"\n",
+                expected,
+            )
+        with self.assertRaises(DEPLOY.DeployError):
+            DEPLOY.verify_scanned_ssh_host_key(
+                accepted + b"[192.168.0.1]:2222 ssh-rsa " + b"C" * 48 + b"\n",
+                expected,
+            )
 
 
 if __name__ == "__main__":

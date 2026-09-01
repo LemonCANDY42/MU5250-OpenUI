@@ -31,7 +31,7 @@ fi
 rm -f "$pid_file"
 
 nohup "$dropbear" dropbear \
-    -F -E -s -g -j -k -m \
+    -F -j -k -m \
     -p 192.168.0.1:2222 \
     -P "$pid_file" \
     -D "$U60_SSH" \
