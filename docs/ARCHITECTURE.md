@@ -138,6 +138,12 @@ loopback canary is evidence for a stage, not completion of V1.
    Wi-Fi, FOTA, boot and Mac route/TUN invariants. This owner-approved gate does
    not claim the earlier 24-hour RSS-growth target.
 
+   The startup entry is backgrounded, waits at most two minutes for the fixed
+   management address, and uses at most three five-second-spaced attempts per
+   service. It is intentionally not a crash watchdog. Agent and Dropbear
+   process output is discarded so persistence cannot introduce an unbounded
+   log writer; only bounded event state and the one-shot monitor write `/data`.
+
 The following remain post-V1: true Apple Passkey/WebAuthn with an owner domain
 and AASA, Android, Tailscale/DoH/speed-test/scheduler/USSD/STK plugins, and
 high-risk APN, network-mode, band/cell, USB or FOTA writes. Useful MU and

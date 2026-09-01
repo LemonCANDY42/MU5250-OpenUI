@@ -8,11 +8,9 @@ set -eu
 U60_ROOT=/data/u60
 U60_RELEASES=$U60_ROOT/releases
 U60_RUNTIME=$U60_ROOT/runtime
-U60_LOGS=$U60_ROOT/logs
 U60_STATE=$U60_ROOT/state
 U60_PKI=$U60_ROOT/pki
 U60_SSH=$U60_ROOT/ssh
-U60_MAX_LOG_BYTES=1048576
 
 fail() {
     printf '%s\n' "u60-v1: $*" >&2
@@ -49,28 +47,13 @@ require_release_root() {
 
 ensure_runtime_directories() {
     umask 077
-    for directory in "$U60_RUNTIME" "$U60_LOGS" "$U60_STATE"; do
+    for directory in "$U60_RUNTIME" "$U60_STATE"; do
         if [ -L "$directory" ]; then
             fail "$directory must not be a symlink"
         fi
         mkdir -p "$directory"
         chmod 700 "$directory"
     done
-}
-
-rotate_log() {
-    log=$1
-    [ ! -L "$log" ] || fail "log path must not be a symlink"
-    if [ -f "$log" ]; then
-        size=$(wc -c <"$log" | tr -d ' ')
-        case "$size" in *[!0-9]*|'') fail "log size is invalid" ;; esac
-        if [ "$size" -gt "$U60_MAX_LOG_BYTES" ]; then
-            rm -f "$log.1"
-            mv "$log" "$log.1"
-        fi
-    elif [ -e "$log" ]; then
-        fail "log path is not a regular file"
-    fi
 }
 
 validated_pid_exe() {

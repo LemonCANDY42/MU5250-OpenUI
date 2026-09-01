@@ -15,12 +15,10 @@ case "$mode" in
     canary)
         bind=127.0.0.1:19443
         pid_file=$U60_RUNTIME/canary.pid
-        log=$U60_LOGS/canary.log
         ;;
     stable)
         bind=192.168.0.1:9443
         pid_file=$U60_RUNTIME/agent.pid
-        log=$U60_LOGS/agent.log
         ;;
     *) fail "agent mode must be canary or stable" ;;
 esac
@@ -37,13 +35,12 @@ if validated_pid_exe "$pid_file" "$agent"; then
     exit 0
 fi
 rm -f "$pid_file"
-rotate_log "$log"
 
 U60_TLS_CERT_PEM=$U60_PKI/device-cert.pem \
 U60_TLS_KEY_PEM=$U60_PKI/device-key.pem \
 U60_BIND=$bind \
 U60_STATE_DIR=$U60_STATE \
-nohup "$agent" serve --web-root "$web_root" >>"$log" 2>&1 </dev/null &
+nohup "$agent" serve --web-root "$web_root" >/dev/null 2>&1 </dev/null &
 pid=$!
 write_pid_file "$pid_file" "$pid"
 sleep 1

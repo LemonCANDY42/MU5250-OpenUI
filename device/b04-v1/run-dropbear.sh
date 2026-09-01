@@ -12,7 +12,6 @@ ensure_runtime_directories
 
 dropbear=$RELEASE_ROOT/dropbearmulti
 pid_file=$U60_RUNTIME/dropbear.pid
-log=$U60_LOGS/dropbear.log
 authorized=$U60_SSH/authorized_keys
 host_key=$U60_SSH/dropbear_ed25519_host_key
 
@@ -30,7 +29,6 @@ if validated_pid_exe "$pid_file" "$dropbear"; then
     exit 0
 fi
 rm -f "$pid_file"
-rotate_log "$log"
 
 nohup "$dropbear" dropbear \
     -F -E -s -g -j -k -m \
@@ -39,7 +37,7 @@ nohup "$dropbear" dropbear \
     -D "$U60_SSH" \
     -r "$host_key" \
     -T 3 -K 30 -I 600 \
-    >>"$log" 2>&1 </dev/null &
+    >/dev/null 2>&1 </dev/null &
 pid=$!
 sleep 1
 if ! kill -0 "$pid" 2>/dev/null; then

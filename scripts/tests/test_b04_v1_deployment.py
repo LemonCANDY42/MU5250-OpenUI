@@ -436,6 +436,24 @@ class DeploymentBoundaryTests(unittest.TestCase):
                 b"#!/bin/sh\n/data/u60/start-current.sh --unsafe\nexit 0\n"
             )
 
+    def test_boot_install_requires_both_live_services_and_two_keys(self) -> None:
+        original = b"#!/bin/sh\necho stock\nexit 0\n"
+        with (
+            mock.patch.object(DEPLOY, "adb_push"),
+            mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
+        ):
+            self.assertTrue(
+                DEPLOY.install_boot_hook(
+                    original,
+                    {"mode": 0o775, "uid": 0, "gid": 0},
+                )
+            )
+        gate = adb_shell.call_args.args[0]
+        self.assertIn(f"{DEPLOY.DEVICE_ROOT}/runtime/agent.pid", gate)
+        self.assertIn(f"{DEPLOY.DEVICE_ROOT}/runtime/dropbear.pid", gate)
+        self.assertIn(f"{DEPLOY.DEVICE_ROOT}/ssh/authorized_keys", gate)
+        self.assertIn('" -eq 2 ]', gate)
+
     def test_authorized_keys_requires_two_independent_safe_public_keys(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "authorized_keys"
@@ -474,6 +492,23 @@ class DeploymentBoundaryTests(unittest.TestCase):
         agent = (ROOT / "device/b04-v1/run-agent.sh").read_text()
         self.assertIn("127.0.0.1:19443", agent)
         self.assertIn("192.168.0.1:9443", agent)
+
+    def test_boot_start_is_network_gated_and_has_finite_retries(self) -> None:
+        startup = (ROOT / "device/b04-v1/start-current.sh").read_text()
+        self.assertIn("ip -4 addr show", startup)
+        self.assertIn("boot_wait_remaining=24", startup)
+        self.assertIn("start_attempts=3", startup)
+        self.assertIn('sleep 5', startup)
+        self.assertIn('"$release/bin/run-agent.sh" stable', startup)
+        self.assertIn('"$release/bin/run-dropbear.sh"', startup)
+
+    def test_long_running_services_do_not_write_process_logs(self) -> None:
+        agent = (ROOT / "device/b04-v1/run-agent.sh").read_text()
+        dropbear = (ROOT / "device/b04-v1/run-dropbear.sh").read_text()
+        self.assertIn('>/dev/null 2>&1 </dev/null &', agent)
+        self.assertIn('>/dev/null 2>&1 </dev/null &', dropbear)
+        self.assertNotIn('>>"$log"', agent)
+        self.assertNotIn('>>"$log"', dropbear)
 
 
 if __name__ == "__main__":

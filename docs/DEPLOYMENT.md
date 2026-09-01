@@ -109,8 +109,12 @@ check automatically restores it when available. `rollback` is also explicit.
 The boot hook is exactly one backgrounded `start-current.sh` line in
 `/etc/rc.local`, inserted before its single `exit 0` after byte backup and
 syntax validation. No firewall/init hook, UCI service, USB/FOTA change or
-partition action exists in this path. Logs rotate at 1 MiB with one prior file
-per service, keeping launcher logs below 6 MiB in total.
+partition action exists in this path. The background launcher waits up to two
+minutes for the fixed management address and gives each service at most three
+startup attempts with five-second spacing; it then exits and is not a watchdog.
+Agent and Dropbear stdout/stderr go to `/dev/null`, so long-running services do
+not create persistent process logs. Bounded security state and the one-shot
+stability recorder remain the only service-owned persistent write paths.
 
 A release containing the built-in stability monitor starts its one and only
 seven-day window when that release first starts successfully. Its private state

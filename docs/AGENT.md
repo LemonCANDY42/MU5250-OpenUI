@@ -254,7 +254,8 @@ in-memory-only token behavior.
 ## Resource and deployment state
 
 The target is idle RSS at or below 12 MiB, average idle CPU below 1%, less than
-2 MiB RSS growth over 24 hours and bounded local logs. No source-only build can
+2 MiB RSS growth over 24 hours and no long-running process log writes. Bounded
+security state and the one-shot 1 MiB monitor remain persistent. No source-only build can
 prove those values. They are measured only during the later `19443` canary.
 The one-shot monitor described above supplies longer-running evidence only after
 that release is explicitly deployed; adding it to source is not device evidence.

@@ -181,6 +181,14 @@ the dormant `/data/zte-agent` paths. The boot entry is permitted only after a
 current release, stable agent PID, Dropbear PID and exactly two public keys are
 present; it adds no init/firewall/UCI hook. Root ADB is never removed.
 
+The boot line backgrounds a finite launcher so stock boot never waits on it.
+The launcher waits no more than two minutes for `192.168.0.1`, then gives Agent
+and key-only Dropbear at most three startup attempts each with fixed five-second
+spacing. It exits after success or exhaustion and never supervises or restarts a
+later crash. Both long-running processes discard stdout/stderr, preventing an
+unbounded persistent service log; security state is fixed-count and the
+ten-minute one-shot monitor has its independent 1 MiB ceiling.
+
 This implementation still requires live acceptance. The owner reduced the
 final observation to a one-hour active gate; that result must not be represented
 as the original 24-hour RSS-growth target.
