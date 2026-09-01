@@ -94,6 +94,10 @@ python3 scripts/deploy-b04-v1.py verify-ssh \
 python3 scripts/deploy-b04-v1.py boot-hook
 ```
 
+Updating SSH stops only the PID-file-owned Dropbear whose executable resolves
+under an immutable V1 release, then starts the selected release. An absent or
+foreign process fails closed; it never signals ADB or a stock service.
+
 `lan-canary` is deliberately narrower than `activate`: it requires `current`
 and `previous` to remain absent, stops the loopback canary, starts the exact
 accepted release on `192.168.0.1:9443`, and proves the CA-verified `401`

@@ -377,6 +377,21 @@ def stop_managed_agent(pid_name: str) -> None:
     adb_shell(script, timeout=30)
 
 
+def stop_managed_dropbear() -> None:
+    pid_file = f"{DEVICE_ROOT}/runtime/dropbear.pid"
+    script = (
+        f'set -eu; f={pid_file}; [ -f "$f" ] && [ ! -L "$f" ] || exit 0; '
+        'p=$(sed -n \'1p\' "$f"); case "$p" in \'\'|*[!0-9]*) '
+        'rm -f "$f"; exit 0;; esac; '
+        '[ -d "/proc/$p" ] || { rm -f "$f"; exit 0; }; '
+        'x=$(readlink "/proc/$p/exe" 2>/dev/null || true); case "$x" in '
+        f"{DEVICE_ROOT}/releases/[0-9a-f]*/dropbearmulti) ;; *) exit 1;; esac; "
+        'kill "$p"; i=0; while kill -0 "$p" 2>/dev/null; '
+        'do i=$((i+1)); [ "$i" -lt 20 ] || exit 1; sleep 1; done; rm -f "$f"'
+    )
+    adb_shell(script, timeout=30)
+
+
 def stop_legacy_canary_without_pid_file() -> None:
     script = (
         'set -eu; pids=$(pidof zte-agent 2>/dev/null || true); [ -n "$pids" ] || exit 0; '
@@ -812,6 +827,7 @@ def install_ssh(release_id: str, authorized_keys: bytes) -> dict[str, Any]:
         f"{DEVICE_ROOT}/ssh/dropbear_ed25519_host_key; "
         f"{release}/bin/run-dropbear.sh"
     )
+    stop_managed_dropbear()
     adb_shell(script, timeout=45)
     public_host = adb_shell(
         f"{release}/dropbearmulti dropbearkey -y "

@@ -599,6 +599,21 @@ class DeploymentBoundaryTests(unittest.TestCase):
             with self.assertRaises(DEPLOY.DeployError):
                 DEPLOY.validate_authorized_keys(path)
 
+    def test_install_ssh_stops_the_prior_managed_dropbear(self) -> None:
+        host_public = "ssh-ed25519 " + "A" * 48
+        with (
+            mock.patch.object(DEPLOY, "adb_push"),
+            mock.patch.object(
+                DEPLOY,
+                "adb_shell",
+                side_effect=["", "", host_public],
+            ),
+            mock.patch.object(DEPLOY, "stop_managed_dropbear") as stop,
+        ):
+            details = DEPLOY.install_ssh("a" * 64, b"ssh-ed25519 key\n")
+        stop.assert_called_once_with()
+        self.assertTrue(details["dropbear_started"])
+
     def test_device_scripts_have_fixed_safe_surface(self) -> None:
         combined = "\n".join(
             line
