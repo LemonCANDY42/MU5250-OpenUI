@@ -391,6 +391,9 @@ class DeploymentBoundaryTests(unittest.TestCase):
             mock.patch.object(DEPLOY, "verify_device_public_ca_matches") as ca_match,
             mock.patch.object(DEPLOY, "switch_current") as switch_current,
             mock.patch.object(DEPLOY, "stop_managed_agent") as stop,
+            mock.patch.object(
+                DEPLOY, "stop_legacy_canary_without_pid_file"
+            ) as stop_legacy,
             mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
             mock.patch.object(DEPLOY, "run") as run,
             mock.patch.object(
@@ -400,13 +403,22 @@ class DeploymentBoundaryTests(unittest.TestCase):
             details = DEPLOY.command_activate(arguments)
         ca_match.assert_called_once_with(arguments.ca_cert)
         switch_current.assert_called_once_with("a" * 64)
-        stop.assert_called_once_with("agent.pid")
+        self.assertEqual(
+            stop.call_args_list,
+            [mock.call("canary.pid"), mock.call("agent.pid")],
+        )
+        stop_legacy.assert_called_once_with()
         adb_shell.assert_called_once_with(
             f"{DEPLOY.DEVICE_ROOT}/releases/{'a' * 64}/bin/run-agent.sh stable",
             timeout=30,
         )
         verify_tls.assert_called_once_with(arguments.ca_cert)
-        run.assert_not_called()
+        run.assert_called_once_with(
+            ["adb", "forward", "--remove", "tcp:19443"],
+            timeout=10,
+            limit=4096,
+            check=False,
+        )
         self.assertEqual(details["tls_401"], True)
 
     def test_activate_rolls_back_when_the_new_agent_cannot_start(self) -> None:
@@ -419,6 +431,8 @@ class DeploymentBoundaryTests(unittest.TestCase):
             mock.patch.object(DEPLOY, "verify_device_public_ca_matches"),
             mock.patch.object(DEPLOY, "switch_current"),
             mock.patch.object(DEPLOY, "stop_managed_agent"),
+            mock.patch.object(DEPLOY, "stop_legacy_canary_without_pid_file"),
+            mock.patch.object(DEPLOY, "run"),
             mock.patch.object(
                 DEPLOY,
                 "adb_shell",

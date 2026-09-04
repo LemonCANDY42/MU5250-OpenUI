@@ -1039,6 +1039,14 @@ def command_activate(arguments: argparse.Namespace) -> dict[str, Any]:
     release_id = require_local_release(arguments.release)
     installed = install_release(arguments.release, release_id)
     verify_device_public_ca_matches(arguments.ca_cert)
+    stop_managed_agent("canary.pid")
+    stop_legacy_canary_without_pid_file()
+    run(
+        ["adb", "forward", "--remove", "tcp:19443"],
+        timeout=10,
+        limit=4096,
+        check=False,
+    )
     switch_current(release_id)
     try:
         stop_managed_agent("agent.pid")

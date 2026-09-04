@@ -152,7 +152,9 @@ Wi-Fi for this gate. Any failed TLS or evidence step stops the managed LAN
 agent.
 
 `activate` preserves the old `current` target as `previous`; a failed TLS health
-check automatically restores it when available. Because stable HTTPS binds only
+check automatically restores it when available. Before changing either release
+link, it stops the owned loopback canary and removes its ADB forward so an update
+cannot leave a second Agent process behind. Because stable HTTPS binds only
 the management address, this health check uses the same host-side, full-CA,
 hostname-verified request as `lan-canary`; it never relies on the device's
 temporarily incorrect post-boot wall clock. Device-shell gates are delivered as
