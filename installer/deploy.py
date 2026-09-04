@@ -20,6 +20,10 @@ import tempfile
 import time
 import urllib.request
 
+raise RuntimeError(
+    "The legacy plaintext/FOTA-changing deploy library is disabled in the B04 V1 branch"
+)
+
 REPO = "dklasens/MU5250-OpenUI"
 RELEASE_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 SSH_PORT = 2222

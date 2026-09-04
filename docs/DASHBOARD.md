@@ -1,78 +1,110 @@
 # Dashboard
 
-React 19 + Vite + Tailwind SPA served from the device itself (uhttpd,
-port 8080, files in `/data/www`), talking to the agent on port 9090.
+The dashboard is a minimal, read-only TypeScript client for the generated
+`/v1` contract. It is built as three small static artifacts and may be served by
+the agent's existing TLS listener:
 
-## Layout
-
-Five navigation groups — bottom tab bar on phones, sidebar on desktop,
-light/dark theme (auto + manual), each group lazy-loaded:
-
-| Group | Contents |
-|---|---|
-| **Home** | signal, modem mode, throughput, battery, connection, device, data usage — backed by the single batched `/api/dashboard` poll |
-| **Signal** | per-carrier LTE/NR detail (PCI, ARFCN, RSRP/RSRQ/SINR) + network mode, band lock, one-tap cell lock from live cells |
-| **Network** | clients by Wi-Fi/USB-C/Ethernet with link details, per-band Wi-Fi configuration, LAN/DHCP and DNS |
-| **Modem** | APN profiles (with carrier presets), data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
-| **System** | thermals, battery health, charge control, signal/connection loggers, AT console, on-demand process list, device/SIM info, USB mode + powerbank, power actions |
-
-The agent exposes exactly what these screens use and nothing else — the
-unsurfaced extras (DoH proxy, speed test, scheduler, SMS forwarding, SIM PIN
-flows, calls/USSD/STK) were removed rather than left dangling. See
-[AGENT.md](AGENT.md) for the route table, and
-`scripts/check-api-contract.py`, which fails if the two drift apart.
-
-## Source layout
-
-```
-web-app/src/
-  App.tsx            auth gate + group switching (lazy-loaded)
-  app/               shell (sidebar/bottom tabs), login, theme, home poll context
-  data/
-    client.ts        token handling, envelope unwrapping, timeouts
-    api.ts           endpoint bindings + firmware response mappers
-    poll.ts          visibility-aware, non-overlapping poller with SWR cache
-  ui/                design-system primitives (cards, controls, toast, confirm)
-  icons.tsx          inline SVG icon set (no icon dependency)
-  features/
-    home/            Overview — single batched /api/dashboard poll
-    signal/          Overview + Mode & Locking
-    network/         Clients + Wi-Fi + Router
-    modem/           APN + Data + TTL + SMS
-    system/          Metrics + Tools + Settings
+```sh
+zte-agent serve --web-root /path/to/web-app/dist
 ```
 
-## Conventions that keep the device happy
+Static hosting is opt-in. See [AGENT.md](AGENT.md) for canonical-directory,
+symlink, asset allowlist and response-header rules. The source-only command
+above is documentation, not authorization to run the agent on the U60.
 
-- Home is one batched request (`/api/dashboard`) every 3 s — not nine calls.
-- Pollers never overlap (next poll scheduled after the previous completes)
-  and pause while the browser tab is hidden.
-- Expensive endpoints (`/api/network/clients`, `/api/system/top`) poll
-  slowly (15 s) or load on demand.
-- Last-good data is cached in memory, so switching tabs renders instantly
-  and refreshes in the background.
+## Product surface
 
-## Develop
+After authentication the dashboard requests one typed
+`/v1/status/dashboard` snapshot. The agent reads the same fixed capability and
+status sources locally, omits unsupported values, and preserves independent
+failures so one unavailable source does not discard the other cards. It makes
+one source pass without a duplicate capability probe; an 11-second server
+budget returns completed cards and marks unfinished components as timed out.
+Each response reads normalized device identity before admission; admission then
+occurs before the blocking aggregate worker is created. If another snapshot is
+still running, an overlapping refresh starts no additional aggregate source pass
+and waits only within its own server budget. If admission remains occupied, the
+existing response shape marks the unfinished components with typed
+`snapshot_timeout` failures.
+It displays:
+
+- normalized device identity;
+- capability status and recovery metadata;
+- system uptime, kernel and load average, plus optional current CPU, memory and fixed `/data` storage usage;
+- battery state, real fuel-gauge capacity, voltage, current, derived instantaneous power and temperature, plus optional stock display capacity, recognized protection mode, validated health, cycle, capacity and kernel-estimate details;
+- validated thermal sensors.
+
+An unsupported capability is shown explicitly. A degraded capability retains
+its reason and maintenance action. The individual read endpoints remain in the
+contract for compatibility and focused diagnostics, but routine refresh no
+longer fans out one HTTPS request per card. There are no raw commands,
+firmware dictionaries or legacy endpoint bindings. The authenticated controls
+remain limited to the typed V1 daily-operation surface; charging is read-only.
+The shared API additionally describes saved primary-AP states and reports the
+stock multi-band integration state without exposing either the stock Wi-Fi
+master switch or multi-band mode as a write. The clients continue to support
+independent primary-band edits when the stock mode permits them and keep 5 GHz
+identity aligned with 2.4 GHz while the read-only integrated state is active.
+Daily error responses carry typed
+recovery metadata so clients retain a confirmation only when recovery is
+actually pending. The browser preserves that typed flag, clears terminal
+`400`/`409`/resolved-`503` outcomes, retains ambiguous transport outcomes, and
+retains a confirmation across `401` so sign-in can resume it. The current web UI keeps
+its existing transactional settings surface: its Wi-Fi changes store a
+client-generated confirmation identifier in IndexedDB before mutation so a
+page reload can resume the bounded rollback handshake.
+The battery card displays the magnitude of signed `power_mw`; the API retains
+direction through the separate current and state fields. This is a battery-side
+estimate derived from voltage and current, not USB or wall power.
+Signal status may include bounded LTE/NR aggregation, network-selection and
+read-only cell-lock summaries; the fields remain optional so this client can
+read earlier V1 agents. The existing Wi-Fi card shows router-observed RSSI and
+rates when the request peer has one unique DHCP-to-station correlation. An
+unmatched or ambiguous peer leaves the optional context absent without failing
+Wi-Fi status. New system and battery fields are optional so the dashboard still
+accepts earlier V1 agents. Optional stock display capacity is bounded to 0–100,
+and only the recognized `long_charging` protection value is accepted; malformed
+optional values reject the affected battery panel instead of being guessed.
+The required fuel-gauge capacity remains the history and runtime source. The
+signed battery charge counter is labeled as a
+relative kernel counter rather than remaining capacity, and applicable time
+values are labeled as kernel estimates; a zero time-to-full at the charging/full
+boundary is shown as complete, while estimates beyond the 30-day plausibility
+window are omitted. When both normalized capacity fields are present, battery
+health is displayed as learned full capacity divided by design capacity. The
+derived percentage is not capped at 100%, because a learned threshold can be
+higher than the nominal design threshold; missing or invalid inputs omit it.
+
+## Browser authentication
+
+The preferred local flow generates an ECDSA P-256 WebCrypto key pair with
+`extractable=false`. The browser exports only the public SPKI for the existing
+one-time pairing endpoint. IndexedDB stores the non-exportable private CryptoKey,
+public CryptoKey, credential ID and label. A later login requests the exact
+domain-separated challenge bytes, signs them with ECDSA/SHA-256 and exchanges
+the single-use signature for a scoped session.
+
+Raw 64-byte WebCrypto signatures are accepted directly; unambiguous canonical
+DER output is strictly parsed and normalized. An exact 64-byte sequence is
+inherently ambiguous, so the server tries both raw and DER interpretations and
+accepts only one that verifies. Bearer tokens remain only in page memory and
+logout clears them. Password recovery is a manual form fallback; the dashboard
+does not persist it, while browser password-manager behavior remains separately
+controlled by the browser and user.
+
+## Verification
 
 ```sh
 cd web-app
-npm install
-npm run dev       # local dev server (expects agent at <hostname>:9090)
-npm run build     # tsc + vite build -> dist/
+npm ci
+npm ci --prefix ../tools/openapi
+npm audit --audit-level=high
 npm run lint
+npm run check:api
+npm test
+npm run build
+npm run check:artifact
 ```
 
-Deploy to the device: `./deploy-dashboard.sh` from the repo root.
-
-### Local demo without the device
-
-```sh
-cd web-app
-bash tools/demo.sh        # dashboard on :8080 + mock agent on :9090
-bash tools/demo.sh stop
-```
-
-The mock agent (`tools/mock_agent.py`, stdlib-only) serves realistic U60 Pro
-data — Telstra ENDC with LTE anchor + n78 NR, live-jittering throughput,
-battery, clients, thermals — so every screen can be reviewed without
-hardware. Sign in with any password.
+The artifact gate scans the completed `dist/` tree for legacy API paths,
+plaintext URLs, the old split-origin port and common token-persistence markers.

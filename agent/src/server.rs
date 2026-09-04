@@ -1,570 +1,1416 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::HashMap;
+use std::fs;
+use std::io::Cursor;
+use std::net::{SocketAddr, TcpListener};
+use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
+use axum::body::{Body, Bytes};
+use axum::extract::rejection::BytesRejection;
+use axum::extract::{ConnectInfo, DefaultBodyLimit, State};
+use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE, HOST, ORIGIN, RETRY_AFTER};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post, put};
+use axum::{Extension, Json, Router};
+use axum_server::tls_rustls::RustlsConfig;
 use serde_json::{json, Value};
-use tiny_http::{Header, Method, Request, Response, Server};
 
-use crate::at_cmd;
-use crate::cell;
-use crate::connection_logger;
-use crate::device_ext;
+use crate::api_v1;
+use crate::auth::{AuthFailure, Scope};
+use crate::b04_io::DeviceLifecycleAction;
 use crate::handlers::{self, AppState};
-use crate::network_ext;
-use crate::router;
-use crate::signal_logger;
-use crate::sim;
-use crate::sms;
-use crate::usb;
-use crate::wifi;
 
-/// How long a worker blocks before re-checking whether the listener died.
-/// Also bounds how long a rebuild waits for the other workers to drain.
-const WORKER_POLL: Duration = Duration::from_secs(30);
-const RETRY_MIN: Duration = Duration::from_secs(1);
-const RETRY_MAX: Duration = Duration::from_secs(30);
+const MAX_AUTH_BODY_BYTES: usize = 64 * 1024;
+const CONTENT_SECURITY_POLICY_VALUE: &str = "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 
-pub fn start(bind: &str, threads: usize, state: Arc<AppState>) {
-    // Seed the CPU tracker with a baseline (speed tracker self-seeds)
-    state.cpu.seed();
+#[derive(Clone)]
+pub struct StaticWebRoot {
+    assets: Arc<HashMap<String, StaticAsset>>,
+}
 
-    // tiny_http's accept thread exits permanently on its first accept() error
-    // — plausible here via EMFILE, ENOBUFS under memory pressure, or interface
-    // churn. That used to leave every worker blocked forever on a listener that
-    // would never yield another request, with the process still alive and
-    // nothing to restart it. Supervise instead: a worker that sees the failure
-    // flags it, all workers drain, and we rebuild the listener.
-    let mut retry = RETRY_MIN;
-    loop {
-        let server = match Server::http(bind) {
-            Ok(s) => {
-                retry = RETRY_MIN;
-                Arc::new(s)
+#[derive(Clone)]
+struct StaticAsset {
+    content: Bytes,
+    content_type: &'static str,
+}
+
+impl StaticWebRoot {
+    pub fn load(root: impl AsRef<Path>) -> Result<Self, String> {
+        let root = root.as_ref();
+        let metadata = fs::symlink_metadata(root)
+            .map_err(|error| format!("read web root metadata: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            return Err("web root must be a real directory, not a symlink".into());
+        }
+        let root = root
+            .canonicalize()
+            .map_err(|error| format!("canonicalize web root: {error}"))?;
+        reject_symlinks(&root)?;
+
+        let mut assets = HashMap::new();
+        add_static_asset(&root, &root.join("index.html"), "/", &mut assets)?;
+        add_static_asset(&root, &root.join("index.html"), "/index.html", &mut assets)?;
+        for name in ["favicon.ico", "favicon.svg", "manifest.json"] {
+            let path = root.join(name);
+            if path.exists() {
+                add_static_asset(&root, &path, &format!("/{name}"), &mut assets)?;
             }
-            Err(e) => {
-                eprintln!("[server] bind {bind} failed: {e}; retrying in {}s", retry.as_secs());
-                std::thread::sleep(retry);
-                retry = (retry * 2).min(RETRY_MAX);
-                continue;
-            }
+        }
+        let asset_root = root.join("assets");
+        if asset_root.exists() {
+            collect_static_assets(&root, &asset_root, &mut assets)?;
+        }
+
+        Ok(Self {
+            assets: Arc::new(assets),
+        })
+    }
+
+    fn response(&self, path: &str, head_only: bool) -> Option<Response> {
+        let asset = self.assets.get(path)?;
+        let body = if head_only {
+            Body::empty()
+        } else {
+            Body::from(asset.content.clone())
         };
-
-        let dead = Arc::new(AtomicBool::new(false));
-        let mut handles = Vec::new();
-
-        for _ in 0..threads {
-            let server = Arc::clone(&server);
-            let state = Arc::clone(&state);
-            let dead = Arc::clone(&dead);
-            handles.push(std::thread::spawn(move || loop {
-                if dead.load(Ordering::Relaxed) {
-                    return;
-                }
-                match server.recv_timeout(WORKER_POLL) {
-                    Ok(Some(request)) => handle_request(request, &state),
-                    // Idle timeout — loop round and re-check `dead`.
-                    Ok(None) => {}
-                    Err(e) => {
-                        eprintln!("[server] listener failed: {e}");
-                        dead.store(true, Ordering::Relaxed);
-                        return;
-                    }
-                }
-            }));
-        }
-
-        for h in handles {
-            let _ = h.join();
-        }
-
-        eprintln!("[server] listener down, rebuilding in {}s", retry.as_secs());
-        std::thread::sleep(retry);
-        retry = (retry * 2).min(RETRY_MAX);
-    }
-}
-
-const DESTRUCTIVE_PATHS: &[&str] = &[
-    "/api/device/reboot",
-    "/api/device/shutdown",
-    "/api/system/kill-bloat",
-];
-
-fn cors_headers(origin: Option<&str>) -> Vec<Header> {
-    let allowed = origin
-        .and_then(|o| is_lan_origin(o).then_some(o))
-        .unwrap_or("");
-    vec![
-        Header::from_bytes("Access-Control-Allow-Origin", allowed).unwrap(),
-        Header::from_bytes(
-            "Access-Control-Allow-Methods",
-            "GET, POST, PUT, DELETE, OPTIONS",
+        Some(
+            (
+                StatusCode::OK,
+                [(CONTENT_TYPE, HeaderValue::from_static(asset.content_type))],
+                body,
+            )
+                .into_response(),
         )
-        .unwrap(),
-        Header::from_bytes(
-            "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, X-Confirm",
+    }
+}
+
+fn reject_symlinks(path: &Path) -> Result<(), String> {
+    for entry in fs::read_dir(path).map_err(|error| format!("scan web root: {error}"))? {
+        let entry = entry.map_err(|error| format!("scan web root entry: {error}"))?;
+        let metadata = fs::symlink_metadata(entry.path())
+            .map_err(|error| format!("read web asset metadata: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            return Err("web root must not contain symlinks".into());
+        }
+        if metadata.is_dir() {
+            reject_symlinks(&entry.path())?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_static_assets(
+    root: &Path,
+    directory: &Path,
+    assets: &mut HashMap<String, StaticAsset>,
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(directory)
+        .map_err(|error| format!("read web assets directory metadata: {error}"))?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err("web assets path must be a real directory".into());
+    }
+    for entry in fs::read_dir(directory).map_err(|error| format!("scan web assets: {error}"))? {
+        let entry = entry.map_err(|error| format!("scan web asset entry: {error}"))?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("read web asset metadata: {error}"))?;
+        if metadata.is_dir() {
+            collect_static_assets(root, &path, assets)?;
+            continue;
+        }
+        if !metadata.is_file() || content_type(&path).is_none() {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "web asset escaped the canonical root".to_string())?;
+        let relative = relative
+            .to_str()
+            .ok_or_else(|| "web asset path must be valid UTF-8".to_string())?;
+        if relative.contains(['\\', '\0']) {
+            return Err("web asset path contains an invalid character".into());
+        }
+        add_static_asset(root, &path, &format!("/{relative}"), assets)?;
+    }
+    Ok(())
+}
+
+fn add_static_asset(
+    root: &Path,
+    path: &Path,
+    url_path: &str,
+    assets: &mut HashMap<String, StaticAsset>,
+) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("read required web asset metadata: {error}"))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err("web assets must be real regular files".into());
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("canonicalize web asset: {error}"))?;
+    if !canonical.starts_with(root) {
+        return Err("web asset escaped the canonical root".into());
+    }
+    let content_type = content_type(&canonical)
+        .ok_or_else(|| "web asset has an unsupported content type".to_string())?;
+    let content = fs::read(&canonical).map_err(|error| format!("read web asset: {error}"))?;
+    assets.insert(
+        url_path.to_owned(),
+        StaticAsset {
+            content: Bytes::from(content),
+            content_type,
+        },
+    );
+    Ok(())
+}
+
+fn content_type(path: &Path) -> Option<&'static str> {
+    match path.extension().and_then(|extension| extension.to_str())? {
+        "html" => Some("text/html; charset=utf-8"),
+        "css" => Some("text/css; charset=utf-8"),
+        "js" => Some("text/javascript; charset=utf-8"),
+        "json" => Some("application/json; charset=utf-8"),
+        "svg" => Some("image/svg+xml"),
+        "ico" => Some("image/x-icon"),
+        "png" => Some("image/png"),
+        "webp" => Some("image/webp"),
+        "woff" => Some("font/woff"),
+        "woff2" => Some("font/woff2"),
+        _ => None,
+    }
+}
+
+pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) -> Router {
+    Router::new()
+        .route("/v1/device", get(device))
+        .route("/v1/device/reboot", post(device_reboot))
+        .route("/v1/device/power-off", post(device_power_off))
+        .route("/v1/capabilities", get(capabilities))
+        .route("/v1/status/dashboard", get(dashboard))
+        .route("/v1/status/clock", get(clock_status))
+        .route("/v1/status/system", get(system_status))
+        .route("/v1/status/battery", get(battery_status))
+        .route("/v1/status/thermal", get(thermal_status))
+        .route("/v1/status/signal", get(signal_status))
+        .route("/v1/status/cellular", get(cellular_status))
+        .route("/v1/status/traffic", get(traffic_status))
+        .route("/v1/status/wifi", get(wifi_status))
+        .route("/v1/lan/clients", get(lan_clients))
+        .route("/v1/sms", get(sms_list))
+        .route("/v1/sms/send", post(sms_send))
+        .route("/v1/charging", get(charging_status))
+        .route("/v1/traffic/cycle", put(traffic_cycle_update))
+        .route("/v1/wifi/transaction", post(wifi_transaction_begin))
+        .route(
+            "/v1/wifi/transaction/confirm",
+            post(wifi_transaction_confirm),
         )
-        .unwrap(),
-        Header::from_bytes("Access-Control-Max-Age", "86400").unwrap(),
-    ]
+        .route("/v1/auth/password/session", post(password_session))
+        .route("/v1/auth/password/advanced", post(advanced_session))
+        .route("/v1/auth/challenge", post(challenge))
+        .route("/v1/auth/challenge/verify", post(challenge_verify))
+        .route("/v1/auth/pair", post(pair))
+        .fallback(static_or_not_found)
+        .layer(DefaultBodyLimit::max(MAX_AUTH_BODY_BYTES))
+        .layer(middleware::from_fn(require_same_origin))
+        .layer(Extension(web_root))
+        .with_state(state)
 }
 
-fn is_lan_origin(origin: &str) -> bool {
-    if !origin.starts_with("http://") {
-        return false;
+pub fn load_tls_config(
+    certificate_path: impl AsRef<Path>,
+    private_key_path: impl AsRef<Path>,
+) -> Result<RustlsConfig, String> {
+    let certificate_pem = fs::read(certificate_path.as_ref())
+        .map_err(|error| format!("read TLS certificate PEM: {error}"))?;
+    let private_key_pem = fs::read(private_key_path.as_ref())
+        .map_err(|error| format!("read TLS private-key PEM: {error}"))?;
+    if certificate_pem.is_empty() || private_key_pem.is_empty() {
+        return Err("TLS certificate and private-key PEM files must not be empty".into());
     }
-    let host = &origin[7..];
-    let host = host.split(':').next().unwrap_or(host);
-    if host == "localhost" || host == "127.0.0.1" || host == "::1" {
-        return true;
+
+    let certificates = rustls_pemfile::certs(&mut Cursor::new(certificate_pem))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| format!("parse TLS certificate PEM: {error}"))?;
+    if certificates.is_empty() {
+        return Err("TLS certificate PEM contains no certificates".into());
     }
-    let parts: Vec<&str> = host.split('.').collect();
-    if parts.len() != 4 {
-        return false;
-    }
-    let octets: Vec<u8> = parts.iter().filter_map(|p| p.parse().ok()).collect();
-    if octets.len() != 4 {
-        return false;
-    }
-    octets[0] == 10
-        || (octets[0] == 172 && octets[1] >= 16 && octets[1] <= 31)
-        || (octets[0] == 192 && octets[1] == 168)
+    let private_key = rustls_pemfile::private_key(&mut Cursor::new(private_key_pem))
+        .map_err(|error| format!("parse TLS private-key PEM: {error}"))?
+        .ok_or_else(|| "TLS private-key PEM contains no private key".to_string())?;
+
+    // Explicit current RustCrypto provider and TLS 1.3-only profile. This
+    // avoids tiny_http's rustls 0.20 integration (RUSTSEC-2024-0336).
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let config = rustls::ServerConfig::builder_with_provider(provider)
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .map_err(|error| format!("configure TLS 1.3: {error}"))?
+        .with_no_client_auth()
+        .with_single_cert(certificates, private_key)
+        .map_err(|error| format!("configure TLS certificate: {error}"))?;
+    Ok(RustlsConfig::from_config(Arc::new(config)))
 }
 
-fn handle_request(mut request: Request, state: &AppState) {
-    let method = request.method().clone();
-    let url = request.url().to_string();
-    let path = url.split('?').next().unwrap_or(&url).to_string();
-    let origin = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("Origin"))
-        .map(|h| h.value.as_str().to_string());
-    let origin_ref = origin.as_deref();
-    let client_ip = request
-        .remote_addr()
-        .map(|a| a.ip().to_string())
-        .unwrap_or_default();
-    let user_agent = request
-        .headers()
-        .iter()
-        .find(|h| h.field.equiv("User-Agent"))
-        .map(|h| h.value.as_str().to_string());
-    let user_agent_ref = user_agent.as_deref();
+pub async fn start(
+    listener: TcpListener,
+    state: AppState,
+    tls: RustlsConfig,
+    web_root: Option<StaticWebRoot>,
+) -> Result<(), std::io::Error> {
+    axum_server::from_tcp_rustls(listener, tls)?
+        .serve(
+            router_with_web_root(state, web_root)
+                .into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .await
+}
 
-    if method == Method::Options {
-        let mut response = Response::empty(200);
-        for h in cors_headers(origin_ref) {
-            response = response.with_header(h);
-        }
-        let _ = request.respond(response);
-        return;
+async fn device(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || api_v1::device(&state))
+}
+
+async fn device_reboot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    device_lifecycle(state, &headers, body, DeviceLifecycleAction::Reboot).await
+}
+
+async fn device_power_off(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    device_lifecycle(state, &headers, body, DeviceLifecycleAction::PowerOff).await
+}
+
+async fn device_lifecycle(
+    state: AppState,
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+    action: DeviceLifecycleAction,
+) -> Response {
+    if let Err(error) = authorize(&state, headers, Scope::Advanced) {
+        return value_response(handlers::failure(error));
     }
-
-    let needs_auth = path != "/api/auth/login";
-    if needs_auth {
-        let authorized = request
-            .headers()
-            .iter()
-            .find(|h| h.field.as_str().to_ascii_lowercase() == "authorization")
-            .and_then(|h| h.value.as_str().strip_prefix("Bearer "))
-            .map(|token| state.auth.validate(token))
-            .unwrap_or(false);
-
-        if !state.auth.has_password() {
-            respond(
-                request,
-                403,
-                json!({"ok": false, "error": "no password configured. Set ZTE_AGENT_PASSWORD environment variable."}),
-                origin_ref,
-            );
-            return;
-        } else if !authorized {
-            respond(
-                request,
-                401,
-                json!({"ok": false, "error": "unauthorized"}),
-                origin_ref,
-            );
-            return;
-        }
-    }
-
-    if DESTRUCTIVE_PATHS.contains(&path.as_str()) {
-        let confirmed = request
-            .headers()
-            .iter()
-            .any(|h| h.field.equiv("X-Confirm") && h.value.as_str() == "true");
-        if !confirmed {
-            respond(
-                request,
-                400,
-                json!({"ok": false, "error": "destructive action requires X-Confirm: true header"}),
-                origin_ref,
-            );
-            return;
-        }
-    }
-
-    let mut body = Vec::new();
-    let mut reader = request.as_reader();
-    let mut limited = std::io::Read::take(&mut reader, 1024 * 1024);
-    if let Err(e) = std::io::Read::read_to_end(&mut limited, &mut body) {
-        respond(
-            request,
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    if body.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        return value_response((
             400,
-            json!({"ok": false, "error": format!("failed to read body: {e}")}),
-            origin_ref,
-        );
-        return;
+            json!({"ok": false, "error": {
+                "code": "invalid_request",
+                "message": "device lifecycle requests do not accept a body"
+            }}),
+        ));
     }
-
-    let (status, body_json) = route(&method, &path, state, &body, &client_ip, user_agent_ref);
-    respond(request, status, body_json, origin_ref);
-}
-
-pub fn route(
-    method: &Method,
-    path: &str,
-    state: &AppState,
-    body: &[u8],
-    client_ip: &str,
-    user_agent: Option<&str>,
-) -> (u16, Value) {
-    match (method, path) {
-        // Auth
-        (&Method::Post, "/api/auth/login") => handlers::login(state, body, client_ip, user_agent),
-        // Batch — the dashboard's heartbeat; feeds Home, Signal and Modem/Data
-        (&Method::Get, "/api/dashboard") => handlers::dashboard(state),
-        // Device / system
-        (&Method::Get, "/api/device") => handlers::device(state),
-        (&Method::Get, "/api/cpu") => handlers::cpu(state),
-        (&Method::Get, "/api/memory") => handlers::memory(state),
-        (&Method::Get, "/api/system/top") => handlers::system_top(state),
-        (&Method::Post, "/api/system/kill-bloat") => handlers::system_kill_bloat(state, body),
-        (&Method::Post, "/api/system/restart-agent") => device_ext::agent_restart(state),
-        (&Method::Post, "/api/device/reboot") => device_ext::device_reboot(state),
-        (&Method::Post, "/api/device/shutdown") => device_ext::device_shutdown(state),
-        (&Method::Get, "/api/device/battery-info") => network_ext::network_battery_ubus(state),
-        (&Method::Get, "/api/device/thermal/all") => device_ext::device_thermal_all(state),
-        (&Method::Get, "/api/device/battery/detail") => device_ext::device_battery_detail(state),
-        (&Method::Get, "/api/device/charger") => device_ext::device_charger(state),
-        (&Method::Get, "/api/device/charge-control") => device_ext::charge_control_get(state),
-        (&Method::Put, "/api/device/charge-control") => device_ext::charge_control_set(state, body),
-        // Network
-        (&Method::Get, "/api/network/clients") => network_ext::network_clients(state),
-        // WiFi
-        (&Method::Get, "/api/wifi/status") => wifi::wifi_status(state),
-        (&Method::Put, "/api/wifi/settings") => wifi::wifi_set(state, body),
-        // Modem
-        (&Method::Put, "/api/data-usage/reset-day") => {
-            handlers::data_usage_reset_day_set(state, body)
+    let permit = match Arc::clone(&state.lifecycle_admission).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return value_response((
+                409,
+                json!({"ok": false, "error": {
+                    "code": "lifecycle_action_in_progress",
+                    "message": "another device lifecycle action is already in progress"
+                }}),
+            ));
         }
-        (&Method::Get, "/api/modem/capabilities") => cell::modem_capabilities(state),
-        (&Method::Put, "/api/modem/network-mode") => cell::modem_network_mode_set(state, body),
-        // SMS
-        (&Method::Get, "/api/sms/capabilities") => sms::sms_capabilities(state),
-        (&Method::Post, "/api/sms/list") => sms::sms_list(state, body),
-        (&Method::Post, "/api/sms/send") => sms::sms_send(state, body),
-        (&Method::Post, "/api/sms/delete") => sms::sms_delete(state, body),
-        (&Method::Post, "/api/sms/read") => sms::sms_mark_read(state, body),
-        // SIM
-        (&Method::Get, "/api/sim/info") => sim::sim_info(state),
-        (&Method::Get, "/api/sim/imei") => sim::sim_imei(state),
-        // Cell / band lock
-        (&Method::Post, "/api/cell/lock/nr") => cell::cell_lock_nr(state, body),
-        (&Method::Post, "/api/cell/lock/lte") => cell::cell_lock_lte(state, body),
-        (&Method::Post, "/api/cell/lock/reset") => cell::cell_lock_reset(state),
-        (&Method::Post, "/api/cell/band/nr") => cell::cell_band_nr(state, body),
-        (&Method::Post, "/api/cell/band/lte") => cell::cell_band_lte(state, body),
-        (&Method::Post, "/api/cell/band/reset") => cell::cell_band_reset(state),
-        // Router
-        (&Method::Get, "/api/router/dns") => router::router_dns_get(state),
-        (&Method::Put, "/api/router/dns") => router::router_dns_set(state, body),
-        (&Method::Get, "/api/router/lan") => router::router_lan_get(state),
-        (&Method::Put, "/api/router/lan") => router::router_lan_set(state, body),
-        (&Method::Get, "/api/router/apn/mode") => router::router_apn_mode_get(state),
-        (&Method::Put, "/api/router/apn/mode") => router::router_apn_mode_set(state, body),
-        (&Method::Get, "/api/router/apn/profiles") => router::router_apn_profiles_get(state),
-        (&Method::Post, "/api/router/apn/profiles") => router::router_apn_profiles_add(state, body),
-        (&Method::Post, "/api/router/apn/profiles/delete") => {
-            router::router_apn_profiles_delete(state, body)
-        }
-        (&Method::Post, "/api/router/apn/profiles/activate") => {
-            router::router_apn_profiles_activate(state, body)
-        }
-        // USB
-        (&Method::Get, "/api/usb/status") => usb::usb_status(state),
-        (&Method::Put, "/api/usb/mode") => usb::usb_mode_set(state, body),
-        (&Method::Put, "/api/usb/default") => usb::usb_default_set(state, body),
-        (&Method::Put, "/api/usb/powerbank") => usb::usb_powerbank_set(state, body),
-        // TTL clamping
-        (&Method::Get, "/api/ttl/status") => ttl_status(),
-        (&Method::Put, "/api/ttl/set") => ttl_set(body),
-        (&Method::Delete, "/api/ttl/clear") => ttl_clear(),
-        // AT console
-        (&Method::Post, "/api/at/send") => at_console(state, body),
-        (&Method::Get, "/api/at/port") => at_port(state),
-        // Signal logger
-        (&Method::Post, "/api/logger/signal/start") => signal_logger::start_logging(state, body),
-        (&Method::Post, "/api/logger/signal/stop") => signal_logger::stop_logging(state),
-        (&Method::Get, "/api/logger/signal/status") => signal_logger::status(state),
-        (&Method::Get, "/api/logger/signal/download") => signal_logger::download(state),
-        // Connection logger
-        (&Method::Post, "/api/logger/connection/start") => {
-            connection_logger::start_logging(state, body)
-        }
-        (&Method::Post, "/api/logger/connection/stop") => connection_logger::stop_logging(state),
-        (&Method::Get, "/api/logger/connection/status") => connection_logger::status(state),
-        (&Method::Get, "/api/logger/connection/download") => connection_logger::download(state),
-        // Fallback
-        _ => (404, json!({"ok": false, "error": "not found"})),
-    }
-}
-
-// --- AT console ---
-
-fn at_console(state: &AppState, body: &[u8]) -> (u16, Value) {
-    let parsed: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
     };
-    let command = match parsed["command"].as_str() {
-        Some(c) if !c.is_empty() => c,
-        _ => return (400, json!({"ok": false, "error": "missing 'command'"})),
-    };
-    let timeout = parsed["timeout"].as_u64().unwrap_or(2).min(30);
-
-    if !is_at_command_allowed(command) {
-        return (
-            403,
-            json!({"ok": false, "error": "command not allowed. Only read-only AT commands are permitted."}),
-        );
-    }
-
-    match at_cmd::send(&state.at_port, command, timeout) {
-        Ok(resp) => (200, json!({"ok": true, "data": {"response": resp.trim()}})),
-        Err(e) => (503, json!({"ok": false, "error": e})),
+    let lifecycle = Arc::clone(&state.lifecycle);
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        lifecycle.execute(action)
+    })
+    .await
+    {
+        Ok(Ok(())) => value_response((200, json!({"ok": true, "data": {"result": "accepted"}}))),
+        Ok(Err(error)) => {
+            eprintln!("[lifecycle] fixed B04 action failed: {error}");
+            value_response((
+                503,
+                json!({"ok": false, "error": {
+                    "code": "source_unavailable",
+                    "message": "the fixed B04 lifecycle source is unavailable"
+                }}),
+            ))
+        }
+        Err(_) => value_response((
+            503,
+            json!({"ok": false, "error": {
+                "code": "source_unavailable",
+                "message": "the device lifecycle result is unavailable"
+            }}),
+        )),
     }
 }
 
-const AT_BLOCKED_PREFIXES: &[&str] = &[
-    "AT+CFUN",
-    "AT^",
-    "AT$QCRMCALL",
-    "AT+CLCK",
-    "AT+CMGD",
-    "AT+CMGF=1;+CMGS",
-    "AT+CGDCONT=",
-    "AT+CGACT=",
-];
-
-const AT_ALLOWED_EXACT: &[&str] = &[
-    "AT",
-    "ATI",
-    "AT+CSQ",
-    "AT+COPS?",
-    "AT+COPS=?",
-    "AT+CGDCONT?",
-    "AT+CREG?",
-    "AT+CGREG?",
-    "AT+CEREG?",
-    "AT+CGPADDR",
-    "AT+CGACT?",
-    "AT+CLAC",
-    "AT+CGSN",
-    "AT+CGMI",
-    "AT+CGMM",
-    "AT+CGMR",
-    "AT+QENG=\"SERVINGCELL\"",
-    "AT+QNWINFO",
-    "AT+QRSRP",
-    "AT+QRSRQ",
-    "AT+QINISTAT",
-    "AT+QSPN",
-    "AT+QCIDINCOMING",
-    "AT+CGCONTRDP",
-];
-
-fn is_at_command_allowed(cmd: &str) -> bool {
-    let upper = cmd.trim().to_uppercase();
-    if upper.is_empty() {
-        return false;
-    }
-    for prefix in AT_BLOCKED_PREFIXES {
-        if upper.starts_with(prefix) {
-            return false;
-        }
-    }
-    AT_ALLOWED_EXACT.contains(&upper.as_str())
+async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::capabilities(&state)
+    })
 }
 
-/// GET /api/at/port — report the detected AT serial port (if any)
-fn at_port(state: &AppState) -> (u16, Value) {
-    match state.at_port.detect_serialized() {
-        Some(port) => (
-            200,
-            json!({"ok": true, "data": {"port": port, "available": true}}),
-        ),
-        None => (
-            200,
-            json!({"ok": true, "data": {"port": null, "available": false}}),
-        ),
+async fn dashboard(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(error) = authorize(&state, &headers, Scope::Read) {
+        return value_response(handlers::failure(error));
     }
+    value_response(api_v1::dashboard(state, peer.ip()).await)
 }
 
-// --- TTL handlers ---
+async fn clock_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::clock_status(&state)
+    })
+}
 
-fn ttl_status() -> (u16, Value) {
-    let ipv4 = std::process::Command::new("iptables")
-        .args(["-t", "mangle", "-L", "PREROUTING", "-n"])
-        .output();
-    let ipv6 = std::process::Command::new("ip6tables")
-        .args(["-t", "mangle", "-L", "PREROUTING", "-n"])
-        .output();
-    let mut active = false;
-    let mut ttl_value: u32 = 0;
-    if let Ok(out) = &ipv4 {
-        let s = String::from_utf8_lossy(&out.stdout);
-        for line in s.lines() {
-            if line.contains("TTL set to") {
-                active = true;
-                if let Some(v) = line.rsplit("TTL set to ").next() {
-                    ttl_value = v.trim().parse().unwrap_or(0);
-                }
-                break;
-            }
-        }
-    }
-    let mut hl_active = false;
-    if let Ok(out) = &ipv6 {
-        let s = String::from_utf8_lossy(&out.stdout);
-        for line in s.lines() {
-            if line.contains("HL set to") {
-                hl_active = true;
-                if ttl_value == 0 {
-                    if let Some(v) = line.rsplit("HL set to ").next() {
-                        ttl_value = v.trim().parse().unwrap_or(0);
-                    }
-                }
-                break;
-            }
-        }
-    }
-    (
-        200,
-        json!({"ok": true, "data": {
-            "active": active,
-            "ipv6_active": hl_active,
-            "ttl_value": ttl_value,
-        }}),
+async fn system_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::system_status(&state)
+    })
+}
+
+async fn battery_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::battery_status(&state)
+    })
+}
+
+async fn thermal_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::thermal_status(&state)
+    })
+}
+
+async fn signal_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::signal_status(&state)
+    })
+}
+
+async fn cellular_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::cellular_status(&state)
+    })
+}
+
+async fn traffic_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::traffic_status(&state)
+    })
+}
+
+async fn wifi_status(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::wifi_status(&state, peer.ip())
+    })
+}
+
+async fn lan_clients(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::lan_clients(&state)
+    })
+}
+
+async fn sms_list(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || api_v1::sms_list(&state))
+}
+
+async fn sms_send(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    protected_body(&state, &headers, Scope::Daily, body, |body| {
+        api_v1::sms_send(&state, body)
+    })
+}
+
+async fn charging_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::charging_status(&state)
+    })
+}
+
+async fn traffic_cycle_update(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    protected_body(&state, &headers, Scope::Daily, body, |body| {
+        api_v1::traffic_cycle_update(&state, body)
+    })
+}
+
+async fn wifi_transaction_begin(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    protected_body_blocking(
+        state,
+        &headers,
+        Scope::Daily,
+        body,
+        api_v1::wifi_transaction_begin,
     )
+    .await
 }
 
-fn ttl_set(body: &[u8]) -> (u16, Value) {
-    let val: Value = match serde_json::from_slice(body) {
-        Ok(v) => v,
-        Err(_) => return (400, json!({"ok": false, "error": "invalid JSON"})),
+async fn wifi_transaction_confirm(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    protected_body_blocking(
+        state,
+        &headers,
+        Scope::Daily,
+        body,
+        api_v1::wifi_transaction_confirm,
+    )
+    .await
+}
+
+async fn password_session(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
     };
-    let ttl = match val.get("ttl").and_then(|v| v.as_u64()) {
-        Some(v) if v >= 1 && v <= 255 => v as u32,
-        _ => return (400, json!({"ok": false, "error": "ttl must be 1-255"})),
+    value_response(handlers::password_session(
+        &state,
+        &body,
+        &peer.ip().to_string(),
+    ))
+}
+
+async fn advanced_session(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    if let Err(error) = authorize(&state, &headers, Scope::Admin) {
+        return value_response(handlers::failure(error));
+    }
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
     };
-    // Clear existing rules first
-    let _ = std::process::Command::new("sh").args(["-c",
-        "iptables -t mangle -S PREROUTING 2>/dev/null | grep 'TTL --ttl-set' | while read -r rule; do iptables -t mangle $(echo \"$rule\" | sed 's/-A/-D/'); done"
-    ]).output();
-    let _ = std::process::Command::new("sh").args(["-c",
-        "ip6tables -t mangle -S PREROUTING 2>/dev/null | grep 'HL --hl-set' | while read -r rule; do ip6tables -t mangle $(echo \"$rule\" | sed 's/-A/-D/'); done"
-    ]).output();
-    // Add new rules
-    let r4 = std::process::Command::new("iptables")
-        .args([
-            "-t",
-            "mangle",
-            "-A",
-            "PREROUTING",
-            "-i",
-            "br-lan",
-            "-j",
-            "TTL",
-            "--ttl-set",
-            &ttl.to_string(),
-        ])
-        .output();
-    let r6 = std::process::Command::new("ip6tables")
-        .args([
-            "-t",
-            "mangle",
-            "-A",
-            "PREROUTING",
-            "-i",
-            "br-lan",
-            "-j",
-            "HL",
-            "--hl-set",
-            &ttl.to_string(),
-        ])
-        .output();
-    let ok4 = r4.map(|o| o.status.success()).unwrap_or(false);
-    let ok6 = r6.map(|o| o.status.success()).unwrap_or(false);
-    // Persist to start_ttl.sh
-    let script = format!(
-        "#!/bin/sh\niptables  -t mangle -C PREROUTING -i br-lan -j TTL --ttl-set {ttl} 2>/dev/null ||   iptables  -t mangle -A PREROUTING -i br-lan -j TTL --ttl-set {ttl}\nip6tables -t mangle -C PREROUTING -i br-lan -j HL  --hl-set  {ttl} 2>/dev/null ||   ip6tables -t mangle -A PREROUTING -i br-lan -j HL  --hl-set  {ttl}\n"
-    );
-    let _ = std::fs::write("/data/local/tmp/start_ttl.sh", script);
-    if ok4 || ok6 {
+    value_response(handlers::advanced_session(
+        &state,
+        &body,
+        &peer.ip().to_string(),
+    ))
+}
+
+async fn challenge(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    value_response(handlers::challenge(&state, &body, &peer.ip().to_string()))
+}
+
+async fn challenge_verify(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    value_response(handlers::challenge_verify(
+        &state,
+        &body,
+        &peer.ip().to_string(),
+    ))
+}
+
+async fn pair(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    value_response(handlers::pair(&state, &body, &peer.ip().to_string()))
+}
+
+fn auth_body(body: Result<Bytes, BytesRejection>) -> Result<Bytes, (u16, Value)> {
+    body.map_err(|rejection| {
+        let status = if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            413
+        } else {
+            400
+        };
         (
-            200,
-            json!({"ok": true, "data": {"ttl": ttl, "ipv4": ok4, "ipv6": ok6}}),
+            status,
+            json!({"ok": false, "error": {"code": "invalid_request", "message": "invalid request body"}}),
         )
-    } else {
-        (
-            500,
-            json!({"ok": false, "error": format!("ipv4={ok4} ipv6={ok6}")}),
-        )
+    })
+}
+
+fn protected(
+    state: &AppState,
+    headers: &HeaderMap,
+    scope: Scope,
+    operation: impl FnOnce() -> (u16, Value),
+) -> Response {
+    match authorize(state, headers, scope) {
+        Ok(()) => value_response(operation()),
+        Err(error) => value_response(handlers::failure(error)),
     }
 }
 
-fn ttl_clear() -> (u16, Value) {
-    let _ = std::process::Command::new("sh").args(["-c",
-        "iptables -t mangle -S PREROUTING 2>/dev/null | grep 'TTL --ttl-set' | while read -r rule; do iptables -t mangle $(echo \"$rule\" | sed 's/-A/-D/'); done"
-    ]).output();
-    let _ = std::process::Command::new("sh").args(["-c",
-        "ip6tables -t mangle -S PREROUTING 2>/dev/null | grep 'HL --hl-set' | while read -r rule; do ip6tables -t mangle $(echo \"$rule\" | sed 's/-A/-D/'); done"
-    ]).output();
-    // Remove persistence script content (keep file but make it a no-op)
-    let _ = std::fs::write(
-        "/data/local/tmp/start_ttl.sh",
-        "#!/bin/sh\n# TTL disabled\n",
-    );
-    (200, json!({"ok": true}))
+fn protected_body(
+    state: &AppState,
+    headers: &HeaderMap,
+    scope: Scope,
+    body: Result<Bytes, BytesRejection>,
+    operation: impl FnOnce(&[u8]) -> (u16, Value),
+) -> Response {
+    if let Err(error) = authorize(state, headers, scope) {
+        return value_response(handlers::failure(error));
+    }
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    value_response(operation(&body))
 }
 
-fn respond(request: Request, status: u16, body: Value, origin: Option<&str>) {
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let content_type = Header::from_bytes("Content-Type", "application/json").unwrap();
-    let mut response = Response::from_string(body_str)
-        .with_status_code(status)
-        .with_header(content_type);
-    for h in cors_headers(origin) {
-        response = response.with_header(h);
+async fn protected_body_blocking(
+    state: AppState,
+    headers: &HeaderMap,
+    scope: Scope,
+    body: Result<Bytes, BytesRejection>,
+    operation: fn(&AppState, &[u8]) -> (u16, Value),
+) -> Response {
+    if let Err(error) = authorize(&state, headers, scope) {
+        return value_response(handlers::failure(error));
     }
-    let _ = request.respond(response);
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    let permit = match Arc::clone(&state.wifi_operation_admission).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return value_response((
+                503,
+                json!({"ok": false, "error": {
+                    "code": "source_unavailable",
+                    "message": "another Wi-Fi operation is already in progress",
+                    "recovery": {
+                        "required": true,
+                        "action": "wait for the current Wi-Fi operation to finish before retrying"
+                    }
+                }}),
+            ));
+        }
+    };
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        operation(&state, &body)
+    })
+    .await
+    {
+        Ok(result) => value_response(result),
+        Err(_) => value_response((
+            503,
+            json!({"ok": false, "error": {
+                "code": "source_unavailable",
+                "message": "Wi-Fi operation result is unavailable",
+                "recovery": {
+                    "required": true,
+                    "action": "check the current Wi-Fi state before retrying"
+                }
+            }}),
+        )),
+    }
+}
+
+fn authorize(state: &AppState, headers: &HeaderMap, scope: Scope) -> Result<(), AuthFailure> {
+    let token = headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .ok_or(AuthFailure::Unauthorized)?;
+    state.auth.validate_token(token, scope)
+}
+
+async fn require_same_origin(request: Request<axum::body::Body>, next: Next) -> Response {
+    if let Some(origin) = request.headers().get(ORIGIN) {
+        let origin = origin.to_str().ok();
+        let host = request
+            .headers()
+            .get(HOST)
+            .and_then(|value| value.to_str().ok());
+        if !matches!((origin, host), (Some(origin), Some(host)) if same_origin(origin, host)) {
+            return secure_response(value_response((
+                403,
+                json!({"ok": false, "error": {"code": "origin_forbidden", "message": "cross-origin requests are not allowed"}}),
+            )));
+        }
+    }
+    let mut response = next.run(request).await;
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        "no-store".parse().expect("static cache-control header"),
+    );
+    secure_response(response)
+}
+
+fn same_origin(origin: &str, host: &str) -> bool {
+    origin
+        .strip_prefix("https://")
+        .and_then(|value| value.split('/').next())
+        .is_some_and(|authority| authority.eq_ignore_ascii_case(host))
+}
+
+async fn static_or_not_found(
+    Extension(web_root): Extension<Option<StaticWebRoot>>,
+    request: Request<Body>,
+) -> Response {
+    let path = request.uri().path();
+    let is_v1 = path == "/v1" || path.starts_with("/v1/");
+    if !is_v1 && matches!(request.method(), &Method::GET | &Method::HEAD) {
+        if let Some(response) = web_root
+            .as_ref()
+            .and_then(|root| root.response(path, request.method() == Method::HEAD))
+        {
+            return response;
+        }
+    }
+    value_response((
+        404,
+        json!({"ok": false, "error": {"code": "not_found", "message": "not found"}}),
+    ))
+}
+
+fn secure_response(mut response: Response) -> Response {
+    for (name, value) in [
+        (
+            HeaderName::from_static("content-security-policy"),
+            HeaderValue::from_static(CONTENT_SECURITY_POLICY_VALUE),
+        ),
+        (
+            HeaderName::from_static("x-content-type-options"),
+            HeaderValue::from_static("nosniff"),
+        ),
+        (
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("no-referrer"),
+        ),
+        (
+            HeaderName::from_static("x-frame-options"),
+            HeaderValue::from_static("DENY"),
+        ),
+    ] {
+        response.headers_mut().insert(name, value);
+    }
+    response
+}
+
+fn value_response((status, body): (u16, Value)) -> Response {
+    let status = StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+    let retry_after = body
+        .pointer("/error/retry_after_seconds")
+        .and_then(Value::as_u64);
+    let mut response = (status, Json(body)).into_response();
+    response.headers_mut().insert(
+        CACHE_CONTROL,
+        "no-store".parse().expect("static cache-control header"),
+    );
+    if let Some(seconds) = retry_after {
+        if let Ok(value) = seconds.to_string().parse() {
+            response.headers_mut().insert(RETRY_AFTER, value);
+        }
+    }
+    response
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_at_command_allowed;
+    use std::collections::BTreeMap;
+    use std::net::Ipv4Addr;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
+    use std::time::{Duration, Instant};
+
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Method, Request};
+    use tower::ServiceExt;
+
+    use super::*;
+    use crate::auth::AuthService;
+    use crate::b04_io::{
+        B04Io, UbusRead, UbusWrite, WifiClientLinkSource, WifiField, WifiInterface,
+    };
+    use crate::daily::DailyService;
+    use crate::lifecycle::LifecycleControl;
+    use crate::state_store::StateStore;
+
+    struct SlowWifiIo {
+        transmit_power_2g: AtomicUsize,
+        readiness_started: Arc<AtomicBool>,
+    }
+
+    struct SlowLifecycleControl {
+        actions: Mutex<Vec<DeviceLifecycleAction>>,
+        started: AtomicBool,
+    }
+
+    impl LifecycleControl for SlowLifecycleControl {
+        fn execute(&self, action: DeviceLifecycleAction) -> Result<(), String> {
+            self.actions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(action);
+            self.started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        }
+    }
+
+    impl B04Io for SlowWifiIo {
+        fn ubus_read(&self, _operation: UbusRead) -> Result<Value, String> {
+            Err("unused".into())
+        }
+
+        fn ubus_write(&self, _operation: UbusWrite) -> Result<Value, String> {
+            Err("unused".into())
+        }
+
+        fn wireless_config(&self) -> Result<BTreeMap<String, String>, String> {
+            Err("unused".into())
+        }
+
+        fn wifi_capabilities(&self) -> Result<BTreeMap<String, String>, String> {
+            Err("unused".into())
+        }
+
+        fn station_count(&self, _interface: WifiInterface) -> Result<u32, String> {
+            Err("unused".into())
+        }
+
+        fn active_wifi_channel(&self, _interface: WifiInterface) -> Result<u16, String> {
+            Err("unused".into())
+        }
+
+        fn current_client_link(&self, _peer: Ipv4Addr) -> Result<WifiClientLinkSource, String> {
+            Err("unused".into())
+        }
+
+        fn wifi_values(&self, fields: &[WifiField]) -> Result<BTreeMap<WifiField, String>, String> {
+            Ok(fields
+                .iter()
+                .filter(|field| **field == WifiField::TransmitPower2g)
+                .map(|field| {
+                    (
+                        *field,
+                        self.transmit_power_2g.load(Ordering::SeqCst).to_string(),
+                    )
+                })
+                .collect())
+        }
+
+        fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String> {
+            if let Some(value) = values.get(&WifiField::TransmitPower2g) {
+                self.transmit_power_2g.store(
+                    value
+                        .parse()
+                        .map_err(|_| "invalid test power".to_string())?,
+                    Ordering::SeqCst,
+                );
+            }
+            Ok(())
+        }
+
+        fn wait_for_wifi_ready(&self) -> Result<(), String> {
+            self.readiness_started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        }
+
+        fn battery_capacity(&self) -> Result<u8, String> {
+            Err("unused".into())
+        }
+    }
+
+    fn state() -> (tempfile::TempDir, AppState) {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(StateStore::open(temp.path().join("state")).unwrap()).unwrap();
+        (temp, AppState::new(auth))
+    }
+
+    fn request(method: Method, path: &str, body: &'static str) -> Request<Body> {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(path)
+            .header(HOST, "127.0.0.1:19443")
+            .body(Body::from(body))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 41234))));
+        request
+    }
+
+    fn authorized_request(
+        method: Method,
+        path: &str,
+        body: &'static str,
+        token: &str,
+    ) -> Request<Body> {
+        let mut request = request(method, path, body);
+        request
+            .headers_mut()
+            .insert(AUTHORIZATION, format!("Bearer {token}").parse().unwrap());
+        request
+    }
+
+    fn web_root() -> (tempfile::TempDir, StaticWebRoot) {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("assets")).unwrap();
+        fs::write(
+            temp.path().join("index.html"),
+            "<!doctype html><title>U60</title>",
+        )
+        .unwrap();
+        fs::write(temp.path().join("assets/app.js"), "export {};\n").unwrap();
+        fs::write(temp.path().join("private.txt"), "must not be served").unwrap();
+        let root = StaticWebRoot::load(temp.path()).unwrap();
+        (temp, root)
+    }
+
+    #[tokio::test]
+    async fn old_login_and_legacy_routes_are_not_found() {
+        let (_temp, state) = state();
+        for (method, path) in [
+            (Method::POST, "/api/auth/login"),
+            (Method::POST, "/api/at/send"),
+            (Method::POST, "/api/system/kill-bloat"),
+            (Method::GET, "/api/system/top"),
+            (Method::POST, "/api/device/reboot"),
+        ] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(method, path, "{}"))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn web_root_is_opt_in_and_unknown_v1_paths_remain_json() {
+        let (_temp, state) = state();
+        let response = router_with_web_root(state.clone(), None)
+            .oneshot(request(Method::GET, "/", ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(response
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"));
+
+        let (_web_temp, web_root) = web_root();
+        let response = router_with_web_root(state, Some(web_root))
+            .oneshot(request(Method::GET, "/v1/not-a-route", ""))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        assert!(response
+            .headers()
+            .get(CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/json"));
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        assert!(body.starts_with(b"{"));
+    }
+
+    #[tokio::test]
+    async fn configured_web_root_serves_only_allowlisted_assets_with_security_headers() {
+        let (_temp, state) = state();
+        let (_web_temp, web_root) = web_root();
+        let app = router_with_web_root(state, Some(web_root));
+
+        for (path, expected_type) in [
+            ("/", "text/html; charset=utf-8"),
+            ("/assets/app.js", "text/javascript; charset=utf-8"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, path, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            assert_eq!(response.headers().get(CONTENT_TYPE).unwrap(), expected_type);
+            assert_eq!(
+                response.headers().get("x-content-type-options").unwrap(),
+                "nosniff"
+            );
+            assert_eq!(
+                response.headers().get("referrer-policy").unwrap(),
+                "no-referrer"
+            );
+            let csp = response
+                .headers()
+                .get("content-security-policy")
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(csp.contains("default-src 'self'"));
+            assert!(csp.contains("connect-src 'self'"));
+            assert!(csp.contains("frame-ancestors 'none'"));
+        }
+
+        for path in [
+            "/private.txt",
+            "/assets/missing.js",
+            "/%2e%2e/private.txt",
+            "/assets/%2e%2e/private.txt",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(request(Method::GET, path, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn web_root_rejects_root_and_nested_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temp = tempfile::tempdir().unwrap();
+        let real = temp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        fs::write(real.join("index.html"), "safe").unwrap();
+        let linked_root = temp.path().join("linked-root");
+        symlink(&real, &linked_root).unwrap();
+        assert!(StaticWebRoot::load(&linked_root).is_err());
+
+        let assets = real.join("assets");
+        fs::create_dir(&assets).unwrap();
+        symlink(real.join("index.html"), assets.join("linked.js")).unwrap();
+        assert!(StaticWebRoot::load(&real).is_err());
+    }
+
+    #[tokio::test]
+    async fn protected_status_requires_a_read_scope_token() {
+        let (_temp, state) = state();
+        for path in ["/v1/device", "/v1/status/dashboard"] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(Method::GET, path, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_daily_write_requires_a_daily_scope_token() {
+        let (_temp, state) = state();
+        for (method, path, body) in [
+            (
+                Method::POST,
+                "/v1/sms/send",
+                r#"{"recipient":"1","message":"x"}"#,
+            ),
+            (
+                Method::PUT,
+                "/v1/traffic/cycle",
+                r#"{"reset_day":1,"enabled":false}"#,
+            ),
+            (
+                Method::POST,
+                "/v1/wifi/transaction",
+                r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","ssid_2g":"test"}"#,
+            ),
+            (
+                Method::POST,
+                "/v1/wifi/transaction/confirm",
+                r#"{"transaction_id":"AAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+            ),
+        ] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(method, path, body))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+        }
+
+        let response = router_with_web_root(state, None)
+            .oneshot(request(Method::PUT, "/v1/charging", "{}"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn device_lifecycle_routes_require_an_advanced_session() {
+        let (_temp, state) = state();
+        let password = "host test management password";
+        state.auth.set_password(password).unwrap();
+        let normal = state.auth.password_session(password, "127.0.0.1").unwrap();
+
+        for path in ["/v1/device/reboot", "/v1/device/power-off"] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(Method::POST, path, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(authorized_request(Method::POST, path, "", &normal.token))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+
+        let response = router_with_web_root(state, None)
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/device/action",
+                r#"{"action":"reboot"}"#,
+                &normal.token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn device_lifecycle_routes_are_fixed_bodyless_and_single_flight() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(StateStore::open(temp.path().join("state")).unwrap()).unwrap();
+        let password = "host test management password";
+        auth.set_password(password).unwrap();
+        let advanced = auth.advanced_session(password, "127.0.0.1").unwrap();
+        let lifecycle = Arc::new(SlowLifecycleControl {
+            actions: Mutex::new(Vec::new()),
+            started: AtomicBool::new(false),
+        });
+        let state = AppState::with_lifecycle(
+            auth,
+            Arc::new(crate::adapter::B04Adapter::new()),
+            lifecycle.clone(),
+        );
+        let app = router_with_web_root(state, None);
+
+        let response = app
+            .clone()
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/device/reboot",
+                r#"{"action":"power-off"}"#,
+                &advanced.token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(lifecycle
+            .actions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
+
+        let first = tokio::spawn(app.clone().oneshot(authorized_request(
+            Method::POST,
+            "/v1/device/reboot",
+            "",
+            &advanced.token,
+        )));
+        while !lifecycle.started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let second = app
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/device/power-off",
+                "",
+                &advanced.token,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            *lifecycle
+                .actions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![DeviceLifecycleAction::Reboot]
+        );
+    }
+
+    #[tokio::test]
+    async fn wifi_settle_wait_does_not_block_other_api_responses() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let auth = AuthService::open(store.clone()).unwrap();
+        let password = "host test management password";
+        auth.set_password(password).unwrap();
+        let token = auth.password_session(password, "127.0.0.1").unwrap().token;
+        let readiness_started = Arc::new(AtomicBool::new(false));
+        let daily = DailyService::with_test_io(
+            store,
+            Arc::new(SlowWifiIo {
+                transmit_power_2g: AtomicUsize::new(30),
+                readiness_started: Arc::clone(&readiness_started),
+            }),
+        )
+        .unwrap();
+        let app = router_with_web_root(AppState::with_daily(auth, daily), None);
+        let started_at = Instant::now();
+        let update = tokio::spawn(app.clone().oneshot(authorized_request(
+            Method::POST,
+            "/v1/wifi/transaction",
+            r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","transmit_power_2g":40}"#,
+            &token,
+        )));
+
+        while !readiness_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let response = app
+            .oneshot(authorized_request(Method::GET, "/v1/device", "", &token))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            started_at.elapsed() < Duration::from_millis(200),
+            "a Wi-Fi settle wait starved the single-thread API runtime"
+        );
+        assert_eq!(update.await.unwrap().unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn overlapping_wifi_operations_fail_closed_without_queueing_hardware_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let auth = AuthService::open(store.clone()).unwrap();
+        let password = "host test management password";
+        auth.set_password(password).unwrap();
+        let token = auth.password_session(password, "127.0.0.1").unwrap().token;
+        let readiness_started = Arc::new(AtomicBool::new(false));
+        let daily = DailyService::with_test_io(
+            store,
+            Arc::new(SlowWifiIo {
+                transmit_power_2g: AtomicUsize::new(30),
+                readiness_started: Arc::clone(&readiness_started),
+            }),
+        )
+        .unwrap();
+        let app = router_with_web_root(AppState::with_daily(auth, daily), None);
+        let first = tokio::spawn(app.clone().oneshot(authorized_request(
+            Method::POST,
+            "/v1/wifi/transaction",
+            r#"{"transaction_id":"abcdefghijklmnopqrstuvwx","transmit_power_2g":40}"#,
+            &token,
+        )));
+
+        while !readiness_started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let started_at = Instant::now();
+        let second = app
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/wifi/transaction",
+                r#"{"transaction_id":"zyxwvutsrqponmlkjihgfedc","transmit_power_2g":50}"#,
+                &token,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            started_at.elapsed() < Duration::from_millis(200),
+            "an overlapping Wi-Fi operation queued behind active hardware work"
+        );
+        let body = to_bytes(second.into_body(), 8 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(body["error"]["recovery"]["required"], true);
+        assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn versioned_auth_routes_exist() {
+        let (_temp, state) = state();
+        for path in [
+            "/v1/auth/password/session",
+            "/v1/auth/challenge",
+            "/v1/auth/challenge/verify",
+            "/v1/auth/pair",
+        ] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(Method::POST, path, "{}"))
+                .await
+                .unwrap();
+            assert_ne!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
+    }
+
+    #[tokio::test]
+    async fn advanced_route_requires_admin_before_password_reentry() {
+        let (_temp, state) = state();
+        let response = router_with_web_root(state, None)
+            .oneshot(request(
+                Method::POST,
+                "/v1/auth/password/advanced",
+                r#"{"password":"not examined"}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn admin_session_and_password_reentry_create_advanced_session() {
+        let (_temp, state) = state();
+        let password = "host test management password";
+        state.auth.set_password(password).unwrap();
+        let normal = state.auth.password_session(password, "127.0.0.1").unwrap();
+        let mut request = request(
+            Method::POST,
+            "/v1/auth/password/advanced",
+            r#"{"password":"host test management password"}"#,
+        );
+        request.headers_mut().insert(
+            AUTHORIZATION,
+            format!("Bearer {}", normal.token).parse().unwrap(),
+        );
+        let response = router_with_web_root(state, None)
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn cross_origin_is_rejected_and_no_cors_header_is_emitted() {
+        let (_temp, state) = state();
+        let mut request = request(Method::POST, "/v1/auth/password/session", "{}");
+        request
+            .headers_mut()
+            .insert(ORIGIN, "https://example.invalid".parse().unwrap());
+        let response = router_with_web_root(state, None)
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response
+            .headers()
+            .get("access-control-allow-origin")
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn oversized_auth_body_is_a_typed_error() {
+        let (_temp, state) = state();
+        let oversized = "x".repeat(MAX_AUTH_BODY_BYTES + 1);
+        let mut request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/auth/password/session")
+            .header(HOST, "127.0.0.1:19443")
+            .body(Body::from(oversized))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 41234))));
+        let response = router_with_web_root(state, None)
+            .oneshot(request)
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(response.headers().get(CACHE_CONTROL).unwrap(), "no-store");
+    }
 
     #[test]
-    fn at_allowlist_is_exact_and_read_only() {
-        assert!(is_at_command_allowed("AT"));
-        assert!(is_at_command_allowed("at+csq"));
-        assert!(is_at_command_allowed("AT+QENG=\"servingcell\""));
-        assert!(!is_at_command_allowed("AT+CSQ=1"));
-        assert!(!is_at_command_allowed("AT+FOO"));
-        assert!(!is_at_command_allowed("AT+CFUN=1"));
-        assert!(!is_at_command_allowed("AT^RESET"));
+    fn tls_fails_closed_for_missing_or_empty_material() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(load_tls_config(
+            temp.path().join("missing.crt"),
+            temp.path().join("missing.key")
+        )
+        .is_err());
+        let certificate = temp.path().join("certificate.pem");
+        let private_key = temp.path().join("leaf-key.pem");
+        fs::write(&certificate, []).unwrap();
+        fs::write(&private_key, []).unwrap();
+        assert!(load_tls_config(certificate, private_key).is_err());
+    }
+
+    #[test]
+    fn listener_has_no_plaintext_fallback_and_uses_safe_rustls_line() {
+        let source = include_str!("server.rs");
+        let production = source.split("#[cfg(test)]").next().unwrap();
+        assert!(!production.contains("Server::http"));
+        assert!(!production.contains("axum_server::bind("));
+        assert!(production.contains("axum_server::from_tcp_rustls"));
+        let manifest = include_str!("../Cargo.toml");
+        assert!(!manifest.contains("tiny_http"));
+        assert!(manifest.contains("rustls = { version = \">=0.23.5, <0.24\""));
+    }
+
+    #[test]
+    fn origin_must_be_https_and_match_host() {
+        assert!(same_origin("https://127.0.0.1:19443", "127.0.0.1:19443"));
+        assert!(!same_origin("http://127.0.0.1:19443", "127.0.0.1:19443"));
+        assert!(!same_origin("https://example.invalid", "127.0.0.1:19443"));
+    }
+
+    #[test]
+    fn lockout_response_sets_retry_after_without_echoing_client_data() {
+        let response = value_response(handlers::failure(AuthFailure::Locked {
+            retry_after_seconds: 15,
+        }));
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "15");
+    }
+
+    #[test]
+    fn clock_wait_response_sets_retry_after() {
+        let response = value_response(handlers::failure(AuthFailure::ClockNotSynchronized));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "15");
     }
 }

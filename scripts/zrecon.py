@@ -17,6 +17,10 @@ Password comes from ROUTER_PW env (never written to disk).
 import os, sys, json, time, hashlib, urllib.request
 import http.cookiejar
 
+from _device_gate import require_read_only_probe
+
+require_read_only_probe()
+
 GW   = os.environ.get("GW", "192.168.0.1")
 PW   = os.environ.get("ROUTER_PW") or (_ := (_ for _ in ()).throw(SystemExit("set ROUTER_PW")))
 ANON = "0" * 32

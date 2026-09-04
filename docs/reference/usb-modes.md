@@ -1,5 +1,23 @@
 # USB Modes — ZTE U60 Pro
 
+## Accepted HK B04 state (2026-09-04)
+
+The owner device now boots in the stock **ECM** composition. This is the normal,
+recoverable state: macOS receives a ZTE USB Ethernet interface, the management
+route reaches `192.168.0.1`, and stock Web, Agent HTTPS and LAN-only key-only SSH
+remain available. USB ADB is absent by design.
+
+The previously unlocked **DEBUG** composition is also verified. It exposes root
+ADB but did not provide a usable macOS USB Ethernet interface. DEBUG is therefore
+an explicit maintenance boot, not a daily connectivity mode. Exact root-only
+DEBUG and ECM `rc.local` copies are retained on the device, and switching either
+direction requires validation, atomic replacement and reboot. It does not
+auto-revert after one boot. See [../DEPLOYMENT.md](../DEPLOYMENT.md).
+
+No ADB+ECM custom composite has been accepted. Never write `usb_op` live or call
+the stock USB setter as a probe: either can immediately remove the active USB
+transport. The current App/Agent intentionally exposes no USB-mode control.
+
 Findings from probing the live device (firmware as shipped, 2026-05-28). These contradict what the dashboard's "USB Mode" section implies, so worth keeping for reference.
 
 ## What the dashboard offers
@@ -28,7 +46,9 @@ Only **ECM** and **RNDIS** are exposed by ZTE's normal USB mode switch. Evidence
   [ZTE_USB] functions ecm_gsi,mass_storage
   ```
   The composite device only enumerates ECM (+ mass storage), regardless of the "mode" requested via the dashboard.
-- After clicking **NCM** in the dashboard and rebooting, the device came up with `ecm0` as the active interface (MAC `5c:7d:ae:cb:d5:46`, IP allocator giving Mac `192.168.0.164`). No `ncm0` interface was created. The firmware silently fell back to ECM.
+- After clicking **NCM** in the historical dashboard and rebooting, the device
+  came up with `ecm0` as the active interface. No `ncm0` interface was created;
+  the firmware silently fell back to ECM.
 - Live configfs does contain a generic NCM gadget function:
   ```
   /sys/kernel/config/usb_gadget/g1/functions/ncm.0
@@ -42,7 +62,7 @@ So:
 | RNDIS | Real — uses `rndisipam.ko`, creates an RNDIS gadget. |
 | ECM | Real — uses `ecmipam.ko`, creates `ecm0`. |
 | NCM | Stock path falls back to ECM. Generic `ncm.0` exists, but needs a custom experimental composition and bridge setup. |
-| DEBUG | Unverified by network probe. Likely ADB/serial, not tethering. |
+| DEBUG | Verified root-ADB maintenance composition; it did not yield usable macOS USB Ethernet. |
 
 ## Why NCM matters (and why this limitation is annoying)
 
@@ -78,8 +98,9 @@ From the Mac side: `route -n get 192.168.0.1` shows the interface, and `networks
 
 - The "active mode" indicator should read active configfs links and kernel-side interface presence, not the ubus `mode` field.
 - NCM should be labeled experimental: configfs support exists, but stock ZTE mode switching does not expose it.
-- NCM persistence is agent-managed. The persisted key (`usb_default_mode`) lives in `/data/local/tmp/usb_config.json`, separate from the Wi-Fi boot-state snapshot. On first read after upgrade the agent migrates the key out of `/data/local/tmp/wifi_config.json` automatically. The agent applies `ncm.0` after the stock USB stack has settled, so boot remains recoverable through the stock ECM path first.
-- DEBUG warrants its own probe before being treated as a tethering option.
+- Historical NCM persistence code is not part of the accepted V1 control plane;
+  the current App/Agent exposes no USB-mode mutation.
+- DEBUG is a verified ADB maintenance mode, not a tethering option.
 - Best default for Mac USB-C users: ECM. It's the most reliable driver-free option here.
 
 ## Aside: don't use `usb_mode_set` as a probe

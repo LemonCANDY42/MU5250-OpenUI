@@ -1,149 +1,174 @@
-# MU5250-OpenUI
+# U60 Pro B04 integration
 
-A custom control plane for the ZTE U60 Pro (MU5250) 5G modem: a Rust agent
-running on the device exposes a JSON API (`http://192.168.0.1:9090`), and a
-React dashboard served from the device (`http://192.168.0.1:8080`) turns it
-into a full-featured modem management UI — plus tooling to unlock, provision
-and update both.
+Safety-first control-plane work for one owner-operated ZTE U60 Pro (MU5250) on
+HK B04 firmware.
 
-Credit: based on [jesther-ai/open-u60-pro](https://github.com/jesther-ai/open-u60-pro).
+> **Current owner-device state:** the reviewed V1 release is persistently active
+> through one bounded `/etc/rc.local` launcher. Stock ECM USB Ethernet is the
+> normal boot mode; Agent HTTPS and key-only root SSH listen only on the management
+> LAN. USB ADB is intentionally absent during normal use and is restored only for
+> an explicitly authorized maintenance boot through the verified SSH-to-DEBUG
+> recovery procedure. Legacy setup, deployment, USB-mode and hardening entry
+> points remain fail-closed. Daily writes remain subject to their documented
+> per-operation safety boundaries.
 
-<img width="2730" height="1708" alt="Dashboard-Home" src="https://github.com/user-attachments/assets/ed8594a8-af21-4b97-a898-531c7bb6c03a" />
-<img width="2734" height="1708" alt="Signal" src="https://github.com/user-attachments/assets/793c3797-b8d7-4933-bf28-b7c3a4650f72" />
-<img width="2730" height="1706" alt="BandLock" src="https://github.com/user-attachments/assets/0f911d00-9604-44a8-b0fb-b20cd9fa10c5" />
+This branch directly descends from `dklasens/MU5250-OpenUI` at commit
+`2209909`, including the MIT licence and upstream emulator-safety fixes. The
+next local commit removes the accidentally tracked `.venv`; no environment is
+vendored into this repository.
+MU upstream added an MIT licence on 2026-08-16; the exact licence and imported
+open-u60-pro attribution are retained here. See
+[UPSTREAM-NOTICE.md](UPSTREAM-NOTICE.md).
 
+## Implemented and accepted baseline
 
+The source boundary below is host-tested. The accepted HK B04 installation has
+also passed release-integrity, TLS, browser, physical-iPhone, persistence,
+key-only SSH, reboot-resumption and stock-ECM checks. This acceptance does not
+broaden the documented daily-mutation boundaries.
 
-## Architecture
+- `B04Adapter` contains firmware-specific reads and returns normalized domain
+  types rather than vendor JSON.
+- `openapi/u60-v1.yaml` defines ten read-only capabilities, four bounded daily
+  management operations, two advanced-session-only fixed device lifecycle
+  actions, plus password,
+  pairing and challenge-based authentication under `/v1`.
+- The TLS 1.3 listener can explicitly serve `web-app/dist` with
+  `serve --web-root DIR`. The root is canonicalized, symlinks are rejected and
+  only the entry document plus fixed assets are loaded; without the flag no web
+  content is served.
+- The lightweight dashboard consumes generated `/v1` types over relative,
+  same-origin requests. Routine refresh uses one partial-success aggregate
+  snapshot while retaining the individual typed read routes for compatibility
+  and focused diagnostics. It exposes the complete typed status set and
+  daily-scope controls only after authentication.
+- Browser pairing uses a non-exportable WebCrypto P-256 private key stored with
+  its public key and credential metadata in IndexedDB. Bearer tokens stay only
+  in memory; the dashboard never persists password fallback input.
+- The iOS target preserves open-u60-pro's imported history and a small native
+  presentation component while compiling only the new generated `/v1` client.
+  Physical iPhones use Secure Enclave P-256 signing, normal CA trust plus SPKI
+  pinning, a device-local Keychain profile and an in-memory bearer token. The
+  simulator fallback is explicitly test-only.
+- An owner-signed physical-device build has been installed and launched on the
+  owner's iPhone using a local-only bundle-identifier override. The public
+  project keeps automatic signing and contains no team or device identifier.
+  Owner-confirmed iPhone CA installation/full trust, Secure Enclave QR pairing
+  and a live authenticated device session are accepted.
+- A host-only pairing tool combines `pair-open` JSON received on stdin with a
+  verified public certificate bundle and renders a mode-`0600` QR outside the
+  repository. Real browser and physical-iPhone pairing windows have been accepted
+  without persisting their nonces.
+- Raw AT and process-killing routes, client bindings, mock fixtures and UI are
+  removed. There is no generic AT, ubus, UCI or shell execution API.
+- CI checks Rust, authentication/storage tests, the production dashboard
+  artifact and public-route/OpenAPI method/status agreement. The artifact gate
+  rejects legacy API paths, plaintext URLs, the old split-origin port and common
+  token-persistence APIs.
 
-```
-Browser ── HTTP/JSON ──► React dashboard (:8080, uhttpd, /data/www)
-                              │
-                              │ bearer-token JSON API
-                              ▼
-                         zte-agent (:9090, Rust, tiny_http thread pool)
-                              │
-              ┌───────────────┼────────────────────────┐
-              ▼               ▼                        ▼
-        ubus / uci        AT ports              sysfs / procfs
-     (wifi, router,     (signal, SMS,        (thermals, battery,
-      clients, WAN)      cell/band lock)      charge control)
-```
+Unsupported charging, Wi-Fi master and stock multi-band coordination writes are
+not exposed. Remaining bounded daily writes retain their per-operation validation
+and rollback rules; a stable installation is not permission to bypass them.
 
-- **Agent (`agent/`)** — Rust HTTP backend, no async runtime, minimal deps
-  (`serde`, `tiny_http`, `sha2`, `libc`). Talks to ubus/uci, AT ports, sysfs
-  and device services. TTL caches decouple client poll rate from expensive
-  fork+exec subprocess reads; a single `ubus listen` event bus drives the
-  charge-limit enforcer. Auth via bearer tokens with sliding 1 h expiry,
-  rate-limited login, LAN-only bind. Destructive actions require
-  `X-Confirm: true`; the AT console is allowlisted to read-only commands.
-- **Dashboard (`web-app/`)** — React 19 + Vite + Tailwind SPA served by the
-  device itself. Lazy-loaded groups, light/dark theme, bottom tabs on phones
-  / sidebar on desktop. Visibility-aware, non-overlapping pollers with an
-  in-memory SWR cache; Home runs on one batched `/api/dashboard` request
-  every 3 s instead of nine separate polls.
-- **Contract** — the agent exposes exactly what the dashboard uses and
-  nothing else; `scripts/check-api-contract.py` fails CI if the route table,
-  the client bindings or the mock agent drift apart.
+## Accepted persistent owner installation
 
-## Dashboard features
+The accepted content-addressed release is selected by atomic `current` and
+`previous` links under `/data/u60`. One finite, backgrounded launcher starts one
+Agent on management-LAN port `9443` and one hardened Dropbear on `2222`; it has
+bounded retries, is not a watchdog and sends process output to `/dev/null`.
+Persistent service state is bounded, normal polling does not append a process
+log, and the stability recorder has a fixed size ceiling.
 
-| Group | What you get |
-|---|---|
-| **Home** | live signal, modem mode, throughput, battery, connection, device info and data usage from a single batched poll |
-| **Signal** | per-carrier LTE/NR detail (PCI, ARFCN, RSRP/RSRQ/SINR), network mode, band lock, one-tap cell lock from live cells |
-| **Network** | clients by Wi-Fi/USB-C/Ethernet with link details, per-band Wi-Fi configuration, LAN/DHCP and DNS |
-| **Modem** | manual APN profiles, data usage + reset day, TTL clamping, SMS (inbox/sent, compose, delete) |
-| **System** | thermals, battery health, charge control (stop/resume + limit enforcer), signal/connection loggers, AT console, on-demand process list, device/SIM info, USB mode + powerbank, power actions |
+The owner-device normal boot uses stock ECM USB Ethernet. macOS may assign a
+different `enN` number after re-enumeration, so identify the ZTE interface and
+confirm the route to `192.168.0.1` rather than hard-coding `en17`. The normal
+paths are the native App/Agent, stock Web UI and key-only SSH. Root USB ADB is a
+recoverable maintenance capability, not a continuously exposed interface; see
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
+[docs/reference/usb-modes.md](docs/reference/usb-modes.md).
 
-Details: [docs/DASHBOARD.md](docs/DASHBOARD.md) (pages, source layout, local
-demo without hardware) and [docs/AGENT.md](docs/AGENT.md) (endpoint
-reference, 57 paths).
+## Architecture and safety
 
-## Emulated-device validation
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — target boundaries, slices,
+  authentication direction and acceptance gates.
+- [docs/SAFETY.md](docs/SAFETY.md) — device recovery rules and known brick
+  hazards. Historical material is clearly marked where it describes dormant
+  upstream code.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — reviewed V1 deployment and
+  SSH-to-DEBUG-to-ADB recovery path; the old upstream flow is clearly isolated.
+- [docs/IOS.md](docs/IOS.md) — compiled target, generated contract, Secure
+  Enclave, TLS pinning and five-minute QR pairing boundaries.
+- [docs/READ-ONLY-PROBE.md](docs/READ-ONLY-PROBE.md) — exact USB ADB read
+  allowlist, NAS evidence format and network/TUN invariants.
+- [docs/CROSS-BUILD.md](docs/CROSS-BUILD.md) — pinned host-only AArch64 musl
+  build recipe and artifact acceptance boundary.
 
-The agent/dashboard contracts and safety-sensitive settings are optimised and
-regression-tested against the stock MU5250 firmware running in QEMU. The
-guarded suite covers optional-service stopping, LAN/DHCP, network modes and
-LTE/NR bands, Wi-Fi 7 EHT bandwidth, unavailable sensor values, manual APNs,
-firmware WMS SMS operations and the read-only AT allowlist. Every mutating
-check restores its original emulated-device state.
+The source keeps the ten-capability contract and adds optional contextual
+router-observed client-link data to the existing Wi-Fi status, plus optional
+radio aggregation, selection and read-only cell-lock summaries. The existing
+system and battery endpoints also accept backward-compatible optional current
+CPU/memory/`/data` storage metrics and independently validated battery
+health/cycle/capacity/counter/kernel-estimate fields. These fields are
+host-tested; the fixed sources have B04 read-only evidence, but the combined
+release has not been deployed or accepted on physical clients.
+SIM/APN and router-configuration summaries remain absent until their own
+redaction and B04 gates pass.
 
-Run it after starting the emulator:
+The public contract source of truth is
+[openapi/u60-v1.yaml](openapi/u60-v1.yaml). The routing source of truth is
+`agent/src/server.rs`. New functionality must update both and pass
+`scripts/check-api-contract.py`.
+
+## Host-only verification
 
 ```sh
-python3 scripts/test-emulator-fixes.py \
-  --base-url http://127.0.0.1:9090 \
-  --password emu-test-password
+cargo fmt --all --check
+cargo check --workspace --all-targets
+cargo test --workspace --all-targets
+cargo clippy --workspace --all-targets -- -D warnings
+python3 scripts/check-api-contract.py
+python3 scripts/check-device-gates.py
+python3 scripts/probe-b04-readonly.py --self-test
+python3 scripts/check-ios-boundary.py
+scripts/pairing/test-pairing-tools.sh
+bash -n scripts/build-b04-agent.sh
+python3 scripts/publish-b04-agent-build.py --self-test
+# After a clean pinned cross-build only:
+python3 scripts/publish-b04-agent-build.py --verify-receipt
+
+cd web-app
+npm ci
+npm ci --prefix ../tools/openapi
+npm audit --audit-level=high
+npm run check:api
+npm run lint
+npm test
+npm run build
+npm run check:artifact
 ```
 
-QEMU exercises the real firmware userland and UBUS contracts, but cannot
-replace final hardware checks for radios, sensors or the physical modem. See
-[docs/EMULATION.md](docs/EMULATION.md) for the exact fidelity boundaries.
+These checks do not contact or modify the U60.
 
-## Quick start
+GitHub Actions is currently manual-only. The repository's account state
+rejects every hosted job before checkout with a billing/spending-limit error;
+automatic `push` and pull-request triggers therefore produced duplicate red
+checks without running any test step. Restore automatic triggers only after the
+account issue is resolved and one manual run actually enters its steps. Until
+then, the local checks above remain the acceptance evidence.
 
-Locked firmware (HK B04+, CN B28+) — the full sequence:
+## Repository layout
 
-```sh
-python3 scripts/zunlock.py     # 1. unlock → adbd (config backup/restore route)
-bash setup.sh                  # 2. build + install the agent (build-from-source)
-bash scripts/zharden.sh        # 3. SSH, rc.local cleanup, dashboard :8080, FOTA off
-bash deploy-dashboard.sh       # 4. build + push the web UI
+```text
+agent/          Minimal Rust device agent and B04 adapter
+openapi/        Versioned public API contract
+web-app/        Same-origin typed dashboard and gated daily controls
+clients/ios/    Imported history plus safe generated-contract iOS target
+scripts/        Contract checks plus upstream recovery/research references
+docs/           Architecture, safety and historical device notes
 ```
 
-Full instructions, requirements (backup-key suffix), updates and post-FOTA
-recovery: **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**.
-
-## Repository structure
-
-```
-agent/          Rust agent (runs on the modem, port 9090)
-web-app/        React dashboard (served from the modem, port 8080)
-scripts/        unlock + hardening + recon tooling
-  research/     quarantined exploit tools — see its README before touching
-docs/           documentation (below)
-setup.sh        first-time provisioning (unlock + agent install)
-deploy.sh       agent updates over SSH
-deploy-dashboard.sh   dashboard build + push
-zte-script-ng.js      community-vetted reference of safe ubus calls
-```
-
-## Documentation
-
-| Doc | Contents |
-|---|---|
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | unlock, install, harden, update, post-FOTA recovery |
-| [docs/AGENT.md](docs/AGENT.md) | agent architecture, endpoint reference, safety constraints |
-| [docs/DASHBOARD.md](docs/DASHBOARD.md) | dashboard pages, source layout, dev + local demo |
-| [docs/SAFETY.md](docs/SAFETY.md) | **read first** — brick-prevention rules, daemon sync barrier, recovery commands, safety audit |
-| [docs/EMULATION.md](docs/EMULATION.md) | boot the stock firmware in QEMU and test the agent/dashboard against it |
-| [docs/reference/](docs/reference/) | device reference material (rpcd ACL dump, USB mode findings) |
-
-## Safety in one paragraph
-
-This device was bricked once by going beyond the sanctioned path. The rules
-that keep it alive: **shell/ssh/adb only** — no boot hooks outside
-`/etc/rc.local`, no system-service modifications, never disable a
-`zte_topsw_daemon.conf` daemon via init.d, stay out of partitions, and treat
-`scripts/research/` as quarantined. Everything else — including what the
-deploy path does and deliberately does not touch — is in
-[docs/SAFETY.md](docs/SAFETY.md).
-
-## License
-
-[MIT](LICENSE). Derived in part from
-[jesther-ai/open-u60-pro](https://github.com/jesther-ai/open-u60-pro)
-(MIT, Copyright (c) 2025-present Jesther Silvestre).
-
-Exception: `zte-script-ng.js` is a community reference script licensed
-separately under **AGPLv3+** — see its header.
-
-## Source of truth
-
-If this README and the code ever disagree:
-
-- `agent/src/server.rs` — HTTP routing table
-- `agent/src/auth.rs` — auth and token behavior
-- `web-app/src/App.tsx` — navigation groups mounted in the UI
-- `web-app/src/data/api.ts` — client-side API bindings and payload shapes
+These host checks alone do not authorize a device write. The owner-device stable
+installation and ECM/SSH recovery chain have separate recorded acceptance; the
+older canary and one-hour process records remain historical evidence rather than
+the current runtime description. Further device actions remain governed by the
+architecture and local B04 handoff.

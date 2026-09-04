@@ -1,0 +1,150 @@
+name: CI
+
+# Automatic runs are intentionally disabled while GitHub
+# rejects every job before its first step because of the account billing or
+# spending-limit state. Keep this workflow as a manually recoverable recipe;
+# local verification remains the acceptance authority in the meantime.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: rustfmt, clippy
+      - name: Rust formatting
+        run: cargo fmt --all --check
+      - name: Rust check
+        run: cargo check --workspace --all-targets
+      - name: Rust tests
+        run: cargo test --workspace --all-targets
+      - name: Rust lint
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web-app/package-lock.json
+      - name: Install dashboard dependencies
+        run: npm ci
+        working-directory: web-app
+      - name: Install locked OpenAPI tooling
+        run: npm ci
+        working-directory: tools/openapi
+      - name: Audit JavaScript dependencies
+        run: |
+          npm audit --audit-level=high
+          npm --prefix ../tools/openapi audit --audit-level=high
+        working-directory: web-app
+      - name: Lint dashboard
+        run: npm run lint
+        working-directory: web-app
+      - name: Check generated API models
+        run: npm run check:api
+        working-directory: web-app
+      - name: Test dashboard authentication and storage
+        run: npm test
+        working-directory: web-app
+      - name: Build dashboard
+        run: npm run build
+        working-directory: web-app
+      - name: Check built dashboard security boundary
+        run: npm run check:artifact
+        working-directory: web-app
+
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check API surface agreement
+        run: python3 scripts/check-api-contract.py
+      - name: Test API contract checker coverage
+        run: python3 -m unittest scripts.tests.test_api_contract_checker
+      - name: Check legacy device entry-point gates
+        run: python3 scripts/check-device-gates.py
+      - name: Test redacted B04 read-only probe
+        run: python3 scripts/probe-b04-readonly.py --self-test
+      - name: Check B04 cross-build script syntax
+        run: bash -n scripts/build-b04-agent.sh
+      - name: Reject inherited cross-build overrides
+        run: |
+          if RUSTC_WRAPPER=/bin/false scripts/build-b04-agent.sh 2>refusal.log; then
+            echo 'cross-build unexpectedly accepted RUSTC_WRAPPER' >&2
+            exit 1
+          fi
+          grep -F 'inherited build environment contains RUSTC_WRAPPER' refusal.log
+      - name: Test B04 build publisher
+        run: python3 scripts/publish-b04-agent-build.py --self-test
+      - name: Check iOS compiled security boundary
+        run: python3 scripts/check-ios-boundary.py
+      - name: Test pairing payload builder
+        run: scripts/pairing/test-pairing-tools.sh
+      - name: Test content-addressed V1 deployment boundary
+        run: |
+          python3 -m unittest discover -s scripts/tests -p 'test_b04_*.py'
+          sh -n device/b04-v1/*.sh scripts/build-b04-dropbear.sh
+
+  pki:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PKI shell syntax
+        run: bash -n scripts/pki/*.sh
+      - name: Test host-only PKI lifecycle
+        run: scripts/pki/test-pki.sh
+
+  cross-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          targets: aarch64-unknown-linux-musl
+      - name: Install pinned cargo-zigbuild and Zig
+        run: python -m pip install cargo-zigbuild==0.23.0 ziglang==0.16.0
+      - name: Select pinned Zig Python runtime
+        run: echo "CARGO_ZIGBUILD_PYTHON_PATH=$(python -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+      - name: Build receipt-bound B04 agent
+        run: scripts/build-b04-agent.sh
+      - name: Re-verify B04 build receipt
+        run: python scripts/publish-b04-agent-build.py --verify-receipt
+
+  ios:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Check iOS boundary and pairing QR tools
+        run: |
+          python3 scripts/check-ios-boundary.py
+          scripts/pairing/test-pairing-tools.sh
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+        working-directory: clients/ios/OpenU60
+      - name: Build and test generated-contract client
+        run: |
+          xcodebuild \
+            -project OpenU60.xcodeproj \
+            -scheme OpenU60 \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro,OS=latest' \
+            -skipPackagePluginValidation \
+            CODE_SIGNING_ALLOWED=NO \
+            test
+        working-directory: clients/ios/OpenU60

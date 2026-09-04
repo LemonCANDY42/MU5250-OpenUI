@@ -23,8 +23,10 @@ cannot happen again.
    restore runs as root and extracts whatever it validates.
 5. **Exploit/injection tooling lives in `scripts/research/` and stays
    there.** It is quarantined for a reason — see its README.
-6. **FOTA auto-update stays off** (`zharden.sh` step 4). A surprise firmware
-   update wipes rc.local hooks and can change the rules under the agent.
+6. **Do not use this branch to change FOTA state.** A surprise firmware update
+   can change the recovery assumptions, but FOTA control is permanently outside
+   the integrated public API. Record and manage the owner's existing setting
+   only through a separately approved maintenance procedure.
 7. **Never write the USB composition node (`usb_op`) live** — set it via
    rc.local + reboot. Live writes (`0` or `2` after `1`) kill the gadget
    until the next reboot.
@@ -61,11 +63,10 @@ zte_topsw_jwxk_query, zte_topsw_tr069_sub, zte_mqtt_sdk_st,
 zte_topsw_dua, zte-topsw-tunnel
 ```
 
-The agent's `kill-bloat` endpoint (`agent/src/system.rs` `SAFE_OPTIONAL_DAEMONS`)
-contains only the safe list and subtracts the live daemon.conf barrier at
-runtime. An unreadable or empty barrier blocks the operation. Do not add daemon.conf names to it
-(killing `zte_topsw_wms` breaks SMS, `zte_topsw_sleep_faw` breaks wakelocks,
-and procd will respawn them anyway).
+The private integrated agent exposes **no process-killing endpoint**. The lists
+above are retained only as historical recovery evidence. Do not turn them into
+an allowlist: even a process once considered expendable may participate in a
+different B04 lifecycle or be restarted by procd.
 
 If a daemon.conf daemon truly must be disabled, comment it out in
 `/etc/config/zte_topsw_daemon.conf` (prefix `#`) — never via init.d.
@@ -113,22 +114,49 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
 
 - **Airplane mode bug**: `nwinfo_set_mode ONLINE` does NOT recover the modem
   from low-power mode. Only fix: reboot.
-- **Charge policy inversion**: `zwrt_bsp.charger set
-  {"direct_power_supply_mode":"enable"}` STOPS charging; `"disable"` STARTS
-  it. The agent's charge-control code (`agent/src/charge_policy.rs`) already
-  accounts for this — don't "fix" the inversion.
-- **procd respawn**: `kill -9` on a procd service may respawn it. Use
-  `/etc/init.d/<name> stop` instead.
+- **Charging remains read-only**: B04 exposes the stock charging state, but its
+  write-result and recovery semantics are not sufficiently proven. V1 does not
+  call the charger `set` method, run a charging-policy enforcer, or expose a
+  charging mutation route.
+- **Per-band Wi-Fi switch ownership**: independent 2.4/5 GHz controls target
+  only the two saved primary AP states, require at least one to remain enabled,
+  and arm an out-of-process two-minute rollback before any reload. V1 does not
+  expose total Wi-Fi off/on; the device's own Wi-Fi control remains authoritative
+  for that operation. Stock Wi-Fi
+  writes are asynchronous: after an acknowledgement, V1 follows the stock UI's
+  two-second grace period and polls the typed `zwrt_wlan report.load_status`
+  until `idle`, with a fixed 20-second bound, before exact readback. Transient
+  report failures are retried only inside that bound; timeout enters the
+  existing rollback path instead of guessing success. Only one protected Wi-Fi
+  operation is admitted at a time, and an admitted operation retains that slot
+  if its client disconnects; overlapping requests cannot queue more hardware
+  writes or blocking workers.
+- **Stock Wi-Fi coordination is read-only**: the public API does not expose the
+  stock Wi-Fi master switch or any write for `lbd` or either primary
+  `wifiSyncparasFlag`. The I/O layer rejects those fields even if an internal
+  caller constructs them. When the observed stock multi-band invariant is
+  active, an integrated identity edit keeps 5 GHz aligned with 2.4 GHz and an
+  independent primary-band disable fails closed. Invariant validation and
+  rollback capture share one pre-apply configuration snapshot, so repeated
+  reads cannot observe a mixed transition. Unrelated radio globals are not
+  repurposed.
+- **procd lifecycle**: signalling or stopping a managed service can cause a
+  respawn or block firmware synchronization. The integrated platform performs
+  neither operation.
 - **rc.local discipline**: stock rc.local contains a flash-protect block that
   READS `usb_op` — never delete that block (`sed '/usb_op/d'` breaks the
   script's syntax and kills ALL rc.local actions next boot). Always `sh -n
   /etc/rc.local` after any edit.
-- **IMEI is QFPROM-fused** — hardware-locked, not modifiable. Don't try.
+- **Reported IMEI is mutable in some firmware/service paths.** It is not a safe
+  regional-update mechanism and is not authoritative device identity. The
+  integrated platform neither exposes nor modifies it.
 - **eSIM**: no eUICC chip; not feasible.
 
-## What the deploy path does (and only this)
+## Reviewed V1 deploy path
 
-`setup.sh` / `deploy.sh` / `deploy-dashboard.sh` / `scripts/zharden.sh`:
+`setup.sh`, `deploy.sh`, `deploy-dashboard.sh` and `scripts/zharden.sh` are
+historical upstream scripts and now exit before device access. The old flow
+would have:
 
 - push `/data/zte-agent` + `/data/local/tmp/start_zte_agent.sh`
 - push dashboard static files to `/data/www`
@@ -138,7 +166,82 @@ ubus call zwrt_data get_wwaniface '{"source_module":"zte_topsw_data","cid":1}'
 - add a second uhttpd instance on :8080 for the dashboard (uci `uhttpd.dashboard`)
 - disable FOTA auto-update (`zwrt_zte_dm set_update_mode`)
 
-Anything beyond this list is a red flag during review.
+Those historical actions remain disabled. The reviewed V1 path uses only
+`/data/u60/releases/<sha256>/`, `current`/`previous` atomic links and mutable
+`state`, `pki`, `ssh`, `runtime` and bounded `logs` directories. A canary binds
+only loopback `19443`; stable HTTPS binds only the management address at `9443`;
+Dropbear binds only that address at `2222` with password/PAM and forwarding
+compiled out. Its compiled feature set does not expose `-s`, `-g` or `-E`; the
+launcher retains `-j -k`, and direct LAN host-key verification must match the
+device key read independently through root ADB.
+
+`scripts/deploy-b04-v1.py` keeps release install, canary, stable activation,
+SSH, rollback and the single `rc.local` line as separate gates. It rechecks
+exact firmware, root ADB, Mac default route/TUN, device USB properties and
+`rc.local`, and writes the scoped result to the approved NAS. It does not touch
+the dormant `/data/zte-agent` paths. The boot entry is permitted only after a
+current release, stable agent PID, Dropbear PID and exactly two public keys are
+present; it adds no init/firewall/UCI hook. These deployment actions require an
+explicit DEBUG maintenance boot with root ADB. The accepted normal boot instead
+uses stock ECM and intentionally exposes no USB ADB; recovery capability is
+retained through independently verified key-only root SSH plus exact root-only
+DEBUG and ECM `rc.local` copies.
+Remote shell gates use a parsed status sentinel rather than trusting the local
+`adb exec-out` return code. BusyBox symlink replacement uses `mv -T`, and both
+release links and boot files must pass exact post-write readback before evidence
+can be completed.
+
+### Accepted USB recovery boundary
+
+- Normal use is stock ECM USB Ethernet. Agent `9443`, stock Web and key-only
+  root SSH `2222` are reachable only through the management LAN.
+- Enter DEBUG only by authenticating through the verified SSH path, validating
+  the exact B04/recovery files, atomically selecting the preserved DEBUG
+  `rc.local`, validating its bytes, metadata and shell syntax, and rebooting.
+- Return to ECM only through root ADB, using the same checks to atomically select
+  the preserved ECM `rc.local`, then rebooting and revalidating ECM, SSH and
+  Agent connectivity.
+- Neither selection is a one-shot mode: the selected file remains the boot
+  policy until the opposite reviewed procedure is completed.
+- Never write `usb_op` live, invoke the stock USB setter as a probe, remove every
+  line containing `usb_op`, or assume a custom ADB+ECM composite is available.
+- FOTA automatic update remains a separate owner setting and must stay disabled;
+  neither recovery direction is authorized to change it.
+
+The boot line backgrounds a finite launcher so stock boot never waits on it.
+The launcher waits no more than two minutes for `192.168.0.1`, then gives Agent
+and key-only Dropbear at most three startup attempts each with fixed five-second
+spacing. It exits after success or exhaustion and never supervises or restarts a
+later crash. Both long-running processes discard stdout/stderr, preventing an
+unbounded persistent service log; security state is fixed-count and the
+ten-minute one-shot monitor has its independent 1 MiB ceiling.
+
+The Agent never repairs wall time and does not add NTP, a resident clock poll or
+another worker. A shared request-driven trust check gates only password
+login/lockout, new pairing and SMS sending until the stock firmware restores a
+credible clock. Existing key access, read/status, Wi-Fi, traffic, Agent and SSH
+recovery remain usable. Its persistent high-water file is reloaded under a
+cross-process lock, atomically updated at most once per 24 hours and below 1 KiB.
+A root-only tmpfs boot anchor supplies the exact five-minute bound across
+process restarts without flash writes. Corruption is preserved and fails only
+the date-sensitive operations closed; legacy audit records remain unknown.
+Deployment TLS is checked by the host Mac with the full CA and hostname
+validation, never by relaxing TLS or changing device time.
+
+This implementation still requires live acceptance. The owner reduced the
+final observation to a one-hour active gate; that result must not be represented
+as the original 24-hour RSS-growth target.
+
+The compiled secure service additionally has one bounded, read-only stability
+recorder. It samples fixed kernel/process counters every ten minutes, performs
+no vendor call or device mutation, and stores only sanitized aggregate records
+in `/data/u60/state/stability-monitor-v1.jsonl`. The file is mode `0600`, has a
+1 MiB hard limit and permanently stops after the first seven-day window (or
+earlier if the limit is reached). Its atomic state file preserves the original
+deadline across agent replacement, restart and device reboot. Corrupt/missing
+authoritative state with a nonempty log disables the recorder rather than
+silently starting a new observation. This persistence does not install a boot
+hook and does not weaken the separate stable-install gate.
 
 ## Known-good ubus surface
 
@@ -150,38 +253,39 @@ and methods; anything outside that surface deserves extra scrutiny.
 
 ---
 
-# Safety audit — 2026-08-09
+# Historical upstream safety audit — 2026-08-09
 
 Scope: every commit (`git log --all`), the working tree, and the deploy
 path. Goal: confirm nothing in this repo can brick the device when ADB is
 regained and this is deployed again.
 
-**Verdict: the deploy path is clean.** Findings and dispositions below.
+This audit predates the B04 V1 integration. Its findings are retained as
+device-recovery evidence, not as approval to bypass the disabled deploy guards.
 
 ## 1. Deploy path
 
 | Surface | What it does | Verdict |
 |---|---|---|
-| `setup.sh` | unlock (via zunlock.py) + agent push, startup script, rc.local line | idempotent, grep-guarded rc.local edits; safe |
-| `deploy.sh` | ssh-only binary push + restart | safe |
-| `deploy-dashboard.sh` | builds `web-app`, tars to `/data/www` | safe (data partition only) |
-| `scripts/zharden.sh` | dropbear to `/data`, rc.local cleanup, uhttpd :8080, FOTA off | v2 removed the firewall-include bootstrap — the last boot-critical hook; safe now |
+| `setup.sh` | historical unlock + agent push + rc.local edit | disabled in this branch |
+| `deploy.sh` | historical SSH binary replacement | disabled in this branch |
+| `deploy-dashboard.sh` | historical dashboard copy to `/data/www` | disabled in this branch |
+| `scripts/zharden.sh` | historical Dropbear/uhttpd/FOTA/rc.local changes | disabled; does not establish key-only SSH |
 | `scripts/zunlock.py` / `zbackup.py` | config backup patch + restore (the unlock itself) | highest-risk by nature, but gated: `--dry-run`, explicit confirm, sha256 upload verification, payload auto-discovered from the device's own rc.local |
 
-## 2. Agent boot-time behavior — acceptable, documented
+## 2. Current private agent behavior
 
-- `main.rs` runs `/data/local/tmp/start_ttl.sh` (iptables mangle TTL/HL
-  rules). Runtime firewall only; no persistence beyond that script. Safe.
-- `usb::enforce_usb_mode_on_boot()` rebuilds the USB configfs gadget **only
-  if NCM was explicitly persisted** (`/data/local/tmp/usb_config.json`),
-  waits up to 75 s for the stock USB stack to finish (bridge-membership
-  check), and skips in power-off-charging states. configfs is runtime sysfs —
-  a failure cannot persist across reboot. Worst case: tethering needs a
-  reboot. Acceptable.
-- All agent state files live under `/data/local/tmp/` (writable data
-  partition). The agent never writes `/etc`, `/zteoverlay`, or raw
-  partitions, except via `uci commit wireless`/`dhcp`/`uhttpd` and the
-  documented rc.local lines.
+- The compiled agent performs no boot-time migration or device mutation.
+- Its default listener is host-only `127.0.0.1:19090`; this is a test default,
+  not the future device port.
+- `B04Adapter` reads only the fixed `/usr/zte_web/web/version` identity file,
+  fixed proc/sysfs paths and fixed allowlisted UCI, ubus and `iw` status
+  operations. Active Wi-Fi channels are parsed as bounded optional integers;
+  no public request can select an object, method, command, key, interface or
+  path.
+- Legacy TTL, USB, routing and logger modules remain only as dormant provenance
+  files and are not in the compiled module graph. Wi-Fi and SMS are exposed only
+  through their typed, allowlisted V1 operations; charging is read-only and the
+  historical charging-policy implementation has been removed.
 
 ## 3. Findings acted on (2026-08-09)
 
@@ -199,24 +303,22 @@ regained and this is deployed again.
 
 ## 4. v2.1 features ported, and what was deliberately NOT ported
 
-Ported (safe, gated): charge control (`zwrt_bsp.charger`, inverted semantics
-handled), USB powerbank (`zwrt_bsp.powerbank set`), firmware WMS SMS translation
-with readiness gating (no direct database writes), `/api/at/port`, WiFi dual UCI namespace
-(`zte_mbb.wifi.*` + `wireless.zte_mbb.*`) with guest-time read.
+The upstream snapshot contained charge control, USB powerbank, SMS
+SQLite-delete fallback, raw AT-port discovery and Wi-Fi UCI behavior. In the
+B04 V1 integration the charger write path is rejected; other functionality is
+accepted only when represented by a typed `/v1` capability and after its own
+backup, readback and recovery gate.
 
 **Rejected from v2.1 (safety regressions):**
 
 | v2.1 change | Why rejected |
 |---|---|
-| kill-bloat list adds `zte_topsw_mc`, `zte_dm`, `zte_topsw_wms`, `zte_topsw_sleep_faw`, `zte_topsw_tr098db` | daemon.conf daemons — sync-barrier risk (see above); current list kept |
-| unrestricted AT terminal (any `AT…` accepted) | current allowlist kept (`AT+CFUN`, `AT^…`, `AT+CMGD`, `AT$QCRMCALL` etc. blocked) |
-| bind `0.0.0.0:9090`, no CORS pinning, no body limit, no `X-Confirm` on destructive ops | current hardening kept (LAN bind `192.168.0.1`, LAN-only CORS, 1 MiB body cap, `X-Confirm: true` required) |
+| any kill-bloat/process-killing API | process lifecycle is not a stable device contract; the public capability is permanently absent |
+| unrestricted or allowlisted raw AT terminal | string allowlists are not a safe semantic boundary; the route and AT transport module were removed |
+| any plaintext LAN listener or generic destructive endpoint | lifecycle support is limited to two bodyless, advanced-session-only fixed B04 calls over pinned HTTPS; no generic action input exists |
 
-The scheduler, DoH proxy and SMS forwarder have since been removed entirely —
-they had no dashboard surface, and `main.rs` runs a one-shot migration that
-undoes DoH's dnsmasq rewiring so a device that had it enabled does not come
-back up forwarding DNS to a dead port.
-| Tailscale module | skipped by owner decision (installs/supervises a daemon, downloads binaries) |
+Scheduler, DoH, SMS forwarding and Tailscale are outside the compiled private
+agent. They are not fallback services and must not be added to the core runtime.
 
 ## 5. Secrets / sensitive data
 
@@ -224,16 +326,18 @@ back up forwarding DNS to a dead port.
   (contains the backup-key suffix, IMEI and sticker credentials), `logs/`,
   `loopdebug-capture/` are **gitignored and never committed** — verified
   across all history. Keep it that way.
-- No IMEI, passwords, session tokens or backup-key material in any committed
-  file (scanned 2026-08-09).
+- No real IMEI, passwords, session tokens or backup-key material may enter any
+  commit. Synthetic mock identifiers are test data only.
 - `scripts/research/` tools are env-parameterized (no embedded credentials).
 
-## 6. Residual risks (accepted, documented)
+## 6. Residual source risks
 
-- `zunlock.py` restore path: inherent to the unlock; mitigations in place.
-- NCM gadget rebuild: runtime-only, recoverable by reboot.
-- `zwrt_bsp.charger set` can stop charging; the charge-limit enforcer
-  re-enables on charger unplug and on disable. Manual override is exposed
-  via the API.
-- `scripts/research/` remains runnable if deliberately invoked — that is the
-  point of the quarantine README.
+- `zunlock.py` and config restore are inherently privileged recovery tools;
+  neither participates in normal runtime or deployment.
+- Dormant upstream mutation modules remain for provenance and reference. The
+  route-contract test and minimal compiled module graph prevent them from
+  becoming public behavior accidentally.
+- Every `scripts/research/` executable fails closed before a socket, listener
+  or queue side effect unless the privileged-research one-command
+  acknowledgement is present. The acknowledgement is an audit gate, not a
+  safety claim; the quarantine rules still apply.

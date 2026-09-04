@@ -1,19 +1,12 @@
 #!/usr/bin/env python3
-"""Assert the agent, the dashboard and the mock agent agree on the API surface.
+"""Fail closed when the B04 agent drifts from its public contract.
 
-The dashboard was originally built against `web-app/tools/mock_agent.py` rather
-than the real agent, and the two silently drifted: `/api/dashboard`'s `speed`
-block and `/api/system/top` both shipped shapes the UI could not read. This
-check closes the loop on the *route* half of that problem — payload shapes are
-pinned by the `#[cfg(test)]` key-set assertions in `agent/src/system.rs`.
+Public behavior is owned by `openapi/u60-v1.yaml`; the agent and same-origin
+dashboard may expose or consume only those versioned paths.
 
-Fails if:
-  - the dashboard calls an endpoint the agent does not serve  (broken at runtime)
-  - the agent serves an endpoint nothing calls                (dead surface)
-  - the mock is missing an endpoint the dashboard calls       (broken demos)
-
-Run from anywhere:  python3 scripts/check-api-contract.py
+Run from anywhere: python3 scripts/check-api-contract.py
 """
+
 from __future__ import annotations
 
 import re
@@ -22,21 +15,61 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SERVER_RS = ROOT / "agent/src/server.rs"
-API_TS = ROOT / "web-app/src/data/api.ts"
-CLIENT_TS = ROOT / "web-app/src/data/client.ts"
-MOCK_PY = ROOT / "web-app/tools/mock_agent.py"
+OPENAPI = ROOT / "openapi/u60-v1.yaml"
+WEB_SOURCES = tuple(
+    sorted(path for path in (ROOT / "web-app/src").rglob("*") if path.is_file())
+)
 
-# The mock answers any unlisted PUT/DELETE/POST with `{"ok": true, "data": {}}`,
-# which is an adequate stub for fire-and-forget mutations. It only needs a real
-# fixture where the dashboard reads a payload back: every GET, plus these POSTs.
-MOCK_PAYLOAD_POSTS = {
-    "/api/sms/list",
+ROUTE_RE = re.compile(
+    r'\.route\(\s*"(/(?:api|v1)/[^"]+)"\s*,\s*(get|post|put|delete|patch)\('
+)
+CHAINED_ROUTE_RE = re.compile(
+    r'\.route\(\s*"(/(?:api|v1)/[^"]+)"\s*,\s*'
+    r'(?:get|post|put|delete|patch)\([^)]*\)\s*\.\s*'
+    r'(get|post|put|delete|patch)\('
+)
+OPENAPI_PATH_RE = re.compile(r"^  (/v1/[a-zA-Z0-9/_-]+):\s*$", re.MULTILINE)
+OPENAPI_ANY_PATH_RE = re.compile(r"^  (/[a-zA-Z0-9/_-]+):\s*$", re.MULTILINE)
+OPENAPI_METHOD_RE = re.compile(r"^    (get|post|put|delete|patch):\s*$")
+OPENAPI_STATUS_RE = re.compile(r'^        "([1-5][0-9][0-9])":\s*$')
+FORBIDDEN_PUBLIC_PATHS = {
     "/api/at/send",
+    "/api/at/port",
     "/api/system/kill-bloat",
+    "/v1/wifi/master",
 }
-
-ROUTE_RE = re.compile(r'\(&Method::(\w+),\s*"(/api/[^"]+)"\)')
-PATH_RE = re.compile(r'["\'](/api/[a-zA-Z0-9/_-]+)["\']')
+EXPECTED_BOOTSTRAP_PATHS: set[str] = set()
+REQUIRED_RESPONSE_CODES = {
+    ("Get", "/v1/device"): {"200", "401", "403", "500"},
+    ("Get", "/v1/capabilities"): {"200", "401", "403", "500"},
+    ("Get", "/v1/status/dashboard"): {"200", "401", "403", "500"},
+    ("Get", "/v1/status/clock"): {"200", "401", "403", "404", "500"},
+    ("Get", "/v1/status/system"): {"200", "401", "403", "500", "501", "503"},
+    ("Get", "/v1/status/battery"): {"200", "401", "403", "500", "501", "503"},
+    ("Get", "/v1/status/thermal"): {"200", "401", "403", "500", "501", "503"},
+    ("Post", "/v1/auth/password/session"): {
+        "200", "400", "401", "403", "413", "429", "500", "503"
+    },
+    ("Post", "/v1/auth/password/advanced"): {
+        "200", "400", "401", "403", "413", "429", "500", "503"
+    },
+    ("Post", "/v1/auth/challenge"): {"200", "400", "401", "403", "413", "500"},
+    ("Post", "/v1/auth/challenge/verify"): {
+        "200", "400", "401", "403", "413", "500"
+    },
+    ("Post", "/v1/auth/pair"): {"200", "400", "401", "403", "413", "500", "503"},
+    ("Post", "/v1/device/reboot"): {
+        "200", "400", "401", "403", "409", "413", "500", "503"
+    },
+    ("Post", "/v1/device/power-off"): {
+        "200", "400", "401", "403", "409", "413", "500", "503"
+    },
+    ("Post", "/v1/sms/send"): {"200", "400", "401", "403", "413", "500", "503"},
+    ("Get", "/v1/charging"): {"200", "401", "403", "500", "503"},
+    ("Put", "/v1/traffic/cycle"): {"200", "400", "401", "403", "413", "500", "503"},
+    ("Post", "/v1/wifi/transaction"): {"200", "400", "401", "403", "409", "413", "500", "503"},
+    ("Post", "/v1/wifi/transaction/confirm"): {"200", "400", "401", "403", "409", "413", "500", "503"},
+}
 
 
 def read(path: Path) -> str:
@@ -45,71 +78,177 @@ def read(path: Path) -> str:
     return path.read_text()
 
 
-def agent_routes() -> set[tuple[str, str]]:
-    """(method, path) pairs from the route table."""
-    return set(ROUTE_RE.findall(read(SERVER_RS)))
-
-
-def dashboard_routes() -> set[str]:
-    return set(PATH_RE.findall(read(API_TS))) | set(PATH_RE.findall(read(CLIENT_TS)))
-
-
-def mock_routes() -> set[str]:
-    src = read(MOCK_PY)
-    routes: set[str] = set()
-    for block in ("ROUTES_GET", "ROUTES_POST"):
-        m = re.search(rf"^{block} = \{{(.*?)^\}}", src, re.S | re.M)
-        if m:
-            routes |= set(PATH_RE.findall(m.group(1)))
-    return routes
-
-
 def report(title: str, items: set[str], hint: str) -> bool:
     if not items:
         return True
     print(f"\n  {title}")
-    for path in sorted(items):
-        print(f"    - {path}")
+    for item in sorted(items):
+        print(f"    - {item}")
     print(f"    -> {hint}")
     return False
 
 
+def openapi_operations(source: str) -> dict[tuple[str, str], set[str]]:
+    """Parse the deliberately simple path/method/response skeleton.
+
+    Full schema validity is checked by the pinned OpenAPI generator. This
+    parser owns only the public route and status-code agreement invariant.
+    """
+    operations: dict[tuple[str, str], set[str]] = {}
+    path: str | None = None
+    operation: tuple[str, str] | None = None
+    for line in source.splitlines():
+        if line and not line.startswith(" "):
+            path = None
+            operation = None
+        path_match = OPENAPI_PATH_RE.match(line)
+        if path_match:
+            path = path_match.group(1)
+            operation = None
+            continue
+        method_match = OPENAPI_METHOD_RE.match(line)
+        if path and method_match:
+            method = method_match.group(1).capitalize()
+            operation = (method, path)
+            operations.setdefault(operation, set())
+            continue
+        status_match = OPENAPI_STATUS_RE.match(line)
+        if operation and status_match:
+            operations[operation].add(status_match.group(1))
+    return operations
+
+
+def openapi_schema_properties(source: str, schema: str) -> set[str]:
+    """Return direct property names from one top-level component schema."""
+    lines = source.splitlines()
+    marker = f"    {schema}:"
+    try:
+        start = lines.index(marker)
+    except ValueError:
+        return set()
+    properties: set[str] = set()
+    in_properties = False
+    for line in lines[start + 1 :]:
+        if line.startswith("    ") and not line.startswith("      "):
+            break
+        if line == "      properties:":
+            in_properties = True
+            continue
+        if in_properties:
+            match = re.match(r"^        ([a-zA-Z0-9_]+):\s*$", line)
+            if match:
+                properties.add(match.group(1))
+    return properties
+
+
 def main() -> int:
-    routes = agent_routes()
-    agent = {path for _, path in routes}
-    dash, mock = dashboard_routes(), mock_routes()
-    # Login lives in client.ts and is special-cased by the mock, but it is a
-    # real route on both sides.
-    needs_fixture = ({p for m, p in routes if m == "Get"} | MOCK_PAYLOAD_POSTS) & dash
+    server_source = read(SERVER_RS)
+    routes = {(method.capitalize(), path) for path, method in ROUTE_RE.findall(server_source)}
+    routes |= {
+        (method.capitalize(), path)
+        for path, method in CHAINED_ROUTE_RE.findall(server_source)
+    }
+    server_paths = {path for _, path in routes}
+    server_v1 = {path for path in server_paths if path.startswith("/v1/")}
+    server_legacy = {path for path in server_paths if path.startswith("/api/")}
+    openapi_source = read(OPENAPI)
+    contract_v1 = set(OPENAPI_PATH_RE.findall(openapi_source))
+    contract_legacy = {
+        path
+        for path in OPENAPI_ANY_PATH_RE.findall(openapi_source)
+        if not path.startswith("/v1/")
+    }
+    contract_operations = openapi_operations(openapi_source)
+    server_v1_operations = {route for route in routes if route[1].startswith("/v1/")}
+
+    web_forbidden: set[str] = set()
+    for source_path in WEB_SOURCES:
+        source = read(source_path)
+        web_forbidden |= {
+            f"{source_path.relative_to(ROOT)}: {path}"
+            for path in FORBIDDEN_PUBLIC_PATHS
+            if path in source
+        }
 
     print(
-        f"agent serves {len(routes)} routes over {len(agent)} paths; "
-        f"dashboard calls {len(dash)}; mock stubs {len(mock)}"
+        f"agent routes {len(server_v1)} versioned paths and "
+        f"{len(server_legacy)} legacy paths; "
+        f"OpenAPI declares {len(contract_v1)} paths"
     )
 
     ok = True
     ok &= report(
-        "Dashboard calls endpoints the agent does not serve:",
-        dash - agent,
-        "these 404 at runtime — add the route or drop the call",
+        "Agent /v1 routes missing from OpenAPI:",
+        server_v1 - contract_v1,
+        "document the route before serving it",
     )
     ok &= report(
-        "Agent serves endpoints nothing calls:",
-        agent - dash,
-        "dead surface — delete it or wire it into the dashboard",
+        "OpenAPI paths not routed by the agent:",
+        contract_v1 - server_v1,
+        "implement the route or remove the premature contract",
     )
     ok &= report(
-        "Mock lacks a fixture for endpoints the dashboard reads:",
-        needs_fixture - mock,
-        "local demos will render empty — add a fixture to mock_agent.py",
+        "Agent method/path operations missing from OpenAPI:",
+        {f"{method} {path}" for method, path in server_v1_operations - contract_operations.keys()},
+        "declare the exact HTTP operation before routing it",
     )
     ok &= report(
-        "Mock stubs endpoints that no longer exist:",
-        mock - agent,
-        "stale fixture — remove it from mock_agent.py",
+        "OpenAPI operations not routed by the agent:",
+        {f"{method} {path}" for method, path in contract_operations.keys() - server_v1_operations},
+        "remove premature operations or implement the exact route",
     )
 
-    print("\nOK: agent, dashboard and mock agree." if ok else "\nFAILED")
+    response_drift: set[str] = set()
+    for operation, required in REQUIRED_RESPONSE_CODES.items():
+        declared = contract_operations.get(operation, set())
+        missing = required - declared
+        if missing:
+            response_drift.add(f"{operation[0]} {operation[1]} missing {','.join(sorted(missing))}")
+    ok &= report(
+        "OpenAPI operations omit runtime response statuses:",
+        response_drift,
+        "declare every typed success, auth, unsupported and degraded response",
+    )
+    ok &= report(
+        "Unexpected legacy agent routes:",
+        server_legacy - EXPECTED_BOOTSTRAP_PATHS,
+        "new clients may only use /v1; remove the legacy route",
+    )
+    ok &= report(
+        "Unexpected non-versioned OpenAPI paths:",
+        contract_legacy,
+        "the public contract is versioned under /v1 only",
+    )
+    ok &= report(
+        "Forbidden public routes are still routed:",
+        server_paths & FORBIDDEN_PUBLIC_PATHS,
+        "raw AT and process-killing surfaces are permanently excluded",
+    )
+    ok &= report(
+        "Forbidden public paths remain in dashboard or mock sources:",
+        web_forbidden,
+        "delete the dormant client or fixture binding",
+    )
+
+    forbidden_contract_terms = {
+        term for term in ("/api/at", "kill-bloat", "command:", "shell") if term in openapi_source
+    }
+    ok &= report(
+        "Forbidden command surfaces appear in OpenAPI:",
+        forbidden_contract_terms,
+        "the versioned domain contract must not expose generic execution",
+    )
+
+    retired_wifi_write_fields = {"band_steering_enabled"} & openapi_schema_properties(
+        openapi_source, "WifiTransactionRequest"
+    )
+    ok &= report(
+        "Retired Wi-Fi coordination writes remain in OpenAPI:",
+        retired_wifi_write_fields,
+        "keep multi-band state read-only and remove the transaction write field",
+    )
+
+    print("\nOK: B04 public surface matches OpenAPI." if ok else "\nFAILED")
     return 0 if ok else 1
 
 

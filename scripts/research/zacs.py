@@ -12,6 +12,10 @@ Queue file:  logs/zacs/queue.txt   (one RPC per line)
              X <verbatim-soap-body-inside-cwmp:Body>
 Results:     logs/zacs/results.txt (appended); raw XML in logs/zacs/raw/
 """
+from _research_gate import require_research_authorization
+
+require_research_authorization()
+
 import sys, os, re, time, socket, threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 

@@ -9,9 +9,16 @@ Run from source:   python3 installer/app.py
 Packaged builds:   see installer/README.md (PyInstaller, CI matrix)
 """
 
+import sys
+
+print(
+    "Refusing the legacy one-click installer. Use the staged B04 V1 deployment workflow.",
+    file=sys.stderr,
+)
+raise SystemExit(64)
+
 import os
 import queue
-import sys
 import tempfile
 import threading
 import tkinter as tk

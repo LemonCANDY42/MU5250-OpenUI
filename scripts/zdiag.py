@@ -9,6 +9,10 @@ Reads ROUTER_PW env. Non-destructive unless you pass an injection target.
 """
 import os, sys, json, time, hashlib, urllib.request, http.cookiejar
 
+from _device_gate import require_privileged_research
+
+require_privileged_research()
+
 GW=os.environ["GW"] if "GW" in os.environ else "192.168.0.1"
 PW=os.environ["ROUTER_PW"]
 ANON="0"*32
