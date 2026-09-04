@@ -57,7 +57,8 @@ impl WallClock for SystemWallClock {
     fn boot_id(&self) -> Result<String, String> {
         #[cfg(target_os = "linux")]
         {
-            let value = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+            let value = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .map_err(|error| format!("read Linux boot identity: {error}"))?;
             return validate_boot_id(&value);
         }
         #[cfg(not(target_os = "linux"))]

@@ -350,7 +350,8 @@ impl WifiClock for SystemWifiClock {
     fn boot_id(&self) -> Result<String, String> {
         #[cfg(target_os = "linux")]
         {
-            let value = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+            let value = fs::read_to_string("/proc/sys/kernel/random/boot_id")
+                .map_err(|error| format!("read Linux boot identity: {error}"))?;
             let value = value.trim();
             if value.is_empty()
                 || value.len() > 128
@@ -1223,8 +1224,7 @@ fn sms_encoding(value: &str) -> &'static str {
 fn sms_timestamp() -> Result<String, String> {
     let seconds = i64::try_from(unix_now()?)
         .map_err(|_| "SMS timestamp exceeded the platform range".to_string())?;
-    let timestamp = libc::time_t::try_from(seconds)
-        .map_err(|_| "SMS timestamp exceeded the platform range".to_string())?;
+    let timestamp = seconds;
     let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
     let result = unsafe { libc::localtime_r(&timestamp, local.as_mut_ptr()) };
     if result.is_null() {
