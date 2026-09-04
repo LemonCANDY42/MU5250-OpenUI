@@ -174,6 +174,18 @@ struct DashboardView: View {
             ScrollView {
                 if let snapshot = model.dashboard {
                     LazyVStack(spacing: 14) {
+                        if model.clockWaitingForSync {
+                            Label(
+                                "The device is synchronizing its clock. Some time-related operations will be available shortly.",
+                                systemImage: "clock.badge.exclamationmark"
+                            )
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding()
+                            .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                            .accessibilityElement(children: .combine)
+                        }
                         ForEach(visibleSections(in: snapshot)) { section in
                             dashboardSection(section, snapshot: snapshot)
                         }

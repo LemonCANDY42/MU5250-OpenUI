@@ -505,18 +505,30 @@ def verify_tls_unauthorized(port: int, ca_cert: Path) -> None:
         )
 
 
-def verify_device_lan_tls_unauthorized() -> None:
-    result = adb_shell(
-        "curl --silent --show-error --output /dev/null --write-out '%{http_code}' "
-        "--cacert /data/u60/pki/owner-ca-cert.pem "
-        "--resolve u60.local:9443:192.168.0.1 "
-        "https://u60.local:9443/v1/device",
+def verify_host_lan_tls_unauthorized(ca_cert: Path) -> None:
+    if ca_cert.is_symlink() or not ca_cert.is_file():
+        raise DeployError("CA certificate must be a physical file")
+    result = run(
+        [
+            "curl",
+            "--silent",
+            "--show-error",
+            "--output",
+            "/dev/null",
+            "--write-out",
+            "%{http_code}",
+            "--cacert",
+            str(ca_cert),
+            "--resolve",
+            f"u60.local:9443:{MANAGEMENT_ADDRESS}",
+            "https://u60.local:9443/v1/device",
+        ],
         timeout=20,
         limit=4096,
     )
-    if result != "401":
+    if result.stdout != b"401":
         raise DeployError(
-            "device-local LAN TLS check did not return the authenticated boundary"
+            "host LAN TLS check did not return the authenticated boundary"
         )
 
 
@@ -1011,7 +1023,7 @@ def command_lan_canary(arguments: argparse.Namespace) -> dict[str, Any]:
         f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable", timeout=30
     )
     try:
-        verify_device_lan_tls_unauthorized()
+        verify_host_lan_tls_unauthorized(arguments.ca_cert)
     except BaseException:
         stop_managed_agent("agent.pid")
         raise
@@ -1034,7 +1046,7 @@ def command_activate(arguments: argparse.Namespace) -> dict[str, Any]:
             f"{DEVICE_ROOT}/releases/{release_id}/bin/run-agent.sh stable",
             timeout=30,
         )
-        verify_device_lan_tls_unauthorized()
+        verify_host_lan_tls_unauthorized(arguments.ca_cert)
     except BaseException:
         stop_managed_agent("agent.pid")
         links = read_release_links()

@@ -6,11 +6,13 @@ use tokio::sync::Semaphore;
 
 use crate::adapter::{B04Adapter, DeviceAdapter};
 use crate::auth::{AuthFailure, AuthService};
+use crate::clock_trust::ClockTrust;
 use crate::daily::DailyService;
 use crate::lifecycle::{LifecycleControl, LifecycleService};
 
 pub struct AppState {
     pub auth: Arc<AuthService>,
+    pub clock_trust: Arc<ClockTrust>,
     pub adapter: Arc<dyn DeviceAdapter>,
     pub daily: Option<Arc<DailyService>>,
     pub dashboard_admission: Arc<Semaphore>,
@@ -23,6 +25,7 @@ impl Clone for AppState {
     fn clone(&self) -> Self {
         Self {
             auth: Arc::clone(&self.auth),
+            clock_trust: Arc::clone(&self.clock_trust),
             adapter: Arc::clone(&self.adapter),
             daily: self.daily.as_ref().map(Arc::clone),
             dashboard_admission: Arc::clone(&self.dashboard_admission),
@@ -41,8 +44,10 @@ impl AppState {
 
     #[cfg(test)]
     pub fn with_adapter(auth: AuthService, adapter: Arc<dyn DeviceAdapter>) -> Self {
+        let clock_trust = auth.clock_trust();
         Self {
             auth: Arc::new(auth),
+            clock_trust,
             adapter,
             daily: None,
             dashboard_admission: Arc::new(Semaphore::new(1)),
@@ -53,8 +58,10 @@ impl AppState {
     }
 
     pub fn with_daily(auth: AuthService, daily: DailyService) -> Self {
+        let clock_trust = auth.clock_trust();
         Self {
             auth: Arc::new(auth),
+            clock_trust,
             adapter: Arc::new(B04Adapter::new()),
             daily: Some(Arc::new(daily)),
             dashboard_admission: Arc::new(Semaphore::new(1)),
@@ -70,8 +77,10 @@ impl AppState {
         adapter: Arc<dyn DeviceAdapter>,
         lifecycle: Arc<dyn LifecycleControl>,
     ) -> Self {
+        let clock_trust = auth.clock_trust();
         Self {
             auth: Arc::new(auth),
+            clock_trust,
             adapter,
             daily: None,
             dashboard_admission: Arc::new(Semaphore::new(1)),
@@ -207,6 +216,12 @@ pub fn failure(error: AuthFailure) -> (u16, Value) {
             "password authentication is not configured",
             None,
         ),
+        AuthFailure::ClockNotSynchronized => (
+            503,
+            "clock_not_synchronized",
+            "device clock is not synchronized",
+            Some(15),
+        ),
         AuthFailure::Internal(error) => {
             eprintln!("[auth] internal failure: {error}");
             (500, "internal_error", "internal authentication error", None)
@@ -237,5 +252,13 @@ mod tests {
         assert_eq!(status, 400);
         assert_eq!(body["error"]["code"], "invalid_request");
         assert!(!body.to_string().contains("password\":7"));
+    }
+
+    #[test]
+    fn unsynchronized_clock_is_a_retryable_typed_auth_failure() {
+        let (status, body) = failure(AuthFailure::ClockNotSynchronized);
+        assert_eq!(status, 503);
+        assert_eq!(body["error"]["code"], "clock_not_synchronized");
+        assert_eq!(body["error"]["retry_after_seconds"], 15);
     }
 }

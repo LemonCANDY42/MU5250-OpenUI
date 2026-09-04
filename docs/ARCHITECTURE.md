@@ -203,6 +203,22 @@ and audit metadata. Audit logging follows the authoritative state commit and is
 best-effort, so a logging outage cannot misreport a committed auth mutation as
 failed.
 
+One shared request-driven `ClockTrust` protects the remaining date-sensitive
+boundaries. It uses the release `SOURCE_DATE_EPOCH` plus a persisted trusted
+high-water mark, tolerates a five-minute correction, and advances that
+persistent mark at most once per day under a cross-process lock. A root-only
+tmpfs anchor couples wall time to `CLOCK_BOOTTIME` for the current boot and is
+advanced only when wall time moves ahead, preserving the five-minute bound
+across server/CLI child processes without flash write amplification. It performs
+no clock write, NTP request, thread or periodic poll. If time is untrusted—or
+the trust file is corrupt—password login/lockout, new pairing and SMS sending
+pause with a typed retryable response, while
+existing key sessions, status, Wi-Fi, traffic, Agent and SSH recovery stay
+available. Pending Wi-Fi confirmation is independently boot-bound with
+`CLOCK_BOOTTIME`, so wall-clock repair cannot extend or expire its rollback
+window. Audit events keep the observed wall timestamp and state whether it was
+trusted; pre-feature audit entries remain unknown.
+
 Device reboot and power-off are narrow exceptions to the general no-process-
 control boundary. They are separate bodyless routes backed by the exact stock
 HK B04 `zwrt_mc.device.manager` calls and `{ "moduleName": "web" }` payload.

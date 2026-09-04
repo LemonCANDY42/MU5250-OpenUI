@@ -2,6 +2,7 @@ mod adapter;
 mod api_v1;
 mod auth;
 mod b04_io;
+mod clock_trust;
 mod daily;
 mod handlers;
 mod lifecycle;
@@ -91,9 +92,10 @@ async fn serve(web_root: Option<PathBuf>) -> Result<(), String> {
         .set_nonblocking(true)
         .map_err(|error| format!("HTTPS listener failed to enter nonblocking mode: {error}"))?;
     let store = StateStore::open(state_root())?;
-    let auth = AuthService::open(store.clone())?;
-    let daily = daily::DailyService::open(store.clone())?;
-    if let Err(error) = stability_monitor::start(store) {
+    let clock_trust = clock_trust::ClockTrust::open(store.clone())?;
+    let auth = AuthService::open_with_clock_trust(store.clone(), clock_trust.clone())?;
+    let daily = daily::DailyService::open(store.clone(), clock_trust.clone())?;
+    if let Err(error) = stability_monitor::start(store, clock_trust) {
         eprintln!("[stability-monitor] disabled: {error}");
     }
     let state = AppState::with_daily(auth, daily);
@@ -205,6 +207,7 @@ fn cli_auth_error(error: AuthFailure) -> String {
     match error {
         AuthFailure::InvalidInput(message) => message.into(),
         AuthFailure::NotConfigured => "password authentication is not configured".into(),
+        AuthFailure::ClockNotSynchronized => "device clock is not synchronized".into(),
         AuthFailure::Unauthorized => "authentication failed".into(),
         AuthFailure::Forbidden => "operation is not permitted".into(),
         AuthFailure::Locked { .. } => "authentication is temporarily locked".into(),

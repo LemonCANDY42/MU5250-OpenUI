@@ -174,6 +174,23 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/v1/status/clock": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        /** Read whether the device wall clock is trusted for date-sensitive operations */
+        readonly get: operations["getClockStatus"];
+        readonly put?: never;
+        readonly post?: never;
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/v1/status/system": {
         readonly parameters: {
             readonly query?: never;
@@ -477,7 +494,7 @@ export interface components {
         };
         readonly AuthError: {
             /** @enum {string} */
-            readonly code: "authentication_failed" | "insufficient_scope" | "temporarily_locked" | "invalid_request" | "password_not_configured" | "origin_forbidden" | "internal_error" | "not_found";
+            readonly code: "authentication_failed" | "insufficient_scope" | "temporarily_locked" | "invalid_request" | "password_not_configured" | "clock_not_synchronized" | "origin_forbidden" | "internal_error" | "not_found";
             readonly message: string;
             readonly retry_after_seconds?: number;
         };
@@ -517,6 +534,15 @@ export interface components {
             /** @constant */
             readonly ok: true;
             readonly data: components["schemas"]["DashboardSnapshot"];
+        };
+        readonly ClockStatusResponse: {
+            /** @constant */
+            readonly ok: true;
+            readonly data: components["schemas"]["ClockStatus"];
+        };
+        readonly ClockStatus: {
+            /** @enum {string} */
+            readonly state: "trusted" | "waiting_for_sync";
         };
         readonly DashboardSnapshot: {
             readonly report: components["schemas"]["CapabilityReport"];
@@ -869,8 +895,9 @@ export interface components {
             readonly ok: false;
             readonly error: {
                 /** @enum {string} */
-                readonly code: "invalid_request" | "state_conflict" | "source_unavailable";
+                readonly code: "invalid_request" | "state_conflict" | "source_unavailable" | "clock_not_synchronized";
                 readonly message: string;
+                readonly retry_after_seconds?: number;
                 readonly recovery: components["schemas"]["RecoveryMetadata"];
             };
         };
@@ -960,9 +987,11 @@ export interface components {
                 readonly "application/json": components["schemas"]["AuthErrorResponse"];
             };
         };
-        /** @description Password setup must be completed through the maintenance CLI */
+        /** @description Password setup is incomplete or the device clock is not yet synchronized */
         readonly PasswordNotConfigured: {
             headers: {
+                /** @description Seconds before retrying when the clock is not synchronized */
+                readonly "Retry-After"?: number;
                 readonly [name: string]: unknown;
             };
             content: {
@@ -971,6 +1000,15 @@ export interface components {
         };
         /** @description Authentication state could not be accessed safely */
         readonly AuthInternalError: {
+            headers: {
+                readonly [name: string]: unknown;
+            };
+            content: {
+                readonly "application/json": components["schemas"]["AuthErrorResponse"];
+            };
+        };
+        /** @description The endpoint is unavailable on an older compatible Agent */
+        readonly NotFound: {
             headers: {
                 readonly [name: string]: unknown;
             };
@@ -1008,6 +1046,8 @@ export interface components {
         /** @description A fixed B04 daily-management source or recovery step is unavailable */
         readonly DailySourceUnavailable: {
             headers: {
+                /** @description Seconds before retrying when the clock is not synchronized */
+                readonly "Retry-After"?: number;
                 readonly [name: string]: unknown;
             };
             content: {
@@ -1181,6 +1221,7 @@ export interface operations {
             readonly 403: components["responses"]["OriginForbidden"];
             readonly 413: components["responses"]["PayloadTooLarge"];
             readonly 500: components["responses"]["AuthInternalError"];
+            readonly 503: components["responses"]["PasswordNotConfigured"];
         };
     };
     readonly getDevice: {
@@ -1287,6 +1328,30 @@ export interface operations {
             };
             readonly 401: components["responses"]["AuthenticationFailed"];
             readonly 403: components["responses"]["Forbidden"];
+            readonly 500: components["responses"]["AuthInternalError"];
+        };
+    };
+    readonly getClockStatus: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            /** @description Current clock trust state */
+            readonly 200: {
+                headers: {
+                    readonly [name: string]: unknown;
+                };
+                content: {
+                    readonly "application/json": components["schemas"]["ClockStatusResponse"];
+                };
+            };
+            readonly 401: components["responses"]["AuthenticationFailed"];
+            readonly 403: components["responses"]["Forbidden"];
+            readonly 404: components["responses"]["NotFound"];
             readonly 500: components["responses"]["AuthInternalError"];
         };
     };

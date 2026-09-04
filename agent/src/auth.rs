@@ -14,6 +14,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
+#[cfg(test)]
+use crate::clock_trust::WallClock;
+use crate::clock_trust::{ClockTrust, ClockTrustStatus};
 use crate::state_store::StateStore;
 use crate::util::MutexExt;
 
@@ -94,6 +97,7 @@ pub enum AuthFailure {
     Locked { retry_after_seconds: u64 },
     InvalidInput(&'static str),
     NotConfigured,
+    ClockNotSynchronized,
     Internal(String),
 }
 
@@ -101,6 +105,8 @@ pub trait Clock: Send + Sync {
     fn wall_now(&self) -> u64;
     fn monotonic_now(&self) -> Result<u64, String>;
     fn boot_id(&self) -> Result<String, String>;
+    #[cfg(test)]
+    fn clock_trust_boottime_now(&self) -> Result<u64, String>;
 }
 
 struct SystemClock;
@@ -119,6 +125,11 @@ impl Clock for SystemClock {
 
     fn boot_id(&self) -> Result<String, String> {
         system_boot_id()
+    }
+
+    #[cfg(test)]
+    fn clock_trust_boottime_now(&self) -> Result<u64, String> {
+        system_monotonic_seconds()
     }
 }
 
@@ -219,6 +230,8 @@ struct PairingRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AuditEvent {
     timestamp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clock_trusted: Option<bool>,
     event: String,
     outcome: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -257,20 +270,60 @@ struct LoginAttempt {
 pub struct AuthService {
     store: StateStore,
     clock: Arc<dyn Clock>,
+    clock_trust: Arc<ClockTrust>,
     password: Mutex<Option<PasswordRecord>>,
     credentials: Mutex<Vec<CredentialRecord>>,
     sessions: Mutex<Vec<SessionRecord>>,
     challenges: Mutex<HashMap<String, ChallengeRecord>>,
-    last_observed_time: Mutex<u64>,
     pairing_lock: Mutex<()>,
+}
+
+#[cfg(test)]
+struct AuthWallClock(Arc<dyn Clock>);
+
+#[cfg(test)]
+impl WallClock for AuthWallClock {
+    fn now(&self) -> u64 {
+        self.0.wall_now()
+    }
+
+    fn boottime(&self) -> Result<u64, String> {
+        self.0.clock_trust_boottime_now()
+    }
+
+    fn boot_id(&self) -> Result<String, String> {
+        self.0.boot_id()
+    }
 }
 
 impl AuthService {
     pub fn open(store: StateStore) -> Result<Self, String> {
-        Self::open_with_clock(store, Arc::new(SystemClock))
+        let clock_trust = ClockTrust::open(store.clone())?;
+        Self::open_with_clock_and_trust(store, Arc::new(SystemClock), clock_trust)
     }
 
+    #[cfg(test)]
     fn open_with_clock(store: StateStore, clock: Arc<dyn Clock>) -> Result<Self, String> {
+        let clock_trust = ClockTrust::open_with_clock(
+            store.clone(),
+            0,
+            Arc::new(AuthWallClock(Arc::clone(&clock))),
+        )?;
+        Self::open_with_clock_and_trust(store, clock, clock_trust)
+    }
+
+    pub(crate) fn open_with_clock_trust(
+        store: StateStore,
+        clock_trust: Arc<ClockTrust>,
+    ) -> Result<Self, String> {
+        Self::open_with_clock_and_trust(store, Arc::new(SystemClock), clock_trust)
+    }
+
+    fn open_with_clock_and_trust(
+        store: StateStore,
+        clock: Arc<dyn Clock>,
+        clock_trust: Arc<ClockTrust>,
+    ) -> Result<Self, String> {
         let password = store.read_json::<PasswordRecord>(PASSWORD_FILE)?;
         if let Some(record) = &password {
             validate_password_record(record)?;
@@ -300,13 +353,17 @@ impl AuthService {
         Ok(Self {
             store,
             clock,
+            clock_trust,
             password: Mutex::new(password),
             credentials: Mutex::new(credentials),
             sessions: Mutex::new(Vec::new()),
             challenges: Mutex::new(HashMap::new()),
-            last_observed_time: Mutex::new(now),
             pairing_lock: Mutex::new(()),
         })
+    }
+
+    pub(crate) fn clock_trust(&self) -> Arc<ClockTrust> {
+        Arc::clone(&self.clock_trust)
     }
 
     pub fn set_password(&self, password: &str) -> Result<(), AuthFailure> {
@@ -347,6 +404,7 @@ impl AuthService {
         password: &str,
         client_ip: &str,
     ) -> Result<SessionGrant, AuthFailure> {
+        self.require_trusted_clock()?;
         let generation = self.verify_password(password, client_ip)?;
         self.issue_session(
             [Scope::Read, Scope::Daily, Scope::Admin],
@@ -362,6 +420,7 @@ impl AuthService {
         password: &str,
         client_ip: &str,
     ) -> Result<SessionGrant, AuthFailure> {
+        self.require_trusted_clock()?;
         let generation = self.verify_password(password, client_ip)?;
         self.issue_session(
             [Scope::Read, Scope::Daily, Scope::Admin, Scope::Advanced],
@@ -416,6 +475,7 @@ impl AuthService {
     }
 
     pub fn open_pairing_window(&self) -> Result<PairingGrant, AuthFailure> {
+        self.require_trusted_clock()?;
         let state_lock = self
             .store
             .lock_exclusive(AUTH_LOCK_FILE)
@@ -453,6 +513,7 @@ impl AuthService {
         public_key_spki: &str,
         client_ip: &str,
     ) -> Result<RegisteredCredential, AuthFailure> {
+        self.require_trusted_clock()?;
         let pairing_lock = self.pairing_lock.safe_lock();
         let state_lock = self
             .store
@@ -826,17 +887,15 @@ impl AuthService {
     }
 
     fn checked_wall_now(&self) -> Result<u64, AuthFailure> {
-        let now = self.clock.wall_now();
-        let mut last = self.last_observed_time.safe_lock();
-        if now < *last {
-            self.sessions.safe_lock().clear();
-            self.challenges.safe_lock().clear();
-            return Err(AuthFailure::Internal(
-                "system clock moved backwards; volatile authentication state was revoked".into(),
-            ));
+        self.require_trusted_clock()?;
+        Ok(self.clock.wall_now())
+    }
+
+    fn require_trusted_clock(&self) -> Result<(), AuthFailure> {
+        match self.clock_trust.status() {
+            ClockTrustStatus::Trusted => Ok(()),
+            ClockTrustStatus::WaitingForSync => Err(AuthFailure::ClockNotSynchronized),
         }
-        *last = now;
-        Ok(now)
     }
 
     fn checked_monotonic_now(&self) -> Result<u64, AuthFailure> {
@@ -852,6 +911,7 @@ impl AuthService {
                 .unwrap_or_default();
             audit.push(AuditEvent {
                 timestamp: self.clock.wall_now(),
+                clock_trusted: Some(self.clock_trust.status() == ClockTrustStatus::Trusted),
                 event: event.to_owned(),
                 outcome: outcome.to_owned(),
                 client: client_ip.map(|_| "redacted".into()),
@@ -1022,6 +1082,7 @@ mod tests {
     struct TestClock {
         wall: AtomicU64,
         monotonic: AtomicU64,
+        clock_trust_boottime: AtomicU64,
         boot_id: Mutex<Option<String>>,
     }
 
@@ -1030,13 +1091,16 @@ mod tests {
             Self {
                 wall: AtomicU64::new(now),
                 monotonic: AtomicU64::new(now),
-                boot_id: Mutex::new(Some("test-boot-1".into())),
+                clock_trust_boottime: AtomicU64::new(now),
+                boot_id: Mutex::new(Some("11111111-1111-1111-1111-111111111111".into())),
             }
         }
 
         fn advance(&self, seconds: u64) {
             self.wall.fetch_add(seconds, Ordering::SeqCst);
             self.monotonic.fetch_add(seconds, Ordering::SeqCst);
+            self.clock_trust_boottime
+                .fetch_add(seconds, Ordering::SeqCst);
         }
 
         fn advance_monotonic(&self, seconds: u64) {
@@ -1070,6 +1134,10 @@ mod tests {
                 .safe_lock()
                 .clone()
                 .ok_or_else(|| "boot identity unavailable".into())
+        }
+
+        fn clock_trust_boottime_now(&self) -> Result<u64, String> {
+            Ok(self.clock_trust_boottime.load(Ordering::SeqCst))
         }
     }
 
@@ -1192,6 +1260,44 @@ mod tests {
             service.verify_challenge(&credential.id, &challenge.challenge_id, &signature, IP),
             Err(AuthFailure::Unauthorized)
         );
+    }
+
+    #[test]
+    fn clock_rollback_pauses_password_and_pairing_but_preserves_key_login() {
+        let (_temp, clock, service) = service();
+        let (signing, credential) = paired(&service);
+        clock.set_wall(900_000);
+
+        assert_eq!(
+            service.password_session(PASSWORD, IP),
+            Err(AuthFailure::ClockNotSynchronized)
+        );
+        assert_eq!(
+            service.open_pairing_window(),
+            Err(AuthFailure::ClockNotSynchronized)
+        );
+
+        let challenge = service.create_challenge(&credential.id, IP).unwrap();
+        let message = URL_SAFE_NO_PAD.decode(&challenge.message).unwrap();
+        let signature: Signature = signing.sign(&message);
+        let session = service
+            .verify_challenge(
+                &credential.id,
+                &challenge.challenge_id,
+                &URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+                IP,
+            )
+            .unwrap();
+        assert!(service.validate_token(&session.token, Scope::Read).is_ok());
+        let audit = service
+            .store
+            .read_json::<Vec<AuditEvent>>(AUDIT_FILE)
+            .unwrap()
+            .unwrap();
+        assert!(audit.iter().any(|event| event.clock_trusted == Some(false)));
+
+        clock.set_wall(1_000_001);
+        assert!(service.password_session(PASSWORD, IP).is_ok());
     }
 
     #[test]
@@ -1395,7 +1501,7 @@ mod tests {
     }
 
     #[test]
-    fn pairing_window_is_consumed_on_boot_mismatch_or_missing_boot_identity() {
+    fn pairing_window_fails_closed_on_boot_mismatch_and_pauses_when_identity_is_missing() {
         let (_temp, clock, service) = service();
         let signing = SigningKey::random(&mut OsRng);
         let spki = URL_SAFE_NO_PAD.encode(
@@ -1407,7 +1513,7 @@ mod tests {
         );
 
         let mismatched = service.open_pairing_window().unwrap();
-        clock.set_boot_id(Some("test-boot-2"));
+        clock.set_boot_id(Some("22222222-2222-2222-2222-222222222222"));
         assert_eq!(
             service.register_credential(&mismatched.pairing_nonce, "Phone", &spki, IP),
             Err(AuthFailure::Unauthorized)
@@ -1419,22 +1525,29 @@ mod tests {
 
         let missing = service.open_pairing_window().unwrap();
         clock.set_boot_id(None);
-        assert!(matches!(
-            service.register_credential(&missing.pairing_nonce, "Phone", &spki, IP),
-            Err(AuthFailure::Internal(_))
-        ));
         assert_eq!(
             service.register_credential(&missing.pairing_nonce, "Phone", &spki, IP),
-            Err(AuthFailure::Unauthorized)
+            Err(AuthFailure::ClockNotSynchronized)
+        );
+        clock.set_boot_id(Some("22222222-2222-2222-2222-222222222222"));
+        assert_eq!(
+            service
+                .register_credential(&missing.pairing_nonce, "Phone", &spki, IP)
+                .unwrap()
+                .label,
+            "Phone"
         );
     }
 
     #[test]
     fn password_rotation_in_another_process_invalidates_existing_sessions() {
-        let (temp, _clock, service) = service();
+        let (temp, clock, service) = service();
         let session = service.password_session(PASSWORD, IP).unwrap();
-        let second =
-            AuthService::open(StateStore::open(temp.path().join("state")).unwrap()).unwrap();
+        let second = AuthService::open_with_clock(
+            StateStore::open(temp.path().join("state")).unwrap(),
+            clock,
+        )
+        .unwrap();
         second
             .set_password("a newly rotated management password")
             .unwrap();
@@ -1650,5 +1763,18 @@ mod tests {
 
         let sessions = service.sessions.safe_lock();
         assert_eq!(sessions[0].token_hash.len(), 32);
+    }
+
+    #[test]
+    fn legacy_audit_clock_trust_remains_unknown() {
+        let event: AuditEvent = serde_json::from_value(serde_json::json!({
+            "timestamp": 1,
+            "event": "legacy",
+            "outcome": "success"
+        }))
+        .unwrap();
+        assert_eq!(event.clock_trusted, None);
+        let serialized = serde_json::to_value(event).unwrap();
+        assert!(serialized.get("clock_trusted").is_none());
     }
 }

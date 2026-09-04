@@ -46,6 +46,16 @@ enum AgentServiceError: LocalizedError {
 
 }
 
+enum AgentClockStatus: Equatable, Sendable {
+    case unsupported
+    case trusted
+    case waitingForSync
+
+    var showsSyncNotice: Bool {
+        self == .waitingForSync
+    }
+}
+
 enum DevicePowerAction: Equatable, Sendable {
     case reboot
     case powerOff
@@ -163,6 +173,11 @@ final class AgentService: Sendable {
             ))))
             switch output {
             case let .ok(response): return try response.body.json.data
+            case let .serviceUnavailable(response):
+                throw AgentServiceError.rejected(
+                    status: 503,
+                    message: try response.body.json.error.message
+                )
             default: throw AgentServiceError.invalidResponse
             }
         } catch {
@@ -330,6 +345,33 @@ final class AgentService: Sendable {
         )
     }
 
+    func clockStatus() async throws -> AgentClockStatus {
+        let output = try await client.getClockStatus()
+        switch output {
+        case let .ok(response):
+            switch try response.body.json.data.state {
+            case .trusted: return .trusted
+            case .waitingForSync: return .waitingForSync
+            }
+        case .notFound:
+            return .unsupported
+        case .unauthorized:
+            throw AgentServiceError.authenticationRequired
+        case let .forbidden(response):
+            throw AgentServiceError.rejected(
+                status: 403,
+                message: try response.body.json.error.message
+            )
+        case let .internalServerError(response):
+            throw AgentServiceError.rejected(
+                status: 500,
+                message: try response.body.json.error.message
+            )
+        default:
+            throw AgentServiceError.invalidResponse
+        }
+    }
+
     func sendSMS(recipient: String, message: String) async throws {
         let output = try await client.sendSms(.init(body: .json(.init(
             recipient: recipient,
@@ -338,6 +380,12 @@ final class AgentService: Sendable {
         switch output {
         case .ok: return
         case .unauthorized: throw AgentServiceError.authenticationRequired
+        case let .serviceUnavailable(response):
+            throw AgentServiceError.rejected(
+                status: 503,
+                message: try response.body.json.error.message,
+                recoveryRequired: try response.body.json.error.recovery.required
+            )
         default: throw AgentServiceError.invalidResponse
         }
     }

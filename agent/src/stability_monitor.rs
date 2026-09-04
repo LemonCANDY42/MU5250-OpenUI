@@ -3,11 +3,12 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::mem::MaybeUninit;
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::clock_trust::{ClockTrust, ClockTrustStatus};
 use crate::state_store::StateStore;
 
 const STATE_NAME: &str = "stability-monitor-v1.json";
@@ -383,34 +384,37 @@ impl StabilityMonitor {
             CheckpointOutcome::Continue
         })
     }
+
+    fn checkpoint_if_clock_trusted(
+        &mut self,
+        clock_trust: &ClockTrust,
+        snapshot: ResourceSnapshot,
+    ) -> Result<Option<CheckpointOutcome>, String> {
+        if clock_trust.status() != ClockTrustStatus::Trusted {
+            return Ok(None);
+        }
+        self.checkpoint(clock_trust.wall_now(), snapshot).map(Some)
+    }
 }
 
-pub fn start(store: StateStore) -> Result<bool, String> {
+pub fn start(store: StateStore, clock_trust: std::sync::Arc<ClockTrust>) -> Result<bool, String> {
     let mut monitor = StabilityMonitor::open(store)?;
     if monitor.is_completed() {
         return Ok(false);
     }
     tokio::spawn(async move {
         loop {
-            let now = current_unix_seconds();
-            let outcome = match now {
-                Some(now) => monitor.checkpoint(now, ResourceSnapshot::capture()),
-                None => Err("wall clock is outside the accepted monitor range".into()),
-            };
+            let outcome =
+                monitor.checkpoint_if_clock_trusted(&clock_trust, ResourceSnapshot::capture());
             match outcome {
-                Ok(CheckpointOutcome::Completed) => break,
-                Ok(CheckpointOutcome::Continue) => {}
+                Ok(Some(CheckpointOutcome::Completed)) => break,
+                Ok(Some(CheckpointOutcome::Continue)) | Ok(None) => {}
                 Err(error) => eprintln!("[stability-monitor] checkpoint skipped: {error}"),
             }
             tokio::time::sleep(Duration::from_secs(SAMPLE_INTERVAL_SECONDS)).await;
         }
     });
     Ok(true)
-}
-
-fn current_unix_seconds() -> Option<u64> {
-    let value = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
-    plausible_wall_time(value).then_some(value)
 }
 
 fn plausible_wall_time(value: u64) -> bool {
@@ -644,8 +648,27 @@ fn agent_uptime_seconds(snapshot: &ResourceSnapshot) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     use super::*;
+    use crate::clock_trust::WallClock;
+
+    struct TestWallClock(AtomicU64);
+
+    impl WallClock for TestWallClock {
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+
+        fn boottime(&self) -> Result<u64, String> {
+            Ok(self.0.load(Ordering::SeqCst))
+        }
+
+        fn boot_id(&self) -> Result<String, String> {
+            Ok("44444444-4444-4444-4444-444444444444".into())
+        }
+    }
 
     fn store() -> (tempfile::TempDir, StateStore) {
         let temp = tempfile::tempdir().unwrap();
@@ -667,6 +690,39 @@ mod tests {
             data_total_mib: Some(4_096),
             data_available_mib: Some(3_072),
         }
+    }
+
+    #[test]
+    fn untrusted_clock_creates_no_monitor_sample_or_deadline() {
+        let (temp, store) = store();
+        let wall = Arc::new(TestWallClock(AtomicU64::new(1_700_000_000)));
+        let trust =
+            ClockTrust::open_with_clock(store.clone(), 1_800_000_000, wall.clone()).unwrap();
+        let mut monitor = StabilityMonitor::open(store.clone()).unwrap();
+
+        assert_eq!(
+            monitor
+                .checkpoint_if_clock_trusted(&trust, snapshot("a", 1_000, 100))
+                .unwrap(),
+            None
+        );
+        assert!(!temp.path().join("state/stability-monitor-v1.json").exists());
+        assert!(!temp
+            .path()
+            .join("state/stability-monitor-v1.jsonl")
+            .exists());
+
+        wall.0.store(1_800_000_000, Ordering::SeqCst);
+        assert_eq!(
+            monitor
+                .checkpoint_if_clock_trusted(&trust, snapshot("a", 1_600, 160))
+                .unwrap(),
+            Some(CheckpointOutcome::Continue)
+        );
+        assert!(temp
+            .path()
+            .join("state/stability-monitor-v1.json")
+            .is_file());
     }
 
     #[test]

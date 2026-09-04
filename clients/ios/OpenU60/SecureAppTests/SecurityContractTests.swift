@@ -6,6 +6,25 @@ import Security
 import XCTest
 
 final class SecurityContractTests: XCTestCase {
+    func testClockSyncNoticeIsOnlyVisibleForTheAbnormalSupportedState() {
+        XCTAssertFalse(AgentClockStatus.unsupported.showsSyncNotice)
+        XCTAssertFalse(AgentClockStatus.trusted.showsSyncNotice)
+        XCTAssertTrue(AgentClockStatus.waitingForSync.showsSyncNotice)
+    }
+
+    func testGeneratedClockStatusStrictlyDecodesBothStates() throws {
+        let trusted = try JSONDecoder().decode(
+            Components.Schemas.ClockStatus.self,
+            from: Data(#"{"state":"trusted"}"#.utf8)
+        )
+        let waiting = try JSONDecoder().decode(
+            Components.Schemas.ClockStatus.self,
+            from: Data(#"{"state":"waiting_for_sync"}"#.utf8)
+        )
+        XCTAssertEqual(trusted.state, .trusted)
+        XCTAssertEqual(waiting.state, .waitingForSync)
+    }
+
     func testConnectionIssueClassifiesExpectedReadPathFailures() {
         let offline = ClientError(
             operationID: "getCapabilities",

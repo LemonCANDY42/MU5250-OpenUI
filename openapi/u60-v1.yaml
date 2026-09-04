@@ -143,6 +143,8 @@ paths:
           $ref: "#/components/responses/PayloadTooLarge"
         "500":
           $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/PasswordNotConfigured"
   /v1/device:
     get:
       operationId: getDevice
@@ -234,6 +236,25 @@ paths:
           $ref: "#/components/responses/AuthenticationFailed"
         "403":
           $ref: "#/components/responses/Forbidden"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+  /v1/status/clock:
+    get:
+      operationId: getClockStatus
+      summary: Read whether the device wall clock is trusted for date-sensitive operations
+      responses:
+        "200":
+          description: Current clock trust state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClockStatusResponse"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/AuthInternalError"
   /v1/status/system:
@@ -608,13 +629,25 @@ components:
           schema:
             $ref: "#/components/schemas/AuthErrorResponse"
     PasswordNotConfigured:
-      description: Password setup must be completed through the maintenance CLI
+      description: Password setup is incomplete or the device clock is not yet synchronized
+      headers:
+        Retry-After:
+          description: Seconds before retrying when the clock is not synchronized
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:
             $ref: "#/components/schemas/AuthErrorResponse"
     AuthInternalError:
       description: Authentication state could not be accessed safely
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/AuthErrorResponse"
+    NotFound:
+      description: The endpoint is unavailable on an older compatible Agent
       content:
         application/json:
           schema:
@@ -639,6 +672,12 @@ components:
             $ref: "#/components/schemas/WriteResultResponse"
     DailySourceUnavailable:
       description: A fixed B04 daily-management source or recovery step is unavailable
+      headers:
+        Retry-After:
+          description: Seconds before retrying when the clock is not synchronized
+          schema:
+            type: integer
+            minimum: 1
       content:
         application/json:
           schema:
@@ -820,6 +859,7 @@ components:
             - temporarily_locked
             - invalid_request
             - password_not_configured
+            - clock_not_synchronized
             - origin_forbidden
             - internal_error
             - not_found
@@ -914,6 +954,23 @@ components:
           const: true
         data:
           $ref: "#/components/schemas/DashboardSnapshot"
+    ClockStatusResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, data]
+      properties:
+        ok:
+          const: true
+        data:
+          $ref: "#/components/schemas/ClockStatus"
+    ClockStatus:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [trusted, waiting_for_sync]
     DashboardSnapshot:
       type: object
       additionalProperties: false
@@ -1776,9 +1833,12 @@ components:
           properties:
             code:
               type: string
-              enum: [invalid_request, state_conflict, source_unavailable]
+              enum: [invalid_request, state_conflict, source_unavailable, clock_not_synchronized]
             message:
               type: string
+            retry_after_seconds:
+              type: integer
+              minimum: 1
             recovery:
               $ref: "#/components/schemas/RecoveryMetadata"
     LifecycleErrorResponse:

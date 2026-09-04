@@ -45,6 +45,7 @@ final class AppModel {
     private(set) var isWorking = false
     private(set) var notice: Notice?
     private(set) var connectionIssue: ConnectionIssue?
+    private(set) var clockWaitingForSync = false
     var errorMessage: String?
 
     private let credentials: DeviceCredentialStore
@@ -306,6 +307,7 @@ final class AppModel {
         wifiConfirmationTask = nil
         await vault.clear()
         dashboard = nil
+        clockWaitingForSync = false
         charging = nil
         batteryRuntimeEstimate = nil
         notice = nil
@@ -320,6 +322,7 @@ final class AppModel {
             try credentials.removeLocalCredential()
             await vault.clear()
             dashboard = nil
+            clockWaitingForSync = false
             charging = nil
             batteryRuntimeEstimate = nil
             clearPendingWifiConfirmation(cancelTask: true)
@@ -363,12 +366,30 @@ final class AppModel {
         guard let service else { throw LocalSecurityError.missingCredential }
         let snapshot = try await dashboardWithSessionRecovery(using: service)
         applyDashboard(snapshot, charging: snapshot.charging)
+        do {
+            let status = try await clockStatusWithSessionRecovery(using: service)
+            clockWaitingForSync = status.showsSyncNotice
+        } catch {
+            // Clock status is an optional compatibility hint. Preserve the last
+            // confirmed state when the supplementary read itself is unavailable.
+        }
     }
 
     private func dashboardWithSessionRecovery(using service: AgentService) async throws -> DashboardSnapshot {
         guard let credential else { throw LocalSecurityError.missingCredential }
         return try await ReadSessionRecovery.run {
             try await service.dashboard()
+        } renew: {
+            try await service.signIn(credentialID: credential.id) { message in
+                try self.credentials.sign(message)
+            }
+        }
+    }
+
+    private func clockStatusWithSessionRecovery(using service: AgentService) async throws -> AgentClockStatus {
+        guard let credential else { throw LocalSecurityError.missingCredential }
+        return try await ReadSessionRecovery.run {
+            try await service.clockStatus()
         } renew: {
             try await service.signIn(credentialID: credential.id) { message in
                 try self.credentials.sign(message)

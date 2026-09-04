@@ -120,6 +120,12 @@ alert, and a successful snapshot resets that suppression. Trust, failed
 reauthentication, response-contract and write-operation failures remain
 explicit errors; the connectivity banner never turns an ambiguous write result
 into an assumed success.
+The same foreground dashboard refresh also requests the optional V1 clock
+status. A new Agent reports `trusted` or `waiting_for_sync`; an older Agent's
+typed `404` is silently treated as unsupported. Only the waiting state adds the
+small inline banner “设备正在校时，部分时间相关操作稍后可用。” It has no timer or
+independent refresh loop and never blocks the last successful dashboard, key
+login or ordinary controls.
 The agent reads normalized device identity before admitting at most one
 aggregate snapshot for blocking work. An overlapping native refresh therefore
 starts no second aggregate source pass, waits only within its own server budget

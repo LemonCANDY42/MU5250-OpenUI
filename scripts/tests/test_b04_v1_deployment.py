@@ -240,6 +240,24 @@ class ReleasePreparationTests(unittest.TestCase):
 
 
 class DeploymentBoundaryTests(unittest.TestCase):
+    def test_host_lan_tls_check_uses_full_ca_hostname_verification(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="u60-host-tls-test-") as temporary:
+            ca_cert = Path(temporary) / "owner-ca.pem"
+            ca_cert.write_bytes(b"synthetic public CA")
+            success = subprocess.CompletedProcess(["curl"], 0, b"401", b"")
+            with mock.patch.object(DEPLOY, "run", return_value=success) as run:
+                DEPLOY.verify_host_lan_tls_unauthorized(ca_cert)
+
+        command = run.call_args.args[0]
+        self.assertIn("--cacert", command)
+        self.assertIn(str(ca_cert), command)
+        self.assertIn(
+            f"u60.local:9443:{DEPLOY.MANAGEMENT_ADDRESS}", command
+        )
+        self.assertIn("https://u60.local:9443/v1/device", command)
+        self.assertNotIn("--insecure", command)
+        self.assertNotEqual(command[0], "adb")
+
     def test_adb_shell_requires_an_explicit_remote_status_sentinel(self) -> None:
         success = subprocess.CompletedProcess(
             ["adb", "exec-out", "wrapped"],
@@ -297,7 +315,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
             mock.patch.object(DEPLOY, "run") as run,
             mock.patch.object(
-                DEPLOY, "verify_device_lan_tls_unauthorized"
+                DEPLOY, "verify_host_lan_tls_unauthorized"
             ) as verify_tls,
             mock.patch.object(DEPLOY, "switch_current") as switch_current,
         ):
@@ -329,7 +347,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
                 ),
             ],
         )
-        verify_tls.assert_called_once_with()
+        verify_tls.assert_called_once_with(arguments.ca_cert)
         switch_current.assert_not_called()
         self.assertEqual(details["lan_canary"], True)
 
@@ -348,7 +366,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             mock.patch.object(DEPLOY, "run"),
             mock.patch.object(
                 DEPLOY,
-                "verify_device_lan_tls_unauthorized",
+                "verify_host_lan_tls_unauthorized",
                 side_effect=DEPLOY.DeployError("synthetic TLS failure"),
             ),
         ):
@@ -363,7 +381,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             ],
         )
 
-    def test_activate_checks_the_lan_listener_from_the_device(self) -> None:
+    def test_activate_checks_the_lan_listener_from_the_host(self) -> None:
         arguments = mock.Mock(
             release=Path("/accepted/release"), ca_cert=Path("/accepted/ca.pem")
         )
@@ -376,7 +394,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             mock.patch.object(DEPLOY, "adb_shell") as adb_shell,
             mock.patch.object(DEPLOY, "run") as run,
             mock.patch.object(
-                DEPLOY, "verify_device_lan_tls_unauthorized"
+                DEPLOY, "verify_host_lan_tls_unauthorized"
             ) as verify_tls,
         ):
             details = DEPLOY.command_activate(arguments)
@@ -387,7 +405,7 @@ class DeploymentBoundaryTests(unittest.TestCase):
             f"{DEPLOY.DEVICE_ROOT}/releases/{'a' * 64}/bin/run-agent.sh stable",
             timeout=30,
         )
-        verify_tls.assert_called_once_with()
+        verify_tls.assert_called_once_with(arguments.ca_cert)
         run.assert_not_called()
         self.assertEqual(details["tls_401"], True)
 

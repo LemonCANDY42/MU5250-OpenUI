@@ -142,8 +142,10 @@ foreign process fails closed; it never signals ADB or a stock service.
 `lan-canary` is deliberately narrower than `activate`: it requires `current`
 and `previous` to remain absent, stops the loopback canary, starts the exact
 accepted release on `192.168.0.1:9443`, and proves the CA-verified `401`
-authentication boundary with a device-local request invoked through USB ADB.
-This avoids changing a Mac route or TUN and does not create an ADB forward,
+authentication boundary from the host Mac. The check uses the accepted public
+CA, the `u60.local` certificate name and the current management address, so TLS
+date validation uses the trustworthy host clock without weakening certificate
+or hostname verification. It does not set device time or create an ADB forward,
 release symlink,
 boot hook, firewall rule or service. A physical client must join the U60's own
 Wi-Fi for this gate. Any failed TLS or evidence step stops the managed LAN
@@ -151,9 +153,9 @@ agent.
 
 `activate` preserves the old `current` target as `previous`; a failed TLS health
 check automatically restores it when available. Because stable HTTPS binds only
-the management address, this health check runs on-device against
-`192.168.0.1:9443` with the accepted public CA instead of incorrectly probing
-device loopback through an ADB TCP forward. Device-shell gates are delivered as
+the management address, this health check uses the same host-side, full-CA,
+hostname-verified request as `lan-canary`; it never relies on the device's
+temporarily incorrect post-boot wall clock. Device-shell gates are delivered as
 encoded scripts and must return an explicit remote status sentinel because this
 B04 ADB transport does not propagate the remote shell exit code. Release-link
 updates use BusyBox `mv -T` and exact post-write readback so an existing symlink

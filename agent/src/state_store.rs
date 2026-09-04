@@ -30,8 +30,15 @@ impl StateStore {
             }
             Err(error) => return Err(format!("inspect state root: {error}")),
         }
-        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
-            .map_err(|error| format!("protect state root: {error}"))?;
+        let root_mode = fs::metadata(&root)
+            .map_err(|error| format!("inspect state root: {error}"))?
+            .permissions()
+            .mode()
+            & 0o777;
+        if root_mode != 0o700 {
+            fs::set_permissions(&root, fs::Permissions::from_mode(0o700))
+                .map_err(|error| format!("protect state root: {error}"))?;
+        }
         Ok(Self { root })
     }
 
@@ -60,8 +67,10 @@ impl StateStore {
         if !metadata.is_file() {
             return Err(format!("state entry {name} is not a regular file"));
         }
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("protect state file {name}: {error}"))?;
+        if metadata.permissions().mode() & 0o777 != 0o600 {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("protect state file {name}: {error}"))?;
+        }
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|error| format!("read state file {name}: {error}"))?;
@@ -106,8 +115,16 @@ impl StateStore {
             .mode(0o600)
             .open(&path)
             .map_err(|error| format!("open state lock {name}: {error}"))?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-            .map_err(|error| format!("protect state lock {name}: {error}"))?;
+        let mode = file
+            .metadata()
+            .map_err(|error| format!("inspect state lock {name}: {error}"))?
+            .permissions()
+            .mode()
+            & 0o777;
+        if mode != 0o600 {
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
+                .map_err(|error| format!("protect state lock {name}: {error}"))?;
+        }
         fs2::FileExt::lock_exclusive(&file)
             .map_err(|error| format!("lock state {name}: {error}"))?;
         Ok(StateLock { _file: file })

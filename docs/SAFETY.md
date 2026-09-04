@@ -216,6 +216,18 @@ later crash. Both long-running processes discard stdout/stderr, preventing an
 unbounded persistent service log; security state is fixed-count and the
 ten-minute one-shot monitor has its independent 1 MiB ceiling.
 
+The Agent never repairs wall time and does not add NTP, a resident clock poll or
+another worker. A shared request-driven trust check gates only password
+login/lockout, new pairing and SMS sending until the stock firmware restores a
+credible clock. Existing key access, read/status, Wi-Fi, traffic, Agent and SSH
+recovery remain usable. Its persistent high-water file is reloaded under a
+cross-process lock, atomically updated at most once per 24 hours and below 1 KiB.
+A root-only tmpfs boot anchor supplies the exact five-minute bound across
+process restarts without flash writes. Corruption is preserved and fails only
+the date-sensitive operations closed; legacy audit records remain unknown.
+Deployment TLS is checked by the host Mac with the full CA and hostname
+validation, never by relaxing TLS or changing device time.
+
 This implementation still requires live acceptance. The owner reduced the
 final observation to a one-hour active gate; that result must not be represented
 as the original 24-hour RSS-growth target.

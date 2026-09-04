@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::b04_io::{B04Io, UbusRead, UbusWrite, WifiField};
+use crate::clock_trust::{ClockTrust, ClockTrustStatus};
 use crate::state_store::StateStore;
 
 const WIFI_TRANSACTION_FILE: &str = "wifi-transaction.json";
@@ -43,6 +44,7 @@ pub enum DailyErrorKind {
     InvalidRequest,
     StateConflict,
     SourceUnavailable,
+    ClockNotSynchronized,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,14 @@ impl DailyError {
             kind: DailyErrorKind::SourceUnavailable,
             message: message.into(),
             recovery_required,
+        }
+    }
+
+    pub fn clock_not_synchronized() -> Self {
+        Self {
+            kind: DailyErrorKind::ClockNotSynchronized,
+            message: "device clock is not synchronized".into(),
+            recovery_required: false,
         }
     }
 
@@ -113,14 +123,37 @@ pub fn wait_for_wifi_rollback_due(
     transaction_id: &str,
     delay: Duration,
 ) -> Result<bool, String> {
-    wait_for_wifi_rollback_due_with_poll(store, transaction_id, delay, WIFI_ROLLBACK_POLL_INTERVAL)
+    wait_for_wifi_rollback_due_with_poll_and_clock(
+        store,
+        transaction_id,
+        delay,
+        WIFI_ROLLBACK_POLL_INTERVAL,
+        &SystemWifiClock,
+    )
 }
 
+#[cfg(test)]
 fn wait_for_wifi_rollback_due_with_poll(
     store: StateStore,
     transaction_id: &str,
     delay: Duration,
     poll_interval: Duration,
+) -> Result<bool, String> {
+    wait_for_wifi_rollback_due_with_poll_and_clock(
+        store,
+        transaction_id,
+        delay,
+        poll_interval,
+        &SystemWifiClock,
+    )
+}
+
+fn wait_for_wifi_rollback_due_with_poll_and_clock(
+    store: StateStore,
+    transaction_id: &str,
+    delay: Duration,
+    poll_interval: Duration,
+    wifi_clock: &dyn WifiClock,
 ) -> Result<bool, String> {
     validate_transaction_id(transaction_id)?;
     if poll_interval.is_zero() {
@@ -128,6 +161,7 @@ fn wait_for_wifi_rollback_due_with_poll(
     }
     let transaction_path = store.root_path().join(WIFI_TRANSACTION_FILE);
     let mut observed_identity = None;
+    let mut monotonic_deadline = None;
     let deadline = Instant::now() + delay;
     loop {
         let metadata = match fs::symlink_metadata(&transaction_path) {
@@ -145,9 +179,27 @@ fn wait_for_wifi_rollback_due_with_poll(
             if pending.as_ref().map(|transaction| transaction.id.as_str()) != Some(transaction_id) {
                 return Ok(false);
             }
+            monotonic_deadline = pending.and_then(|transaction| {
+                Some((
+                    transaction.boot_id?,
+                    transaction.issued_monotonic?,
+                    transaction.expires_monotonic?,
+                ))
+            });
             observed_identity = Some(identity);
         }
 
+        if let Some((expected_boot, issued, expires)) = monotonic_deadline.as_ref() {
+            let due = match (wifi_clock.boot_id(), wifi_clock.monotonic_now()) {
+                (Ok(boot), Ok(now)) => boot != *expected_boot || now < *issued || now > *expires,
+                _ => true,
+            };
+            if due {
+                return Ok(true);
+            }
+            thread::sleep(poll_interval);
+            continue;
+        }
         let now = Instant::now();
         if now >= deadline {
             return Ok(true);
@@ -239,7 +291,14 @@ pub struct WifiTransactionGrant {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct PendingWifiTransaction {
     id: String,
-    expires_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    boot_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    issued_monotonic: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_monotonic: Option<u64>,
     old_values: BTreeMap<WifiField, String>,
     #[serde(default)]
     new_values: BTreeMap<WifiField, String>,
@@ -248,6 +307,8 @@ struct PendingWifiTransaction {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct DailyAuditEvent {
     timestamp: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clock_trusted: Option<bool>,
     event: String,
     outcome: String,
 }
@@ -256,6 +317,56 @@ pub struct DailyService {
     store: StateStore,
     io: Arc<dyn B04Io>,
     wifi_rollback: Arc<dyn WifiRollbackScheduler>,
+    clock_trust: Arc<ClockTrust>,
+    wifi_clock: Arc<dyn WifiClock>,
+}
+
+trait WifiClock: Send + Sync {
+    fn monotonic_now(&self) -> Result<u64, String>;
+    fn boot_id(&self) -> Result<String, String>;
+}
+
+struct SystemWifiClock;
+
+impl WifiClock for SystemWifiClock {
+    fn monotonic_now(&self) -> Result<u64, String> {
+        let mut value = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        #[cfg(target_os = "linux")]
+        let clock_id = libc::CLOCK_BOOTTIME;
+        #[cfg(not(target_os = "linux"))]
+        let clock_id = libc::CLOCK_MONOTONIC;
+        if unsafe { libc::clock_gettime(clock_id, &mut value) } != 0 {
+            return Err(format!(
+                "read monotonic clock: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        u64::try_from(value.tv_sec).map_err(|_| "monotonic clock returned a negative value".into())
+    }
+
+    fn boot_id(&self) -> Result<String, String> {
+        #[cfg(target_os = "linux")]
+        {
+            let value = fs::read_to_string("/proc/sys/kernel/random/boot_id")?;
+            let value = value.trim();
+            if value.is_empty()
+                || value.len() > 128
+                || !value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() || byte == b'-')
+            {
+                return Err("Linux boot identity is invalid".into());
+            }
+            return Ok(value.to_owned());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Ok("host-test-boot".into())
+        }
+    }
 }
 
 trait WifiRollbackScheduler: Send + Sync {
@@ -271,8 +382,14 @@ impl WifiRollbackScheduler for ProcessWifiRollbackScheduler {
 }
 
 impl DailyService {
-    pub fn open(store: StateStore) -> Result<Self, String> {
-        Self::with_io(store, Arc::new(crate::b04_io::SystemB04Io::new()))
+    pub fn open(store: StateStore, clock_trust: Arc<ClockTrust>) -> Result<Self, String> {
+        Self::with_components(
+            store,
+            Arc::new(crate::b04_io::SystemB04Io::new()),
+            Arc::new(ProcessWifiRollbackScheduler),
+            clock_trust,
+            Arc::new(SystemWifiClock),
+        )
     }
 
     pub fn run_wifi_rollback_worker(
@@ -281,15 +398,25 @@ impl DailyService {
     ) -> Result<bool, String> {
         validate_transaction_id(transaction_id)?;
         let service = Self {
+            clock_trust: ClockTrust::open(store.clone())?,
             store,
             io: Arc::new(crate::b04_io::SystemB04Io::new()),
             wifi_rollback: Arc::new(ProcessWifiRollbackScheduler),
+            wifi_clock: Arc::new(SystemWifiClock),
         };
         service.rollback_pending_wifi(Some(transaction_id))
     }
 
+    #[cfg(test)]
     fn with_io(store: StateStore, io: Arc<dyn B04Io>) -> Result<Self, String> {
-        Self::with_io_and_rollback(store, io, Arc::new(ProcessWifiRollbackScheduler))
+        let clock_trust = ClockTrust::open(store.clone())?;
+        Self::with_components(
+            store,
+            io,
+            Arc::new(ProcessWifiRollbackScheduler),
+            clock_trust,
+            Arc::new(SystemWifiClock),
+        )
     }
 
     #[cfg(test)]
@@ -297,15 +424,35 @@ impl DailyService {
         Self::with_io(store, io)
     }
 
+    #[cfg(test)]
     fn with_io_and_rollback(
         store: StateStore,
         io: Arc<dyn B04Io>,
         wifi_rollback: Arc<dyn WifiRollbackScheduler>,
     ) -> Result<Self, String> {
+        let clock_trust = ClockTrust::open(store.clone())?;
+        Self::with_components(
+            store,
+            io,
+            wifi_rollback,
+            clock_trust,
+            Arc::new(SystemWifiClock),
+        )
+    }
+
+    fn with_components(
+        store: StateStore,
+        io: Arc<dyn B04Io>,
+        wifi_rollback: Arc<dyn WifiRollbackScheduler>,
+        clock_trust: Arc<ClockTrust>,
+        wifi_clock: Arc<dyn WifiClock>,
+    ) -> Result<Self, String> {
         let service = Self {
             store,
             io,
             wifi_rollback,
+            clock_trust,
+            wifi_clock,
         };
         // A reboot or service restart during an unconfirmed Wi-Fi transaction
         // must restore the saved values before the listener can start.
@@ -314,6 +461,9 @@ impl DailyService {
     }
 
     pub fn sms_send(&self, request: SmsSendRequest) -> Result<WriteResult, DailyError> {
+        if self.clock_trust.status() != ClockTrustStatus::Trusted {
+            return Err(DailyError::clock_not_synchronized());
+        }
         validate_recipient(&request.recipient).map_err(DailyError::invalid)?;
         validate_message(&request.message).map_err(DailyError::invalid)?;
         let _lock = self.store.lock_exclusive(SMS_LOCK)?;
@@ -450,9 +600,18 @@ impl DailyService {
             .collect::<Result<BTreeMap<_, _>, _>>()?;
         let transaction = PendingWifiTransaction {
             id: transaction_id,
-            expires_at: unix_now()?.saturating_add(WIFI_CONFIRM_SECONDS),
+            expires_at: None,
+            boot_id: Some(self.wifi_clock.boot_id()?),
+            issued_monotonic: Some(self.wifi_clock.monotonic_now()?),
+            expires_monotonic: None,
             old_values,
             new_values: values.clone(),
+        };
+        let transaction = PendingWifiTransaction {
+            expires_monotonic: transaction
+                .issued_monotonic
+                .map(|value| value.saturating_add(WIFI_CONFIRM_SECONDS)),
+            ..transaction
         };
         self.store.write_json(WIFI_TRANSACTION_FILE, &transaction)?;
         if let Err(error) = self.wifi_rollback.arm(&transaction.id) {
@@ -506,7 +665,18 @@ impl DailyService {
                 true,
             ));
         }
-        if unix_now()? > transaction.expires_at {
+        let expired = match (
+            transaction.boot_id.as_deref(),
+            transaction.issued_monotonic,
+            transaction.expires_monotonic,
+        ) {
+            (Some(expected_boot), Some(issued), Some(expires)) => {
+                let now = self.wifi_clock.monotonic_now()?;
+                self.wifi_clock.boot_id()? != expected_boot || now < issued || now > expires
+            }
+            _ => true,
+        };
+        if expired {
             self.restore_wifi_transaction(&transaction)
                 .map_err(|error| DailyError::unavailable(error, true))?;
             self.audit("wifi_transaction_confirm", "expired_rolled_back");
@@ -614,7 +784,8 @@ impl DailyService {
                 .read_json::<Vec<DailyAuditEvent>>(DAILY_AUDIT_FILE)?
                 .unwrap_or_default();
             events.push(DailyAuditEvent {
-                timestamp: unix_now()?,
+                timestamp: self.clock_trust.wall_now(),
+                clock_trusted: Some(self.clock_trust.status() == ClockTrustStatus::Trusted),
                 event: event.to_owned(),
                 outcome: outcome.to_owned(),
             });
@@ -1050,17 +1221,32 @@ fn sms_encoding(value: &str) -> &'static str {
 }
 
 fn sms_timestamp() -> Result<String, String> {
-    let output = Command::new("date")
-        .arg("+%y;%m;%d;%H;%M;%S;%z")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|_| "cannot generate the SMS timestamp".to_string())?;
-    if !output.status.success() {
-        return Err("cannot generate the SMS timestamp".into());
+    let seconds = i64::try_from(unix_now()?)
+        .map_err(|_| "SMS timestamp exceeded the platform range".to_string())?;
+    let timestamp = libc::time_t::try_from(seconds)
+        .map_err(|_| "SMS timestamp exceeded the platform range".to_string())?;
+    let mut local = std::mem::MaybeUninit::<libc::tm>::uninit();
+    let result = unsafe { libc::localtime_r(&timestamp, local.as_mut_ptr()) };
+    if result.is_null() {
+        return Err("cannot convert the SMS timestamp to local time".into());
     }
-    let raw =
-        String::from_utf8(output.stdout).map_err(|_| "SMS timestamp was not UTF-8".to_string())?;
-    normalize_sms_timestamp(raw.trim())
+    let local = unsafe { local.assume_init() };
+    let offset_minutes = local.tm_gmtoff / 60;
+    let sign = if offset_minutes < 0 { '-' } else { '+' };
+    let offset_minutes = offset_minutes.unsigned_abs();
+    let raw = format!(
+        "{:02};{:02};{:02};{:02};{:02};{:02};{}{:02}{:02}",
+        (local.tm_year + 1900).rem_euclid(100),
+        local.tm_mon + 1,
+        local.tm_mday,
+        local.tm_hour,
+        local.tm_min,
+        local.tm_sec,
+        sign,
+        offset_minutes / 60,
+        offset_minutes % 60,
+    );
+    normalize_sms_timestamp(&raw)
 }
 
 fn normalize_sms_timestamp(raw: &str) -> Result<String, String> {
@@ -1167,13 +1353,45 @@ fn unix_now() -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     use serde_json::json;
 
     use super::*;
     use crate::b04_io::{UbusRead, UbusWrite, WifiInterface};
+    use crate::clock_trust::WallClock;
+
+    struct TestWallClock(AtomicU64);
+
+    impl WallClock for TestWallClock {
+        fn now(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+
+        fn boottime(&self) -> Result<u64, String> {
+            Ok(self.0.load(Ordering::SeqCst))
+        }
+
+        fn boot_id(&self) -> Result<String, String> {
+            Ok("33333333-3333-3333-3333-333333333333".into())
+        }
+    }
+
+    struct TestWifiClock {
+        monotonic: AtomicU64,
+        boot_id: Mutex<String>,
+    }
+
+    impl WifiClock for TestWifiClock {
+        fn monotonic_now(&self) -> Result<u64, String> {
+            Ok(self.monotonic.load(Ordering::SeqCst))
+        }
+
+        fn boot_id(&self) -> Result<String, String> {
+            Ok(self.boot_id.lock().unwrap().clone())
+        }
+    }
 
     struct MockIo {
         wifi: Mutex<BTreeMap<WifiField, String>>,
@@ -1385,6 +1603,37 @@ mod tests {
         (temp, io, rollback, service)
     }
 
+    fn service_with_test_clocks() -> (
+        tempfile::TempDir,
+        Arc<MockIo>,
+        Arc<TestWallClock>,
+        Arc<TestWifiClock>,
+        DailyService,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let store = StateStore::open(temp.path().join("state")).unwrap();
+        let wall = Arc::new(TestWallClock(AtomicU64::new(1_800_000_000)));
+        let clock_trust =
+            ClockTrust::open_with_clock(store.clone(), 1_800_000_000, wall.clone()).unwrap();
+        assert_eq!(clock_trust.status(), ClockTrustStatus::Trusted);
+        let wifi_clock = Arc::new(TestWifiClock {
+            monotonic: AtomicU64::new(10_000),
+            boot_id: Mutex::new("boot-a".into()),
+        });
+        let io = Arc::new(MockIo::new());
+        let service = DailyService::with_components(
+            store,
+            io.clone(),
+            Arc::new(MockRollbackScheduler {
+                armed: Arc::new(AtomicBool::new(false)),
+            }),
+            clock_trust,
+            wifi_clock.clone(),
+        )
+        .unwrap();
+        (temp, io, wall, wifi_clock, service)
+    }
+
     #[test]
     fn validators_reject_command_and_configuration_injection() {
         assert!(validate_recipient("+61400000000").is_ok());
@@ -1398,6 +1647,74 @@ mod tests {
         assert!(validate_channel("14", false).is_err());
         assert!(validate_bandwidth("EHT160", true).is_ok());
         assert!(validate_bandwidth("EHT160", false).is_err());
+    }
+
+    #[test]
+    fn sms_waits_for_clock_sync_without_touching_the_vendor_source() {
+        let (_temp, _io, wall, _wifi_clock, service) = service_with_test_clocks();
+        wall.0.store(1_700_000_000, Ordering::SeqCst);
+        let error = service
+            .sms_send(SmsSendRequest {
+                recipient: "+61400000000".into(),
+                message: "hello".into(),
+            })
+            .unwrap_err();
+        assert_eq!(error.kind, DailyErrorKind::ClockNotSynchronized);
+
+        wall.0.store(1_800_000_001, Ordering::SeqCst);
+        assert_eq!(
+            service
+                .sms_send(SmsSendRequest {
+                    recipient: "+61400000000".into(),
+                    message: "hello".into(),
+                })
+                .unwrap()
+                .result,
+            "accepted"
+        );
+    }
+
+    #[test]
+    fn wifi_confirmation_uses_boot_clock_not_wall_clock() {
+        let (_temp, _io, wall, wifi_clock, service) = service_with_test_clocks();
+        let request = WifiTransactionRequest {
+            transaction_id: "abcdefghijklmnopqrstuvwx".into(),
+            transmit_power_2g: Some(40),
+            ..Default::default()
+        };
+        service.wifi_transaction_begin(request).unwrap();
+        wall.0.store(1_700_000_000, Ordering::SeqCst);
+        assert_eq!(
+            service
+                .wifi_transaction_confirm("abcdefghijklmnopqrstuvwx")
+                .unwrap()
+                .result,
+            "committed"
+        );
+        let audit = service
+            .store
+            .read_json::<Vec<DailyAuditEvent>>(DAILY_AUDIT_FILE)
+            .unwrap()
+            .unwrap();
+        assert!(audit.iter().any(|event| event.clock_trusted == Some(false)));
+
+        service
+            .wifi_transaction_begin(WifiTransactionRequest {
+                transaction_id: "zyxwvutsrqponmlkjihgfedc".into(),
+                transmit_power_2g: Some(50),
+                ..Default::default()
+            })
+            .unwrap();
+        *wifi_clock.boot_id.lock().unwrap() = "boot-b".into();
+        let error = service
+            .wifi_transaction_confirm("zyxwvutsrqponmlkjihgfedc")
+            .unwrap_err();
+        assert_eq!(error.kind, DailyErrorKind::StateConflict);
+        assert!(!service
+            .store
+            .read_json::<PendingWifiTransaction>(WIFI_TRANSACTION_FILE)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
@@ -1724,7 +2041,12 @@ mod tests {
         let (_temp, io, service) = service();
         let transaction = PendingWifiTransaction {
             id: "abcdefghijklmnopqrstuvwx".into(),
-            expires_at: unix_now().unwrap() + 120,
+            expires_at: None,
+            boot_id: Some(service.wifi_clock.boot_id().unwrap()),
+            issued_monotonic: Some(service.wifi_clock.monotonic_now().unwrap()),
+            expires_monotonic: Some(
+                service.wifi_clock.monotonic_now().unwrap() + WIFI_CONFIRM_SECONDS,
+            ),
             old_values: BTreeMap::from([(WifiField::TransmitPower2g, "30".into())]),
             new_values: BTreeMap::from([(WifiField::TransmitPower2g, "40".into())]),
         };
@@ -1763,7 +2085,12 @@ mod tests {
         let (_temp, io, service) = service();
         let transaction = PendingWifiTransaction {
             id: "abcdefghijklmnopqrstuvwx".into(),
-            expires_at: unix_now().unwrap() + 120,
+            expires_at: None,
+            boot_id: Some(service.wifi_clock.boot_id().unwrap()),
+            issued_monotonic: Some(service.wifi_clock.monotonic_now().unwrap()),
+            expires_monotonic: Some(
+                service.wifi_clock.monotonic_now().unwrap() + WIFI_CONFIRM_SECONDS,
+            ),
             old_values: BTreeMap::from([(WifiField::TransmitPower2g, "30".into())]),
             new_values: BTreeMap::from([(WifiField::TransmitPower2g, "40".into())]),
         };
@@ -1792,7 +2119,10 @@ mod tests {
         let store = StateStore::open(temp.path().join("state")).unwrap();
         let transaction = PendingWifiTransaction {
             id: "abcdefghijklmnopqrstuvwx".into(),
-            expires_at: unix_now().unwrap() + 120,
+            expires_at: Some(unix_now().unwrap() + 120),
+            boot_id: None,
+            issued_monotonic: None,
+            expires_monotonic: None,
             old_values: BTreeMap::new(),
             new_values: BTreeMap::new(),
         };
@@ -1829,7 +2159,10 @@ mod tests {
             .unwrap();
         let pending = PendingWifiTransaction {
             id: "zyxwvutsrqponmlkjihgfedc".into(),
-            expires_at: unix_now().unwrap() + 120,
+            expires_at: Some(unix_now().unwrap() + 120),
+            boot_id: None,
+            issued_monotonic: None,
+            expires_monotonic: None,
             old_values: BTreeMap::from([(WifiField::Ssid2g, old.clone())]),
             new_values: BTreeMap::from([(WifiField::Ssid2g, "new-ssid".into())]),
         };
@@ -1858,5 +2191,18 @@ mod tests {
         assert_eq!(encode_sms_message("😀"), "D83DDE00");
         assert_eq!(sms_encoding("Hello"), "GSM7_default");
         assert_eq!(sms_encoding("你好"), "UNICODE");
+    }
+
+    #[test]
+    fn legacy_daily_audit_clock_trust_remains_unknown() {
+        let event: DailyAuditEvent = serde_json::from_value(serde_json::json!({
+            "timestamp": 1,
+            "event": "legacy",
+            "outcome": "success"
+        }))
+        .unwrap();
+        assert_eq!(event.clock_trusted, None);
+        let serialized = serde_json::to_value(event).unwrap();
+        assert!(serialized.get("clock_trusted").is_none());
     }
 }

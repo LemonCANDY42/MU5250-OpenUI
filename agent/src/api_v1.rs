@@ -12,6 +12,7 @@ use crate::adapter::{
     CellularStatus, DeviceDescriptor, LanClients, RecoveryMetadata, SignalStatus, SmsPage,
     SystemStatus, ThermalStatus, TrafficStatus, WifiStatus,
 };
+use crate::clock_trust::ClockTrustStatus;
 use crate::daily::{ChargingStatus, DailyError, DailyErrorKind};
 use crate::daily::{
     SmsSendRequest, TrafficCycleRequest, WifiConfirmRequest, WifiTransactionRequest,
@@ -28,6 +29,11 @@ struct Success<T> {
 struct Failure {
     ok: bool,
     error: AdapterError,
+}
+
+#[derive(Serialize)]
+struct ClockStatus {
+    state: ClockTrustStatus,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -144,6 +150,12 @@ pub fn device(state: &AppState) -> (u16, Value) {
 
 pub fn capabilities(state: &AppState) -> (u16, Value) {
     success(state.adapter.capabilities())
+}
+
+pub fn clock_status(state: &AppState) -> (u16, Value) {
+    success(ClockStatus {
+        state: state.clock_trust.status(),
+    })
 }
 
 pub async fn dashboard(state: AppState, peer: IpAddr) -> (u16, Value) {
@@ -597,6 +609,7 @@ fn daily_result<T: Serialize>(result: Result<T, DailyError>) -> (u16, Value) {
                 DailyErrorKind::InvalidRequest => (400, "invalid_request"),
                 DailyErrorKind::StateConflict => (409, "state_conflict"),
                 DailyErrorKind::SourceUnavailable => (503, "source_unavailable"),
+                DailyErrorKind::ClockNotSynchronized => (503, "clock_not_synchronized"),
             };
             let recovery = RecoveryMetadata {
                 required: error.recovery_required,
@@ -604,10 +617,11 @@ fn daily_result<T: Serialize>(result: Result<T, DailyError>) -> (u16, Value) {
                     "retry confirmation before the deadline or allow automatic rollback".into()
                 }),
             };
-            (
-                status,
-                json!({"ok": false, "error": {"code": code, "message": error.message, "recovery": recovery}}),
-            )
+            let mut body = json!({"ok": false, "error": {"code": code, "message": error.message, "recovery": recovery}});
+            if error.kind == DailyErrorKind::ClockNotSynchronized {
+                body["error"]["retry_after_seconds"] = json!(15);
+            }
+            (status, body)
         }
     }
 }
@@ -628,6 +642,26 @@ mod tests {
     };
     use crate::auth::AuthService;
     use crate::state_store::StateStore;
+
+    #[test]
+    fn clock_status_is_separate_from_the_strict_dashboard_contract() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(StateStore::open(temp.path().join("state")).unwrap()).unwrap();
+        let state = AppState::new(auth);
+        let (status, body) = clock_status(&state);
+        assert_eq!(status, 200);
+        assert_eq!(body, json!({"ok": true, "data": {"state": "trusted"}}));
+    }
+
+    #[test]
+    fn unsynchronized_clock_is_a_retryable_typed_daily_failure() {
+        let (status, body) =
+            daily_result::<crate::daily::WriteResult>(Err(DailyError::clock_not_synchronized()));
+        assert_eq!(status, 503);
+        assert_eq!(body["error"]["code"], "clock_not_synchronized");
+        assert_eq!(body["error"]["retry_after_seconds"], 15);
+        assert_eq!(body["error"]["recovery"]["required"], false);
+    }
 
     struct StubAdapter {
         battery_delay: Duration,
@@ -979,6 +1013,7 @@ mod tests {
         let lifecycle_adapter_weak = Arc::downgrade(&lifecycle_adapter);
         let lifecycle_state = AppState {
             auth: Arc::clone(&state.auth),
+            clock_trust: Arc::clone(&state.clock_trust),
             adapter: lifecycle_adapter.clone(),
             daily: None,
             dashboard_admission: Arc::clone(&state.dashboard_admission),

@@ -363,3 +363,4 @@
 "The U60 accepted the power-off request. Use the physical power button or connect power to start it again." = "U60 已接受关机请求。请按实体电源键或连接电源来重新开机。";
 "The power-off request may have reached the U60, but the connection closed before confirmation. The app will not send it again. If the U60 powered off, use the physical power button or connect power to start it again." = "关机请求可能已经到达 U60，但连接在确认结果前断开。App 不会再次发送。如果 U60 已关机，请按实体电源键或连接电源来重新启动。";
 "The U60 was unreachable before the power action could be submitted. Nothing was retried." = "提交电源操作前无法连接 U60；App 没有重试。";
+"The device is synchronizing its clock. Some time-related operations will be available shortly." = "设备正在校时，部分时间相关操作稍后可用。";

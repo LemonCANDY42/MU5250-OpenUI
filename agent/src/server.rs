@@ -190,6 +190,7 @@ pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) ->
         .route("/v1/device/power-off", post(device_power_off))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/status/dashboard", get(dashboard))
+        .route("/v1/status/clock", get(clock_status))
         .route("/v1/status/system", get(system_status))
         .route("/v1/status/battery", get(battery_status))
         .route("/v1/status/thermal", get(thermal_status))
@@ -364,6 +365,12 @@ async fn dashboard(
         return value_response(handlers::failure(error));
     }
     value_response(api_v1::dashboard(state, peer.ip()).await)
+}
+
+async fn clock_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    protected(&state, &headers, Scope::Read, || {
+        api_v1::clock_status(&state)
+    })
 }
 
 async fn system_status(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -1397,6 +1404,13 @@ mod tests {
             retry_after_seconds: 15,
         }));
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "15");
+    }
+
+    #[test]
+    fn clock_wait_response_sets_retry_after() {
+        let response = value_response(handlers::failure(AuthFailure::ClockNotSynchronized));
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(response.headers().get(RETRY_AFTER).unwrap(), "15");
     }
 }

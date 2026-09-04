@@ -9,14 +9,15 @@ stable installation does not waive those gates.
 ## Compiled public surface
 
 `openapi/u60-v1.yaml` is the contract authority. `agent/src/server.rs` routes
-ten read-only capabilities, four bounded daily operations and five versioned
-authentication paths:
+the read-only capability/status surface, four bounded daily operations and five
+versioned authentication paths:
 
 | Endpoint | Meaning |
 |---|---|
 | `GET /v1/device` | Normalized model, adapter target and best-effort firmware/hardware identity |
 | `GET /v1/capabilities` | `available`, `degraded` or `unsupported` state plus reason/recovery metadata |
 | `GET /v1/status/dashboard` | One partial-success snapshot containing the capability report, all available normalized status values, optional charging status and independent typed component failures |
+| `GET /v1/status/clock` | Request-driven device clock trust state (`trusted` or `waiting_for_sync`); no time-setting or network side effect |
 | `GET /v1/status/system` | Hostname, kernel, uptime and load average, with optional current CPU, memory and `/data` storage metrics |
 | `GET /v1/status/battery` | Real fuel-gauge capacity, voltage, current, derived battery-side power, temperature and state, with optional stock display capacity, recognized protection mode, validated health, cycle, capacity-counter and kernel-estimate fields |
 | `GET /v1/status/thermal` | Validated readings from the fixed B04 sensor map |
@@ -179,11 +180,27 @@ published atomically at mode `0600`. An advisory `auth.lock` serializes the
 complete pairing and credential read-modify-write transactions across the live
 server and maintenance CLI. Password failure state is persisted under that lock,
 uses hashed client identifiers, expires after one hour and is capped at 128
-clients, so restarting the server cannot reset a current lockout. A detected
-backward wall-clock jump cannot extend volatile sessions or challenges because
-their deadlines use the process-independent monotonic clock. Pairing records
-bind the Linux boot UUID to a `CLOCK_BOOTTIME` deadline; reboot, a missing or
-mismatched boot identity, and monotonic rollback all fail closed.
+clients, so restarting the server cannot reset a current lockout. A shared,
+request-driven `ClockTrust` compares wall time with the release
+`SOURCE_DATE_EPOCH` and the persisted highest trusted time, allowing at most
+five minutes of normal correction. A per-boot anchor in root-only tmpfs combines
+wall time with `CLOCK_BOOTTIME`, so the same bound survives server, maintenance
+CLI and rollback-child process boundaries without adding flash writes. It does
+not set the clock, contact a time service, start a timer or poll. A persistent
+trusted high-water mark is reloaded under a cross-process lock and atomically
+advanced at most once per 24 hours. Corrupt trust state is preserved as evidence
+and leaves only date-sensitive operations paused. Password login and lockout
+accounting, new pairing and SMS sending then return typed
+`503 clock_not_synchronized` with `Retry-After: 15`; existing key login, read
+status, Wi-Fi, traffic and recovery remain available. Audit records retain raw
+wall time and add its trust state; legacy records remain explicitly unknown
+rather than being relabeled as trusted.
+
+Volatile session and challenge deadlines use the process-independent monotonic
+clock. Pairing records and pending Wi-Fi confirmation windows bind the Linux
+boot UUID to a `CLOCK_BOOTTIME` deadline; reboot, a missing or mismatched boot
+identity, and monotonic rollback all fail closed. Legacy pending Wi-Fi
+transactions without that binding are still rolled back during service startup.
 
 Audit persistence is intentionally best-effort after the authoritative auth
 state commit: an audit storage failure emits only redacted diagnostics and never
@@ -205,12 +222,14 @@ or exposed; only a SHA-256 fingerprint is retained in private state so a later
 start can report a reboot. There is no network endpoint for this diagnostic
 data.
 
-The observation is anchored to one fixed seven-day wall-clock window and never
-starts over. Shutdown time remains part of that window, no missing samples are
-fabricated, and the first service start after shutdown records the restart and
-any detected reboot. A backward or implausible wall clock cannot complete the
-observation. Reaching the deadline requires two samples ten minutes apart; the
-completion marker is then persisted and all later starts remain silent. The
+The observation is anchored to one fixed seven-day trusted-wall-clock window
+and never starts over. Shutdown time remains part of that window, no missing
+samples are fabricated, and the first service start after shutdown records the
+restart and any detected reboot. While `ClockTrust` is waiting, no sample or
+deadline progress is written; the next trusted sample resumes the existing
+window without fabricating the gap. Reaching the deadline requires two samples
+ten minutes apart; the completion marker is then persisted and all later starts
+remain silent. The
 JSONL file has a 1 MiB hard ceiling and reaching it also writes a permanent
 completion marker. Normal samples are appended without a per-record filesystem
 sync; state is atomically synced only at lifecycle boundaries.
