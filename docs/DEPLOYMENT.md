@@ -84,7 +84,9 @@ The V1 path is implemented by three separate boundaries:
 
 - `scripts/prepare-b04-v1-release.py` creates one deterministic NAS release;
   its directory name is the SHA-256 of `release.sha256` and every payload file
-  is physical, size-bounded and checksum-bound.
+  is physical, size-bounded and checksum-bound. It also rejects every Dropbear
+  payload except the repository-pinned artifact that passed real-device host-key,
+  dual-key root login and public-key-only acceptance.
 - `device/b04-v1/` contains fixed BusyBox-compatible launchers for TLS canary,
   stable agent and key-only Dropbear. Mutable PKI, auth state and SSH host/key
   state remain outside the immutable release.
@@ -103,7 +105,7 @@ The reviewed sequence is:
 python3 scripts/prepare-b04-v1-release.py \
   --agent-build /Volumes/backups/U60-Pro/B04-agent-build-<id> \
   --dropbear /Volumes/backups/U60-Pro/toolchains/<build>/dropbearmulti \
-  --dropbear-sha256 <operator-pinned-sha256>
+  --dropbear-sha256 c59355b0ba621f105026b91988c17584c555c13cd5a1a485d66243a2f9b8debd
 
 # Each device mutation needs this one-command acknowledgement.
 export U60_B04_V1_DEPLOY=I_CONFIRMED_STAGED_V1_WITH_ROOT_ADB_RECOVERY

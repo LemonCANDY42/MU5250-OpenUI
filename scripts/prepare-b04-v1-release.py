@@ -30,6 +30,9 @@ SAFE_PATH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]*$")
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 MAX_FILE_BYTES = 16 * 1024 * 1024
 MAX_RELEASE_BYTES = 32 * 1024 * 1024
+ACCEPTED_DROPBEAR_SHA256 = (
+    "c59355b0ba621f105026b91988c17584c555c13cd5a1a485d66243a2f9b8debd"
+)
 
 
 class ReleaseError(RuntimeError):
@@ -165,9 +168,11 @@ def verify_dropbear(path: Path, expected_sha256: str) -> dict[str, object]:
     metadata = require_physical_file(path)
     if not HEX64.fullmatch(expected_sha256):
         raise ReleaseError("Dropbear expected SHA-256 must be 64 lowercase hex characters")
+    if expected_sha256 != ACCEPTED_DROPBEAR_SHA256:
+        raise ReleaseError("Dropbear is not the accepted B04 recovery artifact")
     digest = sha256_file(path)
     if digest != expected_sha256:
-        raise ReleaseError("Dropbear SHA-256 does not match the operator-pinned source build")
+        raise ReleaseError("Dropbear SHA-256 does not match the accepted B04 recovery artifact")
     result = subprocess.run(
         ["file", "-b", str(path)],
         stdin=subprocess.DEVNULL,
@@ -377,7 +382,11 @@ def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent-build", type=Path, required=True)
     parser.add_argument("--dropbear", type=Path, required=True)
-    parser.add_argument("--dropbear-sha256", required=True)
+    parser.add_argument(
+        "--dropbear-sha256",
+        required=True,
+        help="must equal the repository-pinned, real-device-accepted B04 artifact hash",
+    )
     parser.add_argument("--output-root", type=Path, default=APPROVED_OUTPUT_ROOT)
     return parser.parse_args()
 

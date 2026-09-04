@@ -103,6 +103,14 @@ class ReleasePreparationTests(unittest.TestCase):
         ):
             return PREPARE.build_release(self.build, self.dropbear, digest, self.output)
 
+    def test_dropbear_hash_is_fixed_to_the_accepted_artifact(self) -> None:
+        synthetic_digest = hashlib.sha256(self.dropbear.read_bytes()).hexdigest()
+        self.assertNotEqual(synthetic_digest, PREPARE.ACCEPTED_DROPBEAR_SHA256)
+        with self.assertRaisesRegex(
+            PREPARE.ReleaseError, "not the accepted B04 recovery artifact"
+        ):
+            PREPARE.verify_dropbear(self.dropbear, synthetic_digest)
+
     def test_release_id_binds_checksum_list_and_payload(self) -> None:
         release = self.build_release()
         self.assertRegex(release.name, r"^[0-9a-f]{64}$")
