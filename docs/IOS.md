@@ -133,7 +133,49 @@ a DHCP lease and station. The RSSI appears in Signal strength while link rates
 remain in Wi-Fi information. The Wi-Fi control status page uses that same
 router-observed value and labels it as such; missing or ambiguous correlation
 states that the U60 is not currently observing the client rather than implying
-that no signal source exists. Missing context never fails Wi-Fi status. Radio aggregation, selection and
+that no signal source exists. Both pages derive a signal level from the current
+RSSI only: very strong above -50 dBm, strong from -60 through -50, moderate from
+-70 inclusive to -60 exclusive, weak from -80 inclusive to -70 exclusive, and
+very weak below -80. Values outside -127 through -1 do not receive a level.
+The row shows the level and its exact interval; these are owner-requested
+reference bands, not throughput or connection-success guarantees. A missing
+current observation never borrows a level from historical samples.
+Current LTE and 5G RSRP readings likewise receive separate five-level labels.
+LTE uses Android's default -115/-105/-95/-85 dBm thresholds and its -140
+through -44 dBm measurement range; 5G NR uses -110/-90/-80/-65 dBm and -156
+through -31 dBm. Missing, sentinel and out-of-range values receive no level.
+These are general Android reference thresholds, not a claim that the carrier's
+own signal bars use the same policy.
+
+Wi-Fi SNR is explicitly unavailable in this client version. A read-only B04
+probe found a noise field in `iw survey dump`, but both active channels reported
+-96 dBm; repeated reads retained identical active/busy/transmit counters and
+the station dump offered no SNR field. A follow-up after the owner connected
+the iPhone observed client RSSI on both bands, but the survey noise and counters
+still matched the earlier no-client readings. This does not prove the noise value is
+fabricated, but does not establish a fresh same-channel noise measurement.
+
+The Control tab includes a separate Device power page for the two fixed B04
+lifecycle routes. Restart and power-off each require an initial destructive
+confirmation, password re-entry and a final destructive confirmation. The App
+creates an isolated ephemeral password session, elevates it to the five-minute
+advanced scope, submits exactly one bodyless action and clears that temporary
+token without replacing the long-lived key session. A definite pre-submission
+connectivity failure is reported without implying that the action reached the
+U60. A timeout or connection loss after invoking the request is reported as an
+unknown result and is never retried. Restart uses
+only the existing read-only recovery checks; power-off explains that physical
+power or a cable is required to start the device again.
+Do not substitute a fixed -96 dBm floor or the cellular modem's SNR. No SNR
+sample, level or chart series is generated, and the existing RSSI history/gaps
+remain unchanged. A future SNR addition requires accepted live source evidence,
+a typed optional API field and separate dB chart semantics (RSSI uses dBm).
+This follows the [Linux survey source model](https://wireless.docs.kernel.org/en/latest/en/users/documentation/acs.html)
+and [Cisco's signal-minus-noise definition](https://www.cisco.com/c/en/us/support/docs/wireless/5500-series-wireless-controllers/116057-site-survey-guidelines-wlan-00.html).
+The level presentation adds no polling, vendor commands, timers or persistent
+history state.
+
+Missing context never fails Wi-Fi status. Radio aggregation, selection and
 read-only cell-lock summaries are optional so new clients remain compatible
 with earlier V1 agents. The battery card similarly shows optional validated
 health, cycle, learned/design capacity and applicable kernel-estimate fields.
@@ -277,7 +319,9 @@ substitute for certificate verification.
 Current evidence establishes XcodeGen generation, generated-contract simulator
 tests, owner-signed physical-device build/install/launch, owner-CA full trust,
 Secure Enclave QR pairing through a real maintenance window and a completed
-authenticated physical-device session against the nonpersistent LAN canary.
+authenticated physical-device session. The initial session used a nonpersistent
+LAN canary; the same identity and contract now serve the accepted persistent
+management-LAN Agent.
 The current source exposes the saved 2.4/5 GHz primary AP switches only when
 the stock multi-band state permits independent control. It keeps all ten power
 percentages while labeling the device's documented 40, 80 and 100 percent

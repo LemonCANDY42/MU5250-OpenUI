@@ -1,5 +1,42 @@
 # Deployment — unlock, install, update
 
+## Current owner-device operating and recovery modes
+
+The accepted normal boot is stock ECM USB Ethernet. In this state USB ADB is
+absent by design; the native App and Agent use management-LAN HTTPS on `9443`,
+the stock Web UI remains available, and recovery administration uses LAN-only,
+key-only root SSH on `2222`. macOS interface numbers can change, so select the
+interface reported as the ZTE mobile-broadband adapter and verify that only the
+management-subnet route uses it. A TUN exclusion for `192.168.0.0/24` prevents
+the proxy from intercepting that subnet but does not create the physical Wi-Fi
+or ECM link.
+
+Two exact device-local recovery policies are retained as root-owned mode-`0600`
+regular files:
+
+- `/data/u60/recovery/rc.local.ecm` — accepted normal ECM boot.
+- `/data/u60/recovery/rc.local.debug-before-ecm` — accepted DEBUG boot with root
+  USB ADB.
+
+The safe maintenance transition is:
+
+1. While in ECM, authenticate over one of the independently verified SSH keys.
+2. Revalidate exact HK B04, current release/service ownership, current
+   `/etc/rc.local`, both recovery-file types/modes/hashes and `sh -n` syntax.
+3. Atomically install the exact DEBUG copy as `/etc/rc.local`, preserving
+   root:root mode `0775`; read it back and revalidate before reboot.
+4. Reboot and re-enumerate USB. Expect root ADB and no usable Mac ECM interface.
+5. Perform only the separately authorized ADB maintenance operation.
+6. Through root ADB, repeat the same gates and atomically restore the exact ECM
+   copy; reboot, then require ADB to be absent and ECM, Web, Agent and SSH to be
+   reachable again.
+
+Do not substitute a live `usb_op` write, the stock USB setter, a broad text
+deletion, or an assumed one-reboot auto-revert. The chosen policy persists until
+the reviewed opposite transition is completed. No helper that weakens these
+gates is installed. FOTA automatic update remains off and is not part of either
+transition.
+
 ## Pre-canary recovery baseline
 
 Before the first device write, capture the retained root-ADB and boot-path
@@ -54,6 +91,10 @@ The V1 path is implemented by three separate boundaries:
 - `scripts/deploy-b04-v1.py` performs one explicitly selected device action,
   revalidates exact HK B04/root ADB plus Mac route/TUN and device USB invariants,
   and publishes a secret-free completion record to the approved NAS.
+
+The deploy tool is an ADB maintenance tool. Run it only after the reviewed
+ECM-to-DEBUG transition above; it is not expected to operate during normal ECM
+boots and must never change USB mode implicitly.
 
 The reviewed sequence is:
 
@@ -167,7 +208,7 @@ End state (persists across reboots):
 | Dashboard | `http://192.168.0.1:8080` | uhttpd `dashboard` instance → `/data/www` |
 | Agent API | `http://192.168.0.1:9090` | password = your choice at setup |
 | SSH | `ssh -p 2222 root@192.168.0.1` | installed a key, but did not actually disable password login |
-| ADB | on demand | `echo 1 > /sys/class/android_usb/android0/usb_op` via SSH + reboot; reverts next reboot |
+| ADB | historical upstream behavior | Do not reproduce with a live sysfs write; use the reviewed recovery-copy transition above. |
 
 ---
 

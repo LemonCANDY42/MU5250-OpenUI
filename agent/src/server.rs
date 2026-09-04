@@ -19,6 +19,7 @@ use serde_json::{json, Value};
 
 use crate::api_v1;
 use crate::auth::{AuthFailure, Scope};
+use crate::b04_io::DeviceLifecycleAction;
 use crate::handlers::{self, AppState};
 
 const MAX_AUTH_BODY_BYTES: usize = 64 * 1024;
@@ -185,6 +186,8 @@ fn content_type(path: &Path) -> Option<&'static str> {
 pub fn router_with_web_root(state: AppState, web_root: Option<StaticWebRoot>) -> Router {
     Router::new()
         .route("/v1/device", get(device))
+        .route("/v1/device/reboot", post(device_reboot))
+        .route("/v1/device/power-off", post(device_power_off))
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/status/dashboard", get(dashboard))
         .route("/v1/status/system", get(system_status))
@@ -266,6 +269,84 @@ pub async fn start(
 
 async fn device(State(state): State<AppState>, headers: HeaderMap) -> Response {
     protected(&state, &headers, Scope::Read, || api_v1::device(&state))
+}
+
+async fn device_reboot(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    device_lifecycle(state, &headers, body, DeviceLifecycleAction::Reboot).await
+}
+
+async fn device_power_off(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+) -> Response {
+    device_lifecycle(state, &headers, body, DeviceLifecycleAction::PowerOff).await
+}
+
+async fn device_lifecycle(
+    state: AppState,
+    headers: &HeaderMap,
+    body: Result<Bytes, BytesRejection>,
+    action: DeviceLifecycleAction,
+) -> Response {
+    if let Err(error) = authorize(&state, headers, Scope::Advanced) {
+        return value_response(handlers::failure(error));
+    }
+    let body = match auth_body(body) {
+        Ok(body) => body,
+        Err(error) => return value_response(error),
+    };
+    if body.iter().any(|byte| !byte.is_ascii_whitespace()) {
+        return value_response((
+            400,
+            json!({"ok": false, "error": {
+                "code": "invalid_request",
+                "message": "device lifecycle requests do not accept a body"
+            }}),
+        ));
+    }
+    let permit = match Arc::clone(&state.lifecycle_admission).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => {
+            return value_response((
+                409,
+                json!({"ok": false, "error": {
+                    "code": "lifecycle_action_in_progress",
+                    "message": "another device lifecycle action is already in progress"
+                }}),
+            ));
+        }
+    };
+    let lifecycle = Arc::clone(&state.lifecycle);
+    match tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        lifecycle.execute(action)
+    })
+    .await
+    {
+        Ok(Ok(())) => value_response((200, json!({"ok": true, "data": {"result": "accepted"}}))),
+        Ok(Err(error)) => {
+            eprintln!("[lifecycle] fixed B04 action failed: {error}");
+            value_response((
+                503,
+                json!({"ok": false, "error": {
+                    "code": "source_unavailable",
+                    "message": "the fixed B04 lifecycle source is unavailable"
+                }}),
+            ))
+        }
+        Err(_) => value_response((
+            503,
+            json!({"ok": false, "error": {
+                "code": "source_unavailable",
+                "message": "the device lifecycle result is unavailable"
+            }}),
+        )),
+    }
 }
 
 async fn capabilities(State(state): State<AppState>, headers: HeaderMap) -> Response {
@@ -673,6 +754,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::net::Ipv4Addr;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     use axum::body::{to_bytes, Body};
@@ -685,11 +767,29 @@ mod tests {
         B04Io, UbusRead, UbusWrite, WifiClientLinkSource, WifiField, WifiInterface,
     };
     use crate::daily::DailyService;
+    use crate::lifecycle::LifecycleControl;
     use crate::state_store::StateStore;
 
     struct SlowWifiIo {
         transmit_power_2g: AtomicUsize,
         readiness_started: Arc<AtomicBool>,
+    }
+
+    struct SlowLifecycleControl {
+        actions: Mutex<Vec<DeviceLifecycleAction>>,
+        started: AtomicBool,
+    }
+
+    impl LifecycleControl for SlowLifecycleControl {
+        fn execute(&self, action: DeviceLifecycleAction) -> Result<(), String> {
+            self.actions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(action);
+            self.started.store(true, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(())
+        }
     }
 
     impl B04Io for SlowWifiIo {
@@ -973,6 +1073,104 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+    }
+
+    #[tokio::test]
+    async fn device_lifecycle_routes_require_an_advanced_session() {
+        let (_temp, state) = state();
+        let password = "host test management password";
+        state.auth.set_password(password).unwrap();
+        let normal = state.auth.password_session(password, "127.0.0.1").unwrap();
+
+        for path in ["/v1/device/reboot", "/v1/device/power-off"] {
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(request(Method::POST, path, ""))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{path}");
+
+            let response = router_with_web_root(state.clone(), None)
+                .oneshot(authorized_request(Method::POST, path, "", &normal.token))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+        }
+
+        let response = router_with_web_root(state, None)
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/device/action",
+                r#"{"action":"reboot"}"#,
+                &normal.token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn device_lifecycle_routes_are_fixed_bodyless_and_single_flight() {
+        let temp = tempfile::tempdir().unwrap();
+        let auth = AuthService::open(StateStore::open(temp.path().join("state")).unwrap()).unwrap();
+        let password = "host test management password";
+        auth.set_password(password).unwrap();
+        let advanced = auth.advanced_session(password, "127.0.0.1").unwrap();
+        let lifecycle = Arc::new(SlowLifecycleControl {
+            actions: Mutex::new(Vec::new()),
+            started: AtomicBool::new(false),
+        });
+        let state = AppState::with_lifecycle(
+            auth,
+            Arc::new(crate::adapter::B04Adapter::new()),
+            lifecycle.clone(),
+        );
+        let app = router_with_web_root(state, None);
+
+        let response = app
+            .clone()
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/device/reboot",
+                r#"{"action":"power-off"}"#,
+                &advanced.token,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(lifecycle
+            .actions
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty());
+
+        let first = tokio::spawn(app.clone().oneshot(authorized_request(
+            Method::POST,
+            "/v1/device/reboot",
+            "",
+            &advanced.token,
+        )));
+        while !lifecycle.started.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+        let second = app
+            .oneshot(authorized_request(
+                Method::POST,
+                "/v1/device/power-off",
+                "",
+                &advanced.token,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(second.status(), StatusCode::CONFLICT);
+        assert_eq!(first.await.unwrap().unwrap().status(), StatusCode::OK);
+        assert_eq!(
+            *lifecycle
+                .actions
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![DeviceLifecycleAction::Reboot]
+        );
     }
 
     #[tokio::test]

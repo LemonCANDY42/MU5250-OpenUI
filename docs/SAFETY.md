@@ -181,11 +181,32 @@ exact firmware, root ADB, Mac default route/TUN, device USB properties and
 `rc.local`, and writes the scoped result to the approved NAS. It does not touch
 the dormant `/data/zte-agent` paths. The boot entry is permitted only after a
 current release, stable agent PID, Dropbear PID and exactly two public keys are
-present; it adds no init/firewall/UCI hook. Root ADB is never removed.
+present; it adds no init/firewall/UCI hook. These deployment actions require an
+explicit DEBUG maintenance boot with root ADB. The accepted normal boot instead
+uses stock ECM and intentionally exposes no USB ADB; recovery capability is
+retained through independently verified key-only root SSH plus exact root-only
+DEBUG and ECM `rc.local` copies.
 Remote shell gates use a parsed status sentinel rather than trusting the local
 `adb exec-out` return code. BusyBox symlink replacement uses `mv -T`, and both
 release links and boot files must pass exact post-write readback before evidence
 can be completed.
+
+### Accepted USB recovery boundary
+
+- Normal use is stock ECM USB Ethernet. Agent `9443`, stock Web and key-only
+  root SSH `2222` are reachable only through the management LAN.
+- Enter DEBUG only by authenticating through the verified SSH path, validating
+  the exact B04/recovery files, atomically selecting the preserved DEBUG
+  `rc.local`, validating its bytes, metadata and shell syntax, and rebooting.
+- Return to ECM only through root ADB, using the same checks to atomically select
+  the preserved ECM `rc.local`, then rebooting and revalidating ECM, SSH and
+  Agent connectivity.
+- Neither selection is a one-shot mode: the selected file remains the boot
+  policy until the opposite reviewed procedure is completed.
+- Never write `usb_op` live, invoke the stock USB setter as a probe, remove every
+  line containing `usb_op`, or assume a custom ADB+ECM composite is available.
+- FOTA automatic update remains a separate owner setting and must stay disabled;
+  neither recovery direction is authorized to change it.
 
 The boot line backgrounds a finite launcher so stock boot never waits on it.
 The launcher waits no more than two minutes for `192.168.0.1`, then gives Agent
@@ -282,7 +303,7 @@ backup, readback and recovery gate.
 |---|---|
 | any kill-bloat/process-killing API | process lifecycle is not a stable device contract; the public capability is permanently absent |
 | unrestricted or allowlisted raw AT terminal | string allowlists are not a safe semantic boundary; the route and AT transport module were removed |
-| any plaintext LAN listener or generic destructive endpoint | current source binds only to loopback for host tests and exposes no writes; the device canary must use pinned HTTPS |
+| any plaintext LAN listener or generic destructive endpoint | lifecycle support is limited to two bodyless, advanced-session-only fixed B04 calls over pinned HTTPS; no generic action input exists |
 
 Scheduler, DoH, SMS forwarding and Tailscale are outside the compiled private
 agent. They are not fallback services and must not be added to the core runtime.

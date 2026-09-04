@@ -43,6 +43,12 @@ pub enum UbusWrite {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceLifecycleAction {
+    Reboot,
+    PowerOff,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WifiInterface {
     TwoG,
     FiveG,
@@ -159,6 +165,9 @@ pub trait B04Io: Send + Sync {
     fn apply_wifi_values(&self, values: &BTreeMap<WifiField, String>) -> Result<(), String>;
     fn wait_for_wifi_ready(&self) -> Result<(), String>;
     fn battery_capacity(&self) -> Result<u8, String>;
+    fn device_lifecycle(&self, _action: DeviceLifecycleAction) -> Result<(), String> {
+        Err("device lifecycle source is unavailable".into())
+    }
 }
 
 #[derive(Default)]
@@ -403,6 +412,29 @@ impl B04Io for SystemB04Io {
             .filter(|value| *value <= 100)
             .ok_or_else(|| "battery capacity source is invalid".to_string())
     }
+
+    fn device_lifecycle(&self, action: DeviceLifecycleAction) -> Result<(), String> {
+        let (label, object, method, payload) = device_lifecycle_spec(action);
+        let payload = payload.to_string();
+        let output = run_fixed(label, "ubus", &["call", object, method, &payload])?;
+        parse_ubus_write_response(label, &output)?;
+        Ok(())
+    }
+}
+
+fn device_lifecycle_spec(
+    action: DeviceLifecycleAction,
+) -> (&'static str, &'static str, &'static str, Value) {
+    let method = match action {
+        DeviceLifecycleAction::Reboot => "device_reboot",
+        DeviceLifecycleAction::PowerOff => "device_poweroff",
+    };
+    (
+        "device lifecycle",
+        "zwrt_mc.device.manager",
+        method,
+        json!({"moduleName":"web"}),
+    )
 }
 
 fn parse_wifi_load_status(output: &[u8]) -> Result<bool, String> {
@@ -920,6 +952,28 @@ mod tests {
         assert_eq!(
             parse_ubus_write_response("write", b"vendor success token").unwrap(),
             json!({})
+        );
+    }
+
+    #[test]
+    fn device_lifecycle_uses_only_the_stock_b04_fixed_calls() {
+        assert_eq!(
+            device_lifecycle_spec(DeviceLifecycleAction::Reboot),
+            (
+                "device lifecycle",
+                "zwrt_mc.device.manager",
+                "device_reboot",
+                json!({"moduleName":"web"})
+            )
+        );
+        assert_eq!(
+            device_lifecycle_spec(DeviceLifecycleAction::PowerOff),
+            (
+                "device lifecycle",
+                "zwrt_mc.device.manager",
+                "device_poweroff",
+                json!({"moduleName":"web"})
+            )
         );
     }
 

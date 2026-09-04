@@ -4,6 +4,7 @@ mod auth;
 mod b04_io;
 mod daily;
 mod handlers;
+mod lifecycle;
 mod server;
 mod stability_monitor;
 mod state_store;

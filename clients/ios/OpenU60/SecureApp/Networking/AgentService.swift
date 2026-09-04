@@ -5,6 +5,7 @@ import OpenAPIURLSession
 enum AgentServiceError: LocalizedError {
     case rejected(status: Int, message: String, recoveryRequired: Bool = false)
     case authenticationRequired
+    case devicePowerNotSubmitted
     case invalidResponse
     case transportSecurity(String)
 
@@ -12,6 +13,8 @@ enum AgentServiceError: LocalizedError {
         switch self {
         case let .rejected(status, message, _): "U60 rejected the request (\(status)): \(message)"
         case .authenticationRequired: "The secure session expired."
+        case .devicePowerNotSubmitted:
+            String(localized: "The U60 was unreachable before the power action could be submitted. Nothing was retried.")
         case .invalidResponse: "The U60 returned a response that does not match the v1 contract."
         case let .transportSecurity(message): message
         }
@@ -23,7 +26,7 @@ enum AgentServiceError: LocalizedError {
             status == 503 && recoveryRequired
         case .invalidResponse:
             true
-        case .authenticationRequired, .transportSecurity:
+        case .authenticationRequired, .devicePowerNotSubmitted, .transportSecurity:
             false
         }
     }
@@ -36,11 +39,69 @@ enum AgentServiceError: LocalizedError {
             case 503: recoveryRequired
             default: true
             }
-        case .authenticationRequired, .invalidResponse, .transportSecurity:
+        case .authenticationRequired, .devicePowerNotSubmitted, .invalidResponse, .transportSecurity:
             true
         }
     }
 
+}
+
+enum DevicePowerAction: Equatable, Sendable {
+    case reboot
+    case powerOff
+}
+
+enum DevicePowerRequestOutcome: Equatable, Sendable {
+    case confirmedAccepted
+    case submissionResultUnknown
+}
+
+enum DevicePowerTransportDisposition: Equatable, Sendable {
+    case notSubmitted
+    case submissionResultUnknown
+
+    static func classify(_ error: any Error) -> Self? {
+        var pending: [any Error] = [error]
+        var bestMatch: Self?
+        var inspectedCount = 0
+
+        while !pending.isEmpty, inspectedCount < 8 {
+            let current = pending.removeFirst()
+            inspectedCount += 1
+
+            if let clientError = current as? ClientError {
+                pending.append(clientError.underlyingError)
+            }
+
+            let nsError = current as NSError
+            if nsError.domain == NSURLErrorDomain {
+                switch URLError.Code(rawValue: nsError.code) {
+                case .notConnectedToInternet,
+                     .cannotFindHost,
+                     .cannotConnectToHost,
+                     .dnsLookupFailed,
+                     .internationalRoamingOff,
+                     .callIsActive,
+                     .dataNotAllowed,
+                     .cannotLoadFromNetwork:
+                    return .notSubmitted
+                case .timedOut,
+                     .networkConnectionLost,
+                     .resourceUnavailable,
+                     .backgroundSessionWasDisconnected:
+                    bestMatch = .submissionResultUnknown
+                default:
+                    break
+                }
+            }
+
+            if let underlyingError = nsError.userInfo[NSUnderlyingErrorKey] as? any Error {
+                pending.append(underlyingError)
+            }
+        }
+
+        return bestMatch
+    }
 }
 
 struct WifiTransactionEdits: Sendable {
@@ -138,7 +199,92 @@ final class AgentService: Sendable {
         let output = try await client.createPasswordSession(.init(body: .json(.init(password: password))))
         switch output {
         case let .ok(response): try await vault.replace(with: response.body.json.data.token)
+        case let .badRequest(response):
+            throw AgentServiceError.rejected(status: 400, message: try response.body.json.error.message)
+        case let .unauthorized(response):
+            throw AgentServiceError.rejected(status: 401, message: try response.body.json.error.message)
+        case let .tooManyRequests(response):
+            throw AgentServiceError.rejected(status: 429, message: try response.body.json.error.message)
+        case let .internalServerError(response):
+            throw AgentServiceError.rejected(status: 500, message: try response.body.json.error.message)
+        case let .serviceUnavailable(response):
+            throw AgentServiceError.rejected(status: 503, message: try response.body.json.error.message)
         default: throw AgentServiceError.invalidResponse
+        }
+    }
+
+    func elevate(password: String) async throws {
+        let output = try await client.createAdvancedSession(.init(body: .json(.init(password: password))))
+        switch output {
+        case let .ok(response): try await vault.replace(with: response.body.json.data.token)
+        case let .badRequest(response):
+            throw AgentServiceError.rejected(status: 400, message: try response.body.json.error.message)
+        case let .unauthorized(response):
+            throw AgentServiceError.rejected(status: 401, message: try response.body.json.error.message)
+        case let .forbidden(response):
+            throw AgentServiceError.rejected(status: 403, message: try response.body.json.error.message)
+        case let .tooManyRequests(response):
+            throw AgentServiceError.rejected(status: 429, message: try response.body.json.error.message)
+        case let .internalServerError(response):
+            throw AgentServiceError.rejected(status: 500, message: try response.body.json.error.message)
+        case let .serviceUnavailable(response):
+            throw AgentServiceError.rejected(status: 503, message: try response.body.json.error.message)
+        default: throw AgentServiceError.invalidResponse
+        }
+    }
+
+    func performDevicePowerAction(_ action: DevicePowerAction) async throws -> DevicePowerRequestOutcome {
+        delegate.resetTrustFailure()
+        do {
+            switch action {
+            case .reboot:
+                let output = try await client.rebootDevice()
+                switch output {
+                case .ok: return .confirmedAccepted
+                case .unauthorized: throw AgentServiceError.authenticationRequired
+                case let .badRequest(response):
+                    throw AgentServiceError.rejected(status: 400, message: try response.body.json.error.message)
+                case let .forbidden(response):
+                    throw AgentServiceError.rejected(status: 403, message: try response.body.json.error.message)
+                case let .conflict(response):
+                    throw AgentServiceError.rejected(status: 409, message: try response.body.json.error.message)
+                case let .internalServerError(response):
+                    throw AgentServiceError.rejected(status: 500, message: try response.body.json.error.message)
+                case let .serviceUnavailable(response):
+                    throw AgentServiceError.rejected(status: 503, message: try response.body.json.error.message)
+                default: throw AgentServiceError.invalidResponse
+                }
+            case .powerOff:
+                let output = try await client.powerOffDevice()
+                switch output {
+                case .ok: return .confirmedAccepted
+                case .unauthorized: throw AgentServiceError.authenticationRequired
+                case let .badRequest(response):
+                    throw AgentServiceError.rejected(status: 400, message: try response.body.json.error.message)
+                case let .forbidden(response):
+                    throw AgentServiceError.rejected(status: 403, message: try response.body.json.error.message)
+                case let .conflict(response):
+                    throw AgentServiceError.rejected(status: 409, message: try response.body.json.error.message)
+                case let .internalServerError(response):
+                    throw AgentServiceError.rejected(status: 500, message: try response.body.json.error.message)
+                case let .serviceUnavailable(response):
+                    throw AgentServiceError.rejected(status: 503, message: try response.body.json.error.message)
+                default: throw AgentServiceError.invalidResponse
+                }
+            }
+        } catch {
+            if let failure = delegate.consumeTrustFailure() {
+                throw AgentServiceError.transportSecurity(failure.userMessage)
+            }
+            switch DevicePowerTransportDisposition.classify(error) {
+            case .notSubmitted:
+                throw AgentServiceError.devicePowerNotSubmitted
+            case .submissionResultUnknown:
+                return .submissionResultUnknown
+            case nil:
+                break
+            }
+            throw error
         }
     }
 

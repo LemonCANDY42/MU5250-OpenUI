@@ -176,6 +176,43 @@ final class AppModel {
         }
     }
 
+    func performDevicePowerAction(_ action: DevicePowerAction, password: String) async {
+        await perform {
+            guard !password.isEmpty else { throw LocalSecurityError.missingManagementPassword }
+            guard let profile else { throw LocalSecurityError.missingCredential }
+            let temporaryVault = SessionVault()
+            let temporaryService = try AgentService(profile: profile, vault: temporaryVault)
+            let outcome: DevicePowerRequestOutcome
+            do {
+                try await temporaryService.signIn(password: password)
+                try await temporaryService.elevate(password: password)
+                outcome = try await temporaryService.performDevicePowerAction(action)
+            } catch {
+                await temporaryVault.clear()
+                throw error
+            }
+            await temporaryVault.clear()
+
+            switch action {
+            case .reboot:
+                notice = Notice(
+                    title: String(localized: "Restart requested"),
+                    message: outcome == .confirmedAccepted
+                        ? String(localized: "The U60 accepted the restart request. The app will reconnect with read-only checks after it starts again.")
+                        : String(localized: "The restart request may have reached the U60, but the connection closed before confirmation. The app will not send it again and will reconnect with read-only checks.")
+                )
+                handleReadFailure(URLError(.networkConnectionLost))
+            case .powerOff:
+                notice = Notice(
+                    title: String(localized: "Power off requested"),
+                    message: outcome == .confirmedAccepted
+                        ? String(localized: "The U60 accepted the power-off request. Use the physical power button or connect power to start it again.")
+                        : String(localized: "The power-off request may have reached the U60, but the connection closed before confirmation. The app will not send it again. If the U60 powered off, use the physical power button or connect power to start it again.")
+                )
+            }
+        }
+    }
+
     func beginWifiTransaction(_ edits: WifiTransactionEdits) async {
         guard !isWorking else { return }
         guard pendingWifiConfirmation == nil else {

@@ -31,8 +31,12 @@ The output must still pass both device tests before persistence:
 2. a password-only negotiation reports `publickey` as the sole available
    authentication method.
 
-Root ADB remains available during and after both tests. Host private keys never
-enter the repository, release bundle or unencrypted NAS evidence. LAN
-verification accepts the scanned Ed25519 host key only when it exactly matches
-the public host key read from the same device over root ADB; it does not route
-SSH through an ADB TCP forward.
+Root ADB remained available during the initial two-key and password-rejection
+tests so SSH could not become the sole unverified recovery path. Host private
+keys never enter the repository, release bundle or unencrypted NAS evidence.
+LAN verification accepted the scanned Ed25519 host key only after it exactly
+matched the public host key read from the same device over root ADB; it did not
+route SSH through an ADB TCP forward. After that independent proof, the accepted
+normal boot returned to stock ECM and USB ADB became absent by design. Key-only
+SSH is now the daily recovery path; the exact DEBUG policy can restore root ADB
+after an explicitly authorized reboot.

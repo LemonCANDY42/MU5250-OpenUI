@@ -31,6 +31,15 @@ struct ControlView: View {
                             systemImage: "message"
                         )
                     }
+                    NavigationLink {
+                        DevicePowerControlView(model: model)
+                    } label: {
+                        ControlRow(
+                            title: "Device power",
+                            subtitle: String(localized: "Restart or power off with password re-entry"),
+                            systemImage: "power"
+                        )
+                    }
                 } header: {
                     Text("Daily controls")
                 } footer: {
@@ -59,6 +68,108 @@ struct ControlView: View {
         return traffic.resetEnabled
             ? String(localized: "Monthly reset enabled")
             : String(localized: "Monthly reset disabled")
+    }
+}
+
+private struct DevicePowerControlView: View {
+    let model: AppModel
+    @State private var pendingAction: DevicePowerAction?
+    @State private var showsFirstConfirmation = false
+    @State private var showsFinalConfirmation = false
+    @State private var password = ""
+
+    var body: some View {
+        Form {
+            Section {
+                Button("Restart U60", role: .destructive) {
+                    begin(.reboot)
+                }
+                Button("Power off U60", role: .destructive) {
+                    begin(.powerOff)
+                }
+            } footer: {
+                Text("These actions require the management password again and a second confirmation. A submitted action is never retried automatically.")
+            }
+
+            Section("Recovery") {
+                Text("Restart preserves the normal boot setup and the app checks only for recovery. After power off, use the physical power button or connect power to start the U60 again.")
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .navigationTitle("Device power")
+        .disabled(model.isWorking)
+        .overlay { if model.isWorking { ProgressView().controlSize(.large) } }
+        .confirmationDialog(
+            firstConfirmationTitle,
+            isPresented: $showsFirstConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Continue", role: .destructive) {
+                Task { @MainActor in
+                    await Task.yield()
+                    showsFinalConfirmation = true
+                }
+            }
+            Button("Cancel", role: .cancel) {
+                reset()
+            }
+        } message: {
+            Text(firstConfirmationMessage)
+        }
+        .alert(finalConfirmationTitle, isPresented: $showsFinalConfirmation) {
+            SecureField("Management password", text: $password)
+            Button(finalActionTitle, role: .destructive) {
+                submit()
+            }
+            .disabled(password.isEmpty)
+            Button("Cancel", role: .cancel) {
+                reset()
+            }
+        } message: {
+            Text("Enter the dedicated OpenU60 management password. It is used only for this request and is not saved.")
+        }
+    }
+
+    private var firstConfirmationTitle: LocalizedStringKey {
+        pendingAction == .powerOff ? "Power off the U60?" : "Restart the U60?"
+    }
+
+    private var firstConfirmationMessage: LocalizedStringKey {
+        pendingAction == .powerOff
+            ? "The U60 will become unreachable until it is physically powered on again."
+            : "The U60 and OpenU60 service will be briefly unavailable while the device restarts."
+    }
+
+    private var finalConfirmationTitle: LocalizedStringKey {
+        pendingAction == .powerOff ? "Final power-off confirmation" : "Final restart confirmation"
+    }
+
+    private var finalActionTitle: LocalizedStringKey {
+        pendingAction == .powerOff ? "Power off now" : "Restart now"
+    }
+
+    private func begin(_ action: DevicePowerAction) {
+        pendingAction = action
+        password = ""
+        showsFirstConfirmation = true
+    }
+
+    private func submit() {
+        guard let action = pendingAction, !password.isEmpty else {
+            reset()
+            return
+        }
+        let submittedPassword = password
+        password = ""
+        pendingAction = nil
+        Task {
+            await model.performDevicePowerAction(action, password: submittedPassword)
+        }
+    }
+
+    private func reset() {
+        password = ""
+        pendingAction = nil
     }
 }
 
@@ -208,6 +319,7 @@ private struct WifiControlView: View {
                     )
                     if let link = wifi.currentClientLink {
                         LabeledContent("This iPhone signal", value: "\(link.signalDbm) dBm · \(link.band)")
+                        WifiSignalLevelRow(signalDbm: link.signalDbm)
                         Text("Measured by the U60 for this authenticated client.")
                             .font(.footnote)
                             .foregroundStyle(.secondary)

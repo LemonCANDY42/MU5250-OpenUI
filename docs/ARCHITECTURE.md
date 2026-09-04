@@ -167,7 +167,7 @@ upstream feature list wholesale:
 | Web/iOS clients | MU information density plus open-u60-pro SwiftUI navigation | One OpenAPI contract, capability hiding, pinned HTTPS and public-key login |
 
 SIM identifiers, raw process lists, APN credentials, DNS/LAN/firewall/NAT/UPnP/VPN/QoS/domain-filter summaries,
-network/band/cell-lock writes, USB composition, FOTA, reboot/shutdown, arbitrary AT,
+network/band/cell-lock writes, USB composition, FOTA, arbitrary AT,
 ubus/UCI/shell and external forwarding remain outside V1. Active radio type is
 reported through normalized signal status; the configured APN is not exposed
 until a separate redaction contract and B04 acceptance exist. Historical getter
@@ -203,13 +203,23 @@ and audit metadata. Audit logging follows the authoritative state commit and is
 best-effort, so a logging outage cannot misreport a committed auth mutation as
 failed.
 
+Device reboot and power-off are narrow exceptions to the general no-process-
+control boundary. They are separate bodyless routes backed by the exact stock
+HK B04 `zwrt_mc.device.manager` calls and `{ "moduleName": "web" }` payload.
+The adapter rechecks the exact firmware identity before dispatch, the server
+requires `advanced` scope, and a one-slot non-queuing gate prevents overlapping
+lifecycle work. No generic action string, vendor object, method or payload
+crosses the public contract. A disconnect after submission is ambiguous by
+nature; clients must never retry the action automatically.
+
 The server uses axum with rustls `>=0.23.5` (currently resolved to 0.23.43), ring
 and TLS 1.3 only. Certificate and leaf-key PEM files must be supplied. The real
 owner CA was created outside the repository, the leaf key was generated on the
-U60, and the live canary completed a CA-verified TLS handshake. The owner iPhone
+U60, and the live Agent completed a CA-verified TLS handshake. The owner iPhone
 has the exact CA installed with full trust; the iOS client completed system trust,
 the exact P-256 SPKI pin check, Secure Enclave QR pairing and a key-authenticated
-session against the nonpersistent LAN canary.
+session. Its first acceptance used a nonpersistent LAN canary; the same identity
+and contract are now active in the accepted persistent installation.
 
 The browser boundary has separate real-device evidence: a non-exportable P-256
 credential survived an agent release replacement, completed a new single-use
@@ -252,9 +262,11 @@ probing, privileged vendor-RPC research or configuration restore. The restore
 tool cannot skip its interactive confirmation in this B04 V1 branch.
 
 Agent installation, SSH persistence and removal of persistent ADB are separate
-gates. SSH may become key-only only after public-key success, password failure
-and two independent recovery keys are verified while root ADB is still
-available.
+gates. The owner-device sequence completed them in that order: both independent
+keys and password rejection were verified while root ADB was still active, then
+normal boot returned to stock ECM. Root ADB is now absent during normal use but
+remains recoverable by selecting the exact DEBUG boot policy through key-only SSH
+and rebooting.
 
 ## Licensing and publication
 

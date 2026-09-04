@@ -70,6 +70,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check API surface agreement
         run: python3 scripts/check-api-contract.py
+      - name: Test API contract checker coverage
+        run: python3 -m unittest scripts.tests.test_api_contract_checker
       - name: Check legacy device entry-point gates
         run: python3 scripts/check-device-gates.py
       - name: Test redacted B04 read-only probe

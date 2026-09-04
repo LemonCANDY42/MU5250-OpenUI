@@ -160,6 +160,48 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "500":
           $ref: "#/components/responses/AuthInternalError"
+  /v1/device/reboot:
+    post:
+      operationId: rebootDevice
+      summary: Invoke the fixed stock B04 reboot action with an advanced session
+      responses:
+        "200":
+          $ref: "#/components/responses/LifecycleActionAccepted"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/LifecycleConflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/LifecycleUnavailable"
+  /v1/device/power-off:
+    post:
+      operationId: powerOffDevice
+      summary: Invoke the fixed stock B04 power-off action with an advanced session
+      responses:
+        "200":
+          $ref: "#/components/responses/LifecycleActionAccepted"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/AuthenticationFailed"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/LifecycleConflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/AuthInternalError"
+        "503":
+          $ref: "#/components/responses/LifecycleUnavailable"
   /v1/capabilities:
     get:
       operationId: getCapabilities
@@ -607,6 +649,24 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/DailyErrorResponse"
+    LifecycleActionAccepted:
+      description: The fixed stock B04 lifecycle call was accepted
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/WriteResultResponse"
+    LifecycleConflict:
+      description: Another lifecycle action is already in progress
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/LifecycleErrorResponse"
+    LifecycleUnavailable:
+      description: The fixed stock B04 lifecycle source is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/LifecycleErrorResponse"
   schemas:
     PasswordRequest:
       type: object
@@ -1721,6 +1781,23 @@ components:
               type: string
             recovery:
               $ref: "#/components/schemas/RecoveryMetadata"
+    LifecycleErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [ok, error]
+      properties:
+        ok:
+          const: false
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              enum: [lifecycle_action_in_progress, source_unavailable]
+            message:
+              type: string
     ErrorResponse:
       type: object
       additionalProperties: false

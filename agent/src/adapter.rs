@@ -480,7 +480,7 @@ impl B04Adapter {
         }
     }
 
-    fn firmware_gate(&self) -> Result<(), AdapterError> {
+    pub(crate) fn firmware_gate(&self) -> Result<(), AdapterError> {
         let device = self.device();
         match firmware_support(device.firmware_version.as_deref()) {
             CapabilityStatus::Available => Ok(()),

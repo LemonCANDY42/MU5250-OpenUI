@@ -745,12 +745,18 @@ struct DashboardView: View {
                 .font(.subheadline.weight(.semibold))
             if let link = wifi?.currentClientLink {
                 metric("Signal", "\(link.signalDbm) dBm")
+                WifiSignalLevelRow(signalDbm: link.signalDbm)
+                    .font(.subheadline)
                 metric("Observed band", link.band)
             } else {
                 Text("Not currently observed by the U60")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            metric("Wi-Fi SNR", String(localized: "Unavailable"))
+            Text("RSSI is measured by the U60 for this client; levels are a guide, not a speed guarantee. Wi-Fi SNR needs a verified current-channel noise reading, which is not available yet.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
             if wifiPointCount >= 2 {
                 Divider()
                 chartHeader(
@@ -800,10 +806,23 @@ struct DashboardView: View {
                 metric("Strength", "\(signal.bars) / 5")
                 if let lte = signal.lte {
                     metric("LTE RSRP", formatMetric(lte.rsrpDbm, unit: "dBm"))
+                    CellularSignalLevelRow(
+                        title: "LTE signal level",
+                        technology: .lte,
+                        rsrpDbm: lte.rsrpDbm
+                    )
                 }
                 if let nr5g = signal.nr5g {
                     metric("5G RSRP", formatMetric(nr5g.rsrpDbm, unit: "dBm"))
+                    CellularSignalLevelRow(
+                        title: "5G signal level",
+                        technology: .nr5g,
+                        rsrpDbm: nr5g.rsrpDbm
+                    )
                 }
+                Text("Cellular levels use general Android default RSRP thresholds as a guide. Carrier-specific signal bars may differ.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else {
                 Text("Cellular signal unavailable")
                     .font(.footnote)

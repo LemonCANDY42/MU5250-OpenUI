@@ -3,7 +3,8 @@
 The B04 V1 agent is a host-tested typed contract. Its final read-only canary,
 all ten capability reads, browser challenge pairing and physical-iPhone Secure
 Enclave pairing/authentication are device-tested. Daily writes still require
-staged B04 acceptance records before stable installation.
+their staged B04 acceptance records before each live operation; the accepted
+stable installation does not waive those gates.
 
 ## Compiled public surface
 
@@ -26,6 +27,8 @@ authentication paths:
 | `GET /v1/lan/clients` | Bounded current DHCP lease list |
 | `GET /v1/sms` | Bounded latest SMS page |
 | `POST /v1/sms/send` | Validated recipient/message mapped to one fixed WMS operation |
+| `POST /v1/device/reboot` | Advanced-session-only fixed stock B04 reboot call; no request body and no retry |
+| `POST /v1/device/power-off` | Advanced-session-only fixed stock B04 power-off call; no request body and no retry |
 | `GET /v1/charging` | Read-only battery capacity and stock charging-permission state; no public charging writes |
 | `PUT /v1/traffic/cycle` | Set 1–31 reset day and enabled state with readback |
 | `POST /v1/wifi/transaction` | Apply allowlisted primary/guest fields with a client-persisted transaction ID known before restart and 120-second rollback; stock master and multi-band state are read-only |
@@ -65,10 +68,13 @@ an already-started protected Wi-Fi operation. A one-slot admission gate stays
 with that blocking operation until it ends, so overlapping Wi-Fi writes fail
 closed instead of queuing additional hardware jobs or blocking more workers.
 
-Every other legacy `/api` endpoint is deliberately dormant. In particular,
-there is no routed raw AT console, process killer, reboot/shutdown, Wi-Fi/APN
-mutation, cell/band lock, USB mutation, TTL write or generic vendor-call
-surface.
+Every legacy `/api` endpoint is deliberately dormant. The two typed lifecycle
+routes are the only destructive device actions: each maps to one fixed stock
+B04 method after exact-firmware verification, requires a five-minute
+`advanced` session, accepts no body and shares a non-queuing one-slot admission
+gate. There is no routed raw AT console, process killer, generic lifecycle
+action, Wi-Fi/APN mutation, cell/band lock, USB mutation, TTL write or generic
+vendor-call surface.
 
 ## Adapter boundary
 

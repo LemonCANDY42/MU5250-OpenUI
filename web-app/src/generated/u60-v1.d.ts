@@ -106,6 +106,40 @@ export interface paths {
         readonly patch?: never;
         readonly trace?: never;
     };
+    readonly "/v1/device/reboot": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Invoke the fixed stock B04 reboot action with an advanced session */
+        readonly post: operations["rebootDevice"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
+    readonly "/v1/device/power-off": {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly get?: never;
+        readonly put?: never;
+        /** Invoke the fixed stock B04 power-off action with an advanced session */
+        readonly post: operations["powerOffDevice"];
+        readonly delete?: never;
+        readonly options?: never;
+        readonly head?: never;
+        readonly patch?: never;
+        readonly trace?: never;
+    };
     readonly "/v1/capabilities": {
         readonly parameters: {
             readonly query?: never;
@@ -840,6 +874,15 @@ export interface components {
                 readonly recovery: components["schemas"]["RecoveryMetadata"];
             };
         };
+        readonly LifecycleErrorResponse: {
+            /** @constant */
+            readonly ok: false;
+            readonly error: {
+                /** @enum {string} */
+                readonly code: "lifecycle_action_in_progress" | "source_unavailable";
+                readonly message: string;
+            };
+        };
         readonly ErrorResponse: {
             /** @constant */
             readonly ok: false;
@@ -978,6 +1021,33 @@ export interface components {
             };
             content: {
                 readonly "application/json": components["schemas"]["DailyErrorResponse"];
+            };
+        };
+        /** @description The fixed stock B04 lifecycle call was accepted */
+        readonly LifecycleActionAccepted: {
+            headers: {
+                readonly [name: string]: unknown;
+            };
+            content: {
+                readonly "application/json": components["schemas"]["WriteResultResponse"];
+            };
+        };
+        /** @description Another lifecycle action is already in progress */
+        readonly LifecycleConflict: {
+            headers: {
+                readonly [name: string]: unknown;
+            };
+            content: {
+                readonly "application/json": components["schemas"]["LifecycleErrorResponse"];
+            };
+        };
+        /** @description The fixed stock B04 lifecycle source is unavailable */
+        readonly LifecycleUnavailable: {
+            headers: {
+                readonly [name: string]: unknown;
+            };
+            content: {
+                readonly "application/json": components["schemas"]["LifecycleErrorResponse"];
             };
         };
     };
@@ -1134,6 +1204,44 @@ export interface operations {
             readonly 401: components["responses"]["AuthenticationFailed"];
             readonly 403: components["responses"]["Forbidden"];
             readonly 500: components["responses"]["AuthInternalError"];
+        };
+    };
+    readonly rebootDevice: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            readonly 200: components["responses"]["LifecycleActionAccepted"];
+            readonly 400: components["responses"]["InvalidRequest"];
+            readonly 401: components["responses"]["AuthenticationFailed"];
+            readonly 403: components["responses"]["Forbidden"];
+            readonly 409: components["responses"]["LifecycleConflict"];
+            readonly 413: components["responses"]["PayloadTooLarge"];
+            readonly 500: components["responses"]["AuthInternalError"];
+            readonly 503: components["responses"]["LifecycleUnavailable"];
+        };
+    };
+    readonly powerOffDevice: {
+        readonly parameters: {
+            readonly query?: never;
+            readonly header?: never;
+            readonly path?: never;
+            readonly cookie?: never;
+        };
+        readonly requestBody?: never;
+        readonly responses: {
+            readonly 200: components["responses"]["LifecycleActionAccepted"];
+            readonly 400: components["responses"]["InvalidRequest"];
+            readonly 401: components["responses"]["AuthenticationFailed"];
+            readonly 403: components["responses"]["Forbidden"];
+            readonly 409: components["responses"]["LifecycleConflict"];
+            readonly 413: components["responses"]["PayloadTooLarge"];
+            readonly 500: components["responses"]["AuthInternalError"];
+            readonly 503: components["responses"]["LifecycleUnavailable"];
         };
     };
     readonly getCapabilities: {

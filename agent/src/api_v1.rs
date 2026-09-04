@@ -983,6 +983,8 @@ mod tests {
             daily: None,
             dashboard_admission: Arc::clone(&state.dashboard_admission),
             wifi_operation_admission: Arc::clone(&state.wifi_operation_admission),
+            lifecycle: Arc::clone(&state.lifecycle),
+            lifecycle_admission: Arc::clone(&state.lifecycle_admission),
         };
         drop(lifecycle_adapter);
         let lifecycle_response =

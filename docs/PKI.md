@@ -103,7 +103,7 @@ authentication gates:
   owner-only Mac, NAS and iCloud copies;
 - the P-256 leaf key was generated on the U60 and never left it; the Mac signed
   only the public CSR, and exact chain, identity, extension and SPKI checks pass;
-- the accepted nonpersistent LAN gate serves TLS 1.3 on the certificate-covered
+- the accepted persistent Agent serves TLS 1.3 on the certificate-covered
   management address and rejects unauthenticated requests;
 - the owner iPhone has the exact public CA installed with full trust and still
   requires the exact leaf SPKI pin after normal Apple trust evaluation;
@@ -112,10 +112,9 @@ authentication gates:
 - the secret-free immediate evidence is stored in
   `/Volumes/backups/U60-Pro/B04-canary-start-20260816T092824Z`.
 
-The owner has replaced the planned 24-hour stability observation with a one-hour
-fast gate; this cannot prove the original 24-hour RSS-growth target. Browser and
-iPhone key pairing are accepted, but every device write and stable installation
-remain separately gated.
+Browser and iPhone key pairing, persistent installation and owner-operated reboot
+resumption are accepted. Every later device write remains separately gated; the
+stable installation does not broaden authorization or weaken TLS/key boundaries.
 The real private material, password and verifier must never be copied into this
 repository or its evidence manifests.
 

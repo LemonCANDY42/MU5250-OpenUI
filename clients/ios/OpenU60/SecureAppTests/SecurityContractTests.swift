@@ -167,6 +167,107 @@ final class SecurityContractTests: XCTestCase {
         XCTAssertEqual(band.accessPointEnabled, false)
     }
 
+    func testWifiSignalLevelsHaveExplicitNonOverlappingBoundaries() {
+        let cases: [(Int, WifiSignalLevel)] = [
+            (-1, .veryStrong), (-49, .veryStrong),
+            (-50, .strong), (-59, .strong), (-60, .strong),
+            (-61, .moderate), (-69, .moderate), (-70, .moderate),
+            (-71, .weak), (-79, .weak), (-80, .weak),
+            (-81, .veryWeak), (-127, .veryWeak)
+        ]
+        for (signal, expected) in cases {
+            XCTAssertEqual(WifiSignalLevel(signalDbm: signal), expected, "RSSI: \(signal)")
+        }
+        for signal in -127..<0 {
+            XCTAssertNotNil(WifiSignalLevel(signalDbm: signal))
+        }
+    }
+
+    func testWifiSignalLevelsRejectSentinelAndInvalidReadings() {
+        for signal in [Int.min, -128, 0, 1, 127, Int.max] {
+            XCTAssertNil(WifiSignalLevel(signalDbm: signal))
+        }
+    }
+
+    func testCellularSignalLevelsUseTechnologySpecificAOSPBoundaries() {
+        let lteCases: [(Int, CellularSignalLevel)] = [
+            (-140, .veryWeak), (-116, .veryWeak),
+            (-115, .weak), (-106, .weak),
+            (-105, .moderate), (-96, .moderate),
+            (-95, .strong), (-86, .strong),
+            (-85, .veryStrong), (-44, .veryStrong)
+        ]
+        for (rsrp, expected) in lteCases {
+            XCTAssertEqual(
+                CellularSignalLevel(technology: .lte, rsrpDbm: rsrp),
+                expected,
+                "LTE RSRP: \(rsrp)"
+            )
+        }
+
+        let nr5gCases: [(Int, CellularSignalLevel)] = [
+            (-156, .veryWeak), (-111, .veryWeak),
+            (-110, .weak), (-91, .weak),
+            (-90, .moderate), (-81, .moderate),
+            (-80, .strong), (-66, .strong),
+            (-65, .veryStrong), (-31, .veryStrong)
+        ]
+        for (rsrp, expected) in nr5gCases {
+            XCTAssertEqual(
+                CellularSignalLevel(technology: .nr5g, rsrpDbm: rsrp),
+                expected,
+                "5G RSRP: \(rsrp)"
+            )
+        }
+    }
+
+    func testCellularSignalLevelsRejectMissingSentinelAndOutOfRangeReadings() {
+        for rsrp in [nil, Int.min, -141, -43, 0, Int.max] as [Int?] {
+            XCTAssertNil(CellularSignalLevel(technology: .lte, rsrpDbm: rsrp))
+        }
+        for rsrp in [nil, Int.min, -157, -30, 0, Int.max] as [Int?] {
+            XCTAssertNil(CellularSignalLevel(technology: .nr5g, rsrpDbm: rsrp))
+        }
+    }
+
+    func testDevicePowerTransportErrorsDistinguishNoSubmissionFromUnknownResult() {
+        XCTAssertEqual(
+            DevicePowerTransportDisposition.classify(URLError(.notConnectedToInternet)),
+            .notSubmitted
+        )
+        XCTAssertEqual(
+            DevicePowerTransportDisposition.classify(URLError(.cannotConnectToHost)),
+            .notSubmitted
+        )
+        XCTAssertEqual(
+            DevicePowerTransportDisposition.classify(URLError(.networkConnectionLost)),
+            .submissionResultUnknown
+        )
+        XCTAssertEqual(
+            DevicePowerTransportDisposition.classify(URLError(.timedOut)),
+            .submissionResultUnknown
+        )
+        XCTAssertNil(DevicePowerTransportDisposition.classify(URLError(.cancelled)))
+    }
+
+    func testLifecycleSessionVaultIsIndependentFromTheLongLivedKeySession() async {
+        let longLivedVault = SessionVault()
+        let temporaryVault = SessionVault()
+        await longLivedVault.replace(with: "key-session")
+        await temporaryVault.replace(with: "advanced-session")
+
+        let longLivedToken = await longLivedVault.value()
+        let temporaryToken = await temporaryVault.value()
+        XCTAssertEqual(longLivedToken, "key-session")
+        XCTAssertEqual(temporaryToken, "advanced-session")
+
+        await temporaryVault.clear()
+        let retainedLongLivedToken = await longLivedVault.value()
+        let clearedTemporaryToken = await temporaryVault.value()
+        XCTAssertEqual(retainedLongLivedToken, "key-session")
+        XCTAssertNil(clearedTemporaryToken)
+    }
+
     func testStockTransmitPowerPresetsMatchB04DistanceLabels() {
         XCTAssertEqual(WifiTransmitPowerPreset(percent: 40), .shortRange)
         XCTAssertEqual(WifiTransmitPowerPreset(percent: 80), .mediumRange)

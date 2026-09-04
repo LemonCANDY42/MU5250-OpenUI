@@ -3,16 +3,14 @@
 Safety-first control-plane work for one owner-operated ZTE U60 Pro (MU5250) on
 HK B04 firmware.
 
-> **Do not install this branch persistently or enable write capabilities until
-> the remaining V1 gates are recorded.** The accepted nonpersistent LAN canary
-> is running on the U60 management address, with no `current`/`previous` link
-> or boot hook. Its release checksum, TLS authentication boundary and unchanged
-> recovery/network invariants were freshly revalidated before restart. Real
-> Chrome WebCrypto pairing, all ten read-only capabilities, owner-confirmed iPhone
-> CA trust, Secure Enclave QR pairing and an authenticated physical-iPhone session
-> are accepted. Each daily write still requires its independent device gate.
-> The original 24-hour RSS-growth target was replaced by the owner's one-hour V1 gate.
-> The legacy setup, deployment and hardening entry points remain fail-closed.
+> **Current owner-device state:** the reviewed V1 release is persistently active
+> through one bounded `/etc/rc.local` launcher. Stock ECM USB Ethernet is the
+> normal boot mode; Agent HTTPS and key-only root SSH listen only on the management
+> LAN. USB ADB is intentionally absent during normal use and is restored only for
+> an explicitly authorized maintenance boot through the verified SSH-to-DEBUG
+> recovery procedure. Legacy setup, deployment, USB-mode and hardening entry
+> points remain fail-closed. Daily writes remain subject to their documented
+> per-operation safety boundaries.
 
 This branch directly descends from `dklasens/MU5250-OpenUI` at commit
 `2209909`, including the MIT licence and upstream emulator-safety fixes. The
@@ -24,14 +22,16 @@ open-u60-pro attribution are retained here. See
 
 ## Implemented and accepted baseline
 
-The source boundary below is host-tested. All ten read-only paths have also
-passed separately recorded HK B04 canary and browser gates; this does not
-authorize daily mutations or a stable install.
+The source boundary below is host-tested. The accepted HK B04 installation has
+also passed release-integrity, TLS, browser, physical-iPhone, persistence,
+key-only SSH, reboot-resumption and stock-ECM checks. This acceptance does not
+broaden the documented daily-mutation boundaries.
 
 - `B04Adapter` contains firmware-specific reads and returns normalized domain
   types rather than vendor JSON.
 - `openapi/u60-v1.yaml` defines ten read-only capabilities, four bounded daily
-  management operations, plus password,
+  management operations, two advanced-session-only fixed device lifecycle
+  actions, plus password,
   pairing and challenge-based authentication under `/v1`.
 - The TLS 1.3 listener can explicitly serve `web-app/dist` with
   `serve --web-root DIR`. The root is canonicalized, symlinks are rejected and
@@ -66,47 +66,26 @@ authorize daily mutations or a stable install.
   rejects legacy API paths, plaintext URLs, the old split-origin port and common
   token-persistence APIs.
 
-The daily write source is host-tested but has not yet passed the per-operation
-B04 backup, applied-state and rollback gates. Until those records exist, the
-running device canary remains read-only.
+Unsupported charging, Wi-Fi master and stock multi-band coordination writes are
+not exposed. Remaining bounded daily writes retain their per-operation validation
+and rollback rules; a stable installation is not permission to bypass them.
 
-## Accepted read-only canary release
+## Accepted persistent owner installation
 
-The last accepted LAN-canary release was
-`9b334dd65f32d8ef375d04026c197e467d6f42a44c7cf53df4c5803e49e58fb9`,
-whose identifier binds its complete checksum list. It is installed under the
-immutable `/data/u60/releases/` store and bound only to `192.168.0.1:9443`.
-`current` and `previous` are still absent, so it is not a stable installation.
-That nonpersistent process has since stopped and no LAN listener is currently
-accepted as live; it will not restart after a reboot. The release is not
-referenced by `rc.local`, init, firewall or a new system service.
+The accepted content-addressed release is selected by atomic `current` and
+`previous` links under `/data/u60`. One finite, backgrounded launcher starts one
+Agent on management-LAN port `9443` and one hardened Dropbear on `2222`; it has
+bounded retries, is not a watchdog and sends process output to `/dev/null`.
+Persistent service state is bounded, normal polling does not append a process
+log, and the stability recorder has a fixed size ceiling.
 
-Immediate acceptance proved the full device-side release checksum, TLS owner-CA
-verification with unauthenticated `401`, root ADB retention and unchanged exact
-firmware, USB properties, default route, nine-interface TUN set and `rc.local`.
-The replaced intermediate canary exited, one release process remained on
-loopback, and the new process used 2,780 KiB RSS with two threads. Secret-free,
-hash-bound NAS evidence is in
-`/Volumes/backups/U60-Pro/B04-v1-canary-20260816T151030269094Z`.
-
-After the final process replacement, the browser's existing non-exportable
-P-256 credential completed a fresh challenge login. Chrome reported all ten
-capabilities as available; the Messages card rendered 20 bounded entries and
-neither sender nor content fields retained long UCS-2/UTF-16 hexadecimal
-payloads. No message content was stored in the repository or NAS evidence.
-
-The one-hour device-process checkpoint completed after 3,756 seconds with one
-thread, 2,164 KiB RSS (100 KiB above the start) and empty canary/audit logs. The
-listener remained device-loopback-only, root ADB and firmware identity remained
-available, and `rc.local`, USB properties and dormant legacy-agent hashes were
-unchanged. The temporary Mac ADB forward disappeared during the observation, so
-continuous client-path availability was not proven. The shortened gate cannot
-establish the original 24-hour RSS-growth target. Its secret-free NAS evidence
-is `/Volumes/backups/U60-Pro/B04-canary-one-hour-20260816T102444Z`; manifest
-SHA-256 is
-`f7cafc92e99af3643afaa3672772d2c514a2c29b71de300a81a05b3eda65dbda`.
-No device write API, SSH service, stable release symlink or boot persistence is
-enabled.
+The owner-device normal boot uses stock ECM USB Ethernet. macOS may assign a
+different `enN` number after re-enumeration, so identify the ZTE interface and
+confirm the route to `192.168.0.1` rather than hard-coding `en17`. The normal
+paths are the native App/Agent, stock Web UI and key-only SSH. Root USB ADB is a
+recoverable maintenance capability, not a continuously exposed interface; see
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) and
+[docs/reference/usb-modes.md](docs/reference/usb-modes.md).
 
 ## Architecture and safety
 
@@ -115,8 +94,8 @@ enabled.
 - [docs/SAFETY.md](docs/SAFETY.md) — device recovery rules and known brick
   hazards. Historical material is clearly marked where it describes dormant
   upstream code.
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — historical upstream deployment
-  reference only; its old write path is disabled on this branch.
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — reviewed V1 deployment and
+  SSH-to-DEBUG-to-ADB recovery path; the old upstream flow is clearly isolated.
 - [docs/IOS.md](docs/IOS.md) — compiled target, generated contract, Secure
   Enclave, TLS pinning and five-minute QR pairing boundaries.
 - [docs/READ-ONLY-PROBE.md](docs/READ-ONLY-PROBE.md) — exact USB ADB read
@@ -188,8 +167,8 @@ scripts/        Contract checks plus upstream recovery/research references
 docs/           Architecture, safety and historical device notes
 ```
 
-These host checks do not authorize a stable install or any device write API.
-The running read-only canary passed the owner-approved one-hour device-process
-gate, but not the original 24-hour leak target or a continuous Mac client-path
-test. Further device actions remain governed by the architecture and local B04
-handoff.
+These host checks alone do not authorize a device write. The owner-device stable
+installation and ECM/SSH recovery chain have separate recorded acceptance; the
+older canary and one-hour process records remain historical evidence rather than
+the current runtime description. Further device actions remain governed by the
+architecture and local B04 handoff.

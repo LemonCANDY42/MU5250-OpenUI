@@ -7,6 +7,7 @@ use tokio::sync::Semaphore;
 use crate::adapter::{B04Adapter, DeviceAdapter};
 use crate::auth::{AuthFailure, AuthService};
 use crate::daily::DailyService;
+use crate::lifecycle::{LifecycleControl, LifecycleService};
 
 pub struct AppState {
     pub auth: Arc<AuthService>,
@@ -14,6 +15,8 @@ pub struct AppState {
     pub daily: Option<Arc<DailyService>>,
     pub dashboard_admission: Arc<Semaphore>,
     pub wifi_operation_admission: Arc<Semaphore>,
+    pub lifecycle: Arc<dyn LifecycleControl>,
+    pub lifecycle_admission: Arc<Semaphore>,
 }
 
 impl Clone for AppState {
@@ -24,6 +27,8 @@ impl Clone for AppState {
             daily: self.daily.as_ref().map(Arc::clone),
             dashboard_admission: Arc::clone(&self.dashboard_admission),
             wifi_operation_admission: Arc::clone(&self.wifi_operation_admission),
+            lifecycle: Arc::clone(&self.lifecycle),
+            lifecycle_admission: Arc::clone(&self.lifecycle_admission),
         }
     }
 }
@@ -42,6 +47,8 @@ impl AppState {
             daily: None,
             dashboard_admission: Arc::new(Semaphore::new(1)),
             wifi_operation_admission: Arc::new(Semaphore::new(1)),
+            lifecycle: Arc::new(LifecycleService::new()),
+            lifecycle_admission: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -52,6 +59,25 @@ impl AppState {
             daily: Some(Arc::new(daily)),
             dashboard_admission: Arc::new(Semaphore::new(1)),
             wifi_operation_admission: Arc::new(Semaphore::new(1)),
+            lifecycle: Arc::new(LifecycleService::new()),
+            lifecycle_admission: Arc::new(Semaphore::new(1)),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn with_lifecycle(
+        auth: AuthService,
+        adapter: Arc<dyn DeviceAdapter>,
+        lifecycle: Arc<dyn LifecycleControl>,
+    ) -> Self {
+        Self {
+            auth: Arc::new(auth),
+            adapter,
+            daily: None,
+            dashboard_admission: Arc::new(Semaphore::new(1)),
+            wifi_operation_admission: Arc::new(Semaphore::new(1)),
+            lifecycle,
+            lifecycle_admission: Arc::new(Semaphore::new(1)),
         }
     }
 }
